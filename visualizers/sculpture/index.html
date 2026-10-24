@@ -1,0 +1,1697 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sculpture Machine</title>
+<style>
+  :root { --ink:#f3ecd8; --panel:rgba(14,12,10,.78); --line:rgba(243,236,216,.2); --accent:#f6cf1d; }
+  html,body { margin:0; height:100%; background:#0c0a08; overflow:hidden; color:var(--ink);
+    font:13px/1.3 Futura,"Avenir Next","Helvetica Neue",Arial,sans-serif; }
+  canvas#view { position:fixed; inset:0; width:100%; height:100%; display:block; cursor:pointer; object-fit:contain; }
+  body.idle canvas#view { cursor:none; }
+  .ui { position:fixed; left:16px; right:16px; bottom:16px; display:flex; flex-direction:column; gap:8px; transition:opacity .5s; }
+  body.idle .ui, body.idle .intro { opacity:0; pointer-events:none; }
+  .bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; background:var(--panel); backdrop-filter:blur(8px);
+    -webkit-backdrop-filter:blur(8px); border:1px solid var(--line); border-radius:6px; padding:8px 10px; }
+  button,select { font:inherit; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink);
+    background:transparent; border:1px solid var(--line); border-radius:4px; padding:6px 10px; cursor:pointer; }
+  select option { background:#1a1714; }
+  button:hover,select:hover { border-color:var(--ink); }
+  button.on { background:var(--ink); color:#0c0a08; }
+  #seek { flex:1; min-width:120px; accent-color:var(--accent); }
+  .time { font-variant-numeric:tabular-nums; opacity:.7; min-width:92px; text-align:right; font-size:12px; }
+  .settings { display:none; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px 18px; max-height:52vh; overflow:auto; }
+  .settings.open { display:grid; }
+  .settings label { display:flex; flex-direction:column; gap:4px; font-size:10px; letter-spacing:.12em; text-transform:uppercase; opacity:.85; }
+  .settings input[type=range] { accent-color:var(--accent); width:100%; }
+  .settings label.check { flex-direction:row; align-items:center; gap:8px; }
+  .swatches { display:flex; flex-wrap:wrap; gap:4px; }
+  .swatches i { width:16px; height:16px; border-radius:3px; border:1px solid var(--line); opacity:.55; }
+  .swatches i.used { opacity:1; outline:1.5px solid var(--ink); outline-offset:1px; }
+  #exporting { display:none; position:fixed; left:50%; bottom:24px; transform:translateX(-50%); width:min(420px, calc(100% - 32px));
+    background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:12px; box-sizing:border-box;
+    flex-direction:column; gap:8px; font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+  #exporting .track { height:4px; background:var(--line); border-radius:2px; overflow:hidden; }
+  #exp-bar { height:100%; width:0; background:var(--accent); }
+  body.exporting #exporting { display:flex; }
+  body.exporting .ui, body.exporting .intro { display:none; }
+  .hint { font-size:10px; letter-spacing:.1em; text-transform:uppercase; opacity:.45; grid-column:1/-1; }
+  .drop { position:fixed; inset:12px; border:3px dashed var(--accent); border-radius:10px; display:none; pointer-events:none; }
+  body.dragging .drop { display:block; }
+  .intro { position:fixed; top:16px; left:50%; transform:translateX(-50%); max-width:calc(100% - 32px); box-sizing:border-box;
+    background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:8px 14px; font-size:10px;
+    letter-spacing:.16em; text-transform:uppercase; text-align:center; transition:opacity .5s; pointer-events:none; }
+  body.loaded .intro { display:none; }
+  @media (max-width:640px) { .hide-sm { display:none; } }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div class="drop"></div>
+<div class="intro" id="intro">Drop a song, or press Load: drums build the sculpture, notes carve it</div>
+<div class="ui">
+  <div class="settings bar" id="exportPanel">
+    <label>Size<select id="exp-size"><option value="1080p">1920 × 1080</option><option value="720p">1280 × 720</option><option value="square">1080 × 1080 square</option><option value="vertical">1080 × 1920 vertical</option><option value="4k">3840 × 2160</option></select></label>
+    <label>Length<select id="exp-len"><option value="full">Whole song</option><option value="clip">30 s from the playhead</option></select></label>
+    <label>File size<select id="exp-q"><option value="master">Master · largest</option><option value="high">High · about half</option><option value="small">Small · for sharing</option></select></label>
+    <label>Silence before &amp; after<select id="exp-pad"><option value="0">None</option><option value="2">2 s</option><option value="5">5 s</option><option value="10">10 s</option></select></label>
+    <label><span>&nbsp;</span><button id="exp-go">Render MP4</button></label>
+    <div class="hint" id="exp-msg">Renders frame by frame at the film frame rate. The sculpture, camera, colours and film damage come out exactly as the preview shows them.</div>
+  </div>
+  <div class="settings bar" id="sculptPanel"></div>
+  <div class="settings bar" id="cameraPanel"></div>
+  <div class="settings bar" id="colourPanel"></div>
+  <div class="settings bar" id="filmPanel"></div>
+  <div class="bar">
+    <button id="load">Load</button>
+    <button id="play">Play</button>
+    <input id="seek" type="range" min="0" max="1000" value="0">
+    <span class="time" id="time">0:00 / 0:00</span>
+    <select id="look" title="Look (1–7)">
+      <option value="auto">Auto</option>
+      <option value="cutpaper">Cut paper</option>
+      <option value="toon">Toon</option>
+      <option value="clay">Clay</option>
+      <option value="halftone">Halftone</option>
+      <option value="lines">Lines</option>
+      <option value="scratch">Scratch</option>
+    </select>
+    <button id="sculptBtn">Sculpt</button>
+    <button id="cameraBtn" class="hide-sm">Camera</button>
+    <button id="colourBtn">Colour</button>
+    <button id="filmBtn">Film</button>
+    <button id="exportBtn">Export</button>
+    <button id="fs" class="hide-sm">Full</button>
+  </div>
+</div>
+<input type="file" id="file" accept="audio/*,video/*" hidden>
+<div id="exporting"><div id="exp-text">rendering…</div><div class="track"><div id="exp-bar"></div></div><button id="exp-cancel">Cancel</button></div>
+
+<script>
+/* mp4-muxer 5.2.2 (MIT, Vanilagy) — inlined so export works offline and from file:// */
+/**
+ * Minified by jsDelivr using Terser v5.39.0.
+ * Original file: /npm/mp4-muxer@5.2.2/build/mp4-muxer.js
+ *
+ * Do NOT use SRI with dynamically generated files! More information: https://www.jsdelivr.com/using-sri-with-dynamic-files
+ */
+"use strict";var Mp4Muxer=(()=>{var e=Object.defineProperty,t=Object.getOwnPropertyDescriptor,i=Object.getOwnPropertyNames,s=Object.prototype.hasOwnProperty,a=(e,t,i)=>{if(!t.has(e))throw TypeError("Cannot "+i)},r=(e,t,i)=>(a(e,t,"read from private field"),i?i.call(e):t.get(e)),n=(e,t,i)=>{if(t.has(e))throw TypeError("Cannot add the same private member more than once");t instanceof WeakSet?t.add(e):t.set(e,i)},o=(e,t,i,s)=>(a(e,t,"write to private field"),s?s.call(e,i):t.set(e,i),i),h=(e,t,i)=>(a(e,t,"access private method"),i),l={};((t,i)=>{for(var s in i)e(t,s,{get:i[s],enumerable:!0})})(l,{ArrayBufferTarget:()=>Me,FileSystemWritableFileStreamTarget:()=>Oe,Muxer:()=>Rt,StreamTarget:()=>We});var d,f,u,m,p,c,w,g,b=new Uint8Array(8),y=new DataView(b.buffer),k=e=>[(e%256+256)%256],T=e=>(y.setUint16(0,e,!1),[b[0],b[1]]),C=e=>(y.setUint32(0,e,!1),[b[1],b[2],b[3]]),v=e=>(y.setUint32(0,e,!1),[b[0],b[1],b[2],b[3]]),S=e=>(y.setUint32(0,Math.floor(e/2**32),!1),y.setUint32(4,e,!1),[b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]]),x=e=>(y.setInt16(0,256*e,!1),[b[0],b[1]]),z=e=>(y.setInt32(0,65536*e,!1),[b[0],b[1],b[2],b[3]]),E=e=>(y.setInt32(0,2**30*e,!1),[b[0],b[1],b[2],b[3]]),A=(e,t=!1)=>{let i=Array(e.length).fill(null).map(((t,i)=>e.charCodeAt(i)));return t&&i.push(0),i},M=e=>e&&e[e.length-1],W=e=>{let t;for(let i of e)(!t||i.presentationTimestamp>t.presentationTimestamp)&&(t=i);return t},O=(e,t,i=!0)=>{let s=e*t;return i?Math.round(s):s},B=e=>{let t=e*(Math.PI/180),i=Math.cos(t),s=Math.sin(t);return[i,s,0,-s,i,0,0,0,1]},U=B(0),D=e=>[z(e[0]),z(e[1]),E(e[2]),z(e[3]),z(e[4]),E(e[5]),z(e[6]),z(e[7]),E(e[8])],j=e=>e?"object"!=typeof e?e:Array.isArray(e)?e.map(j):Object.fromEntries(Object.entries(e).map((([e,t])=>[e,j(t)]))):e,R=e=>e>=0&&e<2**32,I=(e,t,i)=>({type:e,contents:t&&new Uint8Array(t.flat(10)),children:i}),N=(e,t,i,s,a)=>I(e,[k(t),C(i),s??[]],a),V=e=>({type:"mdat",largeSize:e}),F=(e,t,i=!1)=>I("moov",null,[L(t,e),...e.map((e=>$(e,t))),i?me(e):null]),L=(e,t)=>{let i=O(Math.max(0,...t.filter((e=>e.samples.length>0)).map((e=>{const t=W(e.samples);return t.presentationTimestamp+t.duration}))),Bt),s=Math.max(...t.map((e=>e.id)))+1,a=!R(e)||!R(i),r=a?S:v;return N("mvhd",+a,0,[r(e),r(e),v(Bt),r(i),z(1),x(1),Array(10).fill(0),D(U),Array(24).fill(0),v(s)])},$=(e,t)=>I("trak",null,[P(e,t),H(e,t)]),P=(e,t)=>{let i,s=W(e.samples),a=O(s?s.presentationTimestamp+s.duration:0,Bt),r=!R(t)||!R(a),n=r?S:v;return i="video"===e.info.type?"number"==typeof e.info.rotation?B(e.info.rotation):e.info.rotation:U,N("tkhd",+r,3,[n(t),n(t),v(e.id),v(0),n(a),Array(8).fill(0),T(0),T(0),x("audio"===e.info.type?1:0),T(0),D(i),z("video"===e.info.type?e.info.width:0),z("video"===e.info.type?e.info.height:0)])},H=(e,t)=>I("mdia",null,[_(e,t),q("video"===e.info.type?"vide":"soun"),G(e)]),_=(e,t)=>{let i=W(e.samples),s=O(i?i.presentationTimestamp+i.duration:0,e.timescale),a=!R(t)||!R(s),r=a?S:v;return N("mdhd",+a,0,[r(t),r(t),v(e.timescale),r(s),T(21956),T(0)])},q=e=>N("hdlr",0,0,[A("mhlr"),A(e),v(0),v(0),v(0),A("mp4-muxer-hdlr",!0)]),G=e=>I("minf",null,["video"===e.info.type?J():K(),Q(),Z(e)]),J=()=>N("vmhd",0,1,[T(0),T(0),T(0),T(0)]),K=()=>N("smhd",0,0,[T(0),T(0)]),Q=()=>I("dinf",null,[X()]),X=()=>N("dref",0,0,[v(1)],[Y()]),Y=()=>N("url ",0,1),Z=e=>{const t=e.compositionTimeOffsetTable.length>1||e.compositionTimeOffsetTable.some((e=>0!==e.sampleCompositionTimeOffset));return I("stbl",null,[ee(e),oe(e),he(e),le(e),de(e),fe(e),t?ue(e):null])},ee=e=>N("stsd",0,0,[v(1)],["video"===e.info.type?te(Se[e.info.codec],e):ne(ze[e.info.codec],e)]),te=(e,t)=>{return I(e,[Array(6).fill(0),T(1),T(0),T(0),Array(12).fill(0),T(t.info.width),T(t.info.height),v(4718592),v(4718592),v(0),T(1),Array(32).fill(0),T(24),(i=65535,y.setInt16(0,i,!1),[b[0],b[1]])],[xe[t.info.codec](t),t.info.decoderConfig.colorSpace?re(t):null]);var i},ie={bt709:1,bt470bg:5,smpte170m:6},se={bt709:1,smpte170m:6,"iec61966-2-1":13},ae={rgb:0,bt709:1,bt470bg:5,smpte170m:6},re=e=>I("colr",[A("nclx"),T(ie[e.info.decoderConfig.colorSpace.primaries]),T(se[e.info.decoderConfig.colorSpace.transfer]),T(ae[e.info.decoderConfig.colorSpace.matrix]),k((e.info.decoderConfig.colorSpace.fullRange?1:0)<<7)]),ne=(e,t)=>I(e,[Array(6).fill(0),T(1),T(0),T(0),v(0),T(t.info.numberOfChannels),T(16),T(0),T(0),z(t.info.sampleRate)],[Ee[t.info.codec](t)]),oe=e=>N("stts",0,0,[v(e.timeToSampleTable.length),e.timeToSampleTable.map((e=>[v(e.sampleCount),v(e.sampleDelta)]))]),he=e=>{if(e.samples.every((e=>"key"===e.type)))return null;let t=[...e.samples.entries()].filter((([,e])=>"key"===e.type));return N("stss",0,0,[v(t.length),t.map((([e])=>v(e+1)))])},le=e=>N("stsc",0,0,[v(e.compactlyCodedChunkTable.length),e.compactlyCodedChunkTable.map((e=>[v(e.firstChunk),v(e.samplesPerChunk),v(1)]))]),de=e=>N("stsz",0,0,[v(0),v(e.samples.length),e.samples.map((e=>v(e.size)))]),fe=e=>e.finalizedChunks.length>0&&M(e.finalizedChunks).offset>=2**32?N("co64",0,0,[v(e.finalizedChunks.length),e.finalizedChunks.map((e=>S(e.offset)))]):N("stco",0,0,[v(e.finalizedChunks.length),e.finalizedChunks.map((e=>v(e.offset)))]),ue=e=>N("ctts",0,0,[v(e.compositionTimeOffsetTable.length),e.compositionTimeOffsetTable.map((e=>[v(e.sampleCount),v(e.sampleCompositionTimeOffset)]))]),me=e=>I("mvex",null,e.map(pe)),pe=e=>N("trex",0,0,[v(e.id),v(1),v(0),v(0),v(0)]),ce=(e,t)=>I("moof",null,[we(e),...t.map(be)]),we=e=>N("mfhd",0,0,[v(e)]),ge=e=>{let t=0,i=0,s="delta"===e.type;return i|=+s,t|=s?1:2,t<<24|i<<16},be=e=>I("traf",null,[ye(e),ke(e),Te(e)]),ye=e=>{let t=0;t|=8,t|=16,t|=32,t|=131072;let i=e.currentChunk.samples[1]??e.currentChunk.samples[0],s={duration:i.timescaleUnitsToNextSample,size:i.size,flags:ge(i)};return N("tfhd",0,131128,[v(e.id),v(s.duration),v(s.size),v(s.flags)])},ke=e=>N("tfdt",1,0,[S(O(e.currentChunk.startTimestamp,e.timescale))]),Te=e=>{let t=e.currentChunk.samples.map((e=>e.timescaleUnitsToNextSample)),i=e.currentChunk.samples.map((e=>e.size)),s=e.currentChunk.samples.map(ge),a=e.currentChunk.samples.map((t=>O(t.presentationTimestamp-t.decodeTimestamp,e.timescale))),r=new Set(t),n=new Set(i),o=new Set(s),h=new Set(a),l=2===o.size&&s[0]!==s[1],d=r.size>1,f=n.size>1,u=!l&&o.size>1,m=h.size>1||[...h].some((e=>0!==e)),p=0;return p|=1,p|=4*+l,p|=256*+d,p|=512*+f,p|=1024*+u,p|=2048*+m,N("trun",1,p,[v(e.currentChunk.samples.length),v(e.currentChunk.offset-e.currentChunk.moofOffset||0),l?v(s[0]):[],e.currentChunk.samples.map(((e,r)=>{return[d?v(t[r]):[],f?v(i[r]):[],u?v(s[r]):[],m?(n=a[r],y.setInt32(0,n,!1),[b[0],b[1],b[2],b[3]]):[]];var n}))])},Ce=(e,t)=>N("tfra",1,0,[v(e.id),v(63),v(e.finalizedChunks.length),e.finalizedChunks.map((i=>[S(O(i.startTimestamp,e.timescale)),S(i.moofOffset),v(t+1),v(1),v(1)]))]),ve=()=>N("mfro",0,0,[v(0)]),Se={avc:"avc1",hevc:"hvc1",vp9:"vp09",av1:"av01"},xe={avc:e=>e.info.decoderConfig&&I("avcC",[...new Uint8Array(e.info.decoderConfig.description)]),hevc:e=>e.info.decoderConfig&&I("hvcC",[...new Uint8Array(e.info.decoderConfig.description)]),vp9:e=>{if(!e.info.decoderConfig)return null;let t=e.info.decoderConfig;if(!t.colorSpace)throw new Error("'colorSpace' is required in the decoder config for VP9.");let i=t.codec.split("."),s=Number(i[1]),a=Number(i[2]),r=0+(Number(i[3])<<4)+Number(t.colorSpace.fullRange);return N("vpcC",1,0,[k(s),k(a),k(r),k(2),k(2),k(2),T(0)])},av1:()=>I("av1C",[129,0,0,0])},ze={aac:"mp4a",opus:"Opus"},Ee={aac:e=>{let t=new Uint8Array(e.info.decoderConfig.description);return N("esds",0,0,[v(58753152),k(32+t.byteLength),T(1),k(0),v(75530368),k(18+t.byteLength),k(64),k(21),C(0),v(130071),v(130071),v(92307584),k(t.byteLength),...t,v(109084800),k(1),k(2)])},opus:e=>{let t=3840,i=0;const s=e.info.decoderConfig?.description;if(s){if(s.byteLength<18)throw new TypeError("Invalid decoder description provided for Opus; must be at least 18 bytes long.");const e=ArrayBuffer.isView(s)?new DataView(s.buffer,s.byteOffset,s.byteLength):new DataView(s);t=e.getUint16(10,!0),i=e.getInt16(14,!0)}return I("dOps",[k(0),k(e.info.numberOfChannels),T(t),v(e.info.sampleRate),x(i),k(0)])}},Ae=(Symbol("isTarget"),class{}),Me=class extends Ae{constructor(){super(...arguments),this.buffer=null}},We=class extends Ae{constructor(e){if(super(),this.options=e,"object"!=typeof e)throw new TypeError("StreamTarget requires an options object to be passed to its constructor.");if(e.onData){if("function"!=typeof e.onData)throw new TypeError("options.onData, when provided, must be a function.");if(e.onData.length<2)throw new TypeError("options.onData, when provided, must be a function that takes in at least two arguments (data and position). Ignoring the position argument, which specifies the byte offset at which the data is to be written, can lead to broken outputs.")}if(void 0!==e.chunked&&"boolean"!=typeof e.chunked)throw new TypeError("options.chunked, when provided, must be a boolean.");if(void 0!==e.chunkSize&&(!Number.isInteger(e.chunkSize)||e.chunkSize<1024))throw new TypeError("options.chunkSize, when provided, must be an integer and not smaller than 1024.")}},Oe=class extends Ae{constructor(e,t){if(super(),this.stream=e,this.options=t,!(e instanceof FileSystemWritableFileStream))throw new TypeError("FileSystemWritableFileStreamTarget requires a FileSystemWritableFileStream instance.");if(void 0!==t&&"object"!=typeof t)throw new TypeError("FileSystemWritableFileStreamTarget's options, when provided, must be an object.");if(t&&void 0!==t.chunkSize&&(!Number.isInteger(t.chunkSize)||t.chunkSize<=0))throw new TypeError("options.chunkSize, when provided, must be a positive integer")}},Be=class{constructor(){this.pos=0,n(this,d,new Uint8Array(8)),n(this,f,new DataView(r(this,d).buffer)),this.offsets=new WeakMap}seek(e){this.pos=e}writeU32(e){r(this,f).setUint32(0,e,!1),this.write(r(this,d).subarray(0,4))}writeU64(e){r(this,f).setUint32(0,Math.floor(e/2**32),!1),r(this,f).setUint32(4,e,!1),this.write(r(this,d).subarray(0,8))}writeAscii(e){for(let t=0;t<e.length;t++)r(this,f).setUint8(t%8,e.charCodeAt(t)),t%8==7&&this.write(r(this,d));e.length%8!=0&&this.write(r(this,d).subarray(0,e.length%8))}writeBox(e){if(this.offsets.set(e,this.pos),e.contents&&!e.children)this.writeBoxHeader(e,e.size??e.contents.byteLength+8),this.write(e.contents);else{let t=this.pos;if(this.writeBoxHeader(e,0),e.contents&&this.write(e.contents),e.children)for(let t of e.children)t&&this.writeBox(t);let i=this.pos,s=e.size??i-t;this.seek(t),this.writeBoxHeader(e,s),this.seek(i)}}writeBoxHeader(e,t){this.writeU32(e.largeSize?1:t),this.writeAscii(e.type),e.largeSize&&this.writeU64(t)}measureBoxHeader(e){return 8+(e.largeSize?8:0)}patchBox(e){let t=this.pos;this.seek(this.offsets.get(e)),this.writeBox(e),this.seek(t)}measureBox(e){if(e.contents&&!e.children){return this.measureBoxHeader(e)+e.contents.byteLength}{let t=this.measureBoxHeader(e);if(e.contents&&(t+=e.contents.byteLength),e.children)for(let i of e.children)i&&(t+=this.measureBox(i));return t}}};d=new WeakMap,f=new WeakMap;var Ue=class extends Be{constructor(e){super(),n(this,w),n(this,u,void 0),n(this,m,new ArrayBuffer(65536)),n(this,p,new Uint8Array(r(this,m))),n(this,c,0),o(this,u,e)}write(e){h(this,w,g).call(this,this.pos+e.byteLength),r(this,p).set(e,this.pos),this.pos+=e.byteLength,o(this,c,Math.max(r(this,c),this.pos))}finalize(){h(this,w,g).call(this,this.pos),r(this,u).buffer=r(this,m).slice(0,Math.max(r(this,c),this.pos))}};u=new WeakMap,m=new WeakMap,p=new WeakMap,c=new WeakMap,w=new WeakSet,g=function(e){let t=r(this,m).byteLength;for(;t<e;)t*=2;if(t===r(this,m).byteLength)return;let i=new ArrayBuffer(t),s=new Uint8Array(i);s.set(r(this,p),0),o(this,m,i),o(this,p,s)};var De,je,Re,Ie,Ne,Ve,Fe,Le,$e,Pe,He,_e,qe,Ge=class extends Be{constructor(e){super(),n(this,Ve),n(this,Le),n(this,Pe),n(this,_e),n(this,De,void 0),n(this,je,[]),n(this,Re,void 0),n(this,Ie,void 0),n(this,Ne,[]),o(this,De,e),o(this,Re,e.options?.chunked??!1),o(this,Ie,e.options?.chunkSize??16777216)}write(e){r(this,je).push({data:e.slice(),start:this.pos}),this.pos+=e.byteLength}flush(){if(0===r(this,je).length)return;let e=[],t=[...r(this,je)].sort(((e,t)=>e.start-t.start));e.push({start:t[0].start,size:t[0].data.byteLength});for(let i=1;i<t.length;i++){let s=e[e.length-1],a=t[i];a.start<=s.start+s.size?s.size=Math.max(s.size,a.start+a.data.byteLength-s.start):e.push({start:a.start,size:a.data.byteLength})}for(let t of e){t.data=new Uint8Array(t.size);for(let e of r(this,je))t.start<=e.start&&e.start<t.start+t.size&&t.data.set(e.data,e.start-t.start);r(this,Re)?(h(this,Ve,Fe).call(this,t.data,t.start),h(this,_e,qe).call(this)):r(this,De).options.onData?.(t.data,t.start)}r(this,je).length=0}finalize(){r(this,Re)&&h(this,_e,qe).call(this,!0)}};De=new WeakMap,je=new WeakMap,Re=new WeakMap,Ie=new WeakMap,Ne=new WeakMap,Ve=new WeakSet,Fe=function(e,t){let i=r(this,Ne).findIndex((e=>e.start<=t&&t<e.start+r(this,Ie)));-1===i&&(i=h(this,Pe,He).call(this,t));let s=r(this,Ne)[i],a=t-s.start,n=e.subarray(0,Math.min(r(this,Ie)-a,e.byteLength));s.data.set(n,a);let o={start:a,end:a+n.byteLength};if(h(this,Le,$e).call(this,s,o),0===s.written[0].start&&s.written[0].end===r(this,Ie)&&(s.shouldFlush=!0),r(this,Ne).length>2){for(let e=0;e<r(this,Ne).length-1;e++)r(this,Ne)[e].shouldFlush=!0;h(this,_e,qe).call(this)}n.byteLength<e.byteLength&&h(this,Ve,Fe).call(this,e.subarray(n.byteLength),t+n.byteLength)},Le=new WeakSet,$e=function(e,t){let i=0,s=e.written.length-1,a=-1;for(;i<=s;){let r=Math.floor(i+(s-i+1)/2);e.written[r].start<=t.start?(i=r+1,a=r):s=r-1}for(e.written.splice(a+1,0,t),(-1===a||e.written[a].end<t.start)&&a++;a<e.written.length-1&&e.written[a].end>=e.written[a+1].start;)e.written[a].end=Math.max(e.written[a].end,e.written[a+1].end),e.written.splice(a+1,1)},Pe=new WeakSet,He=function(e){let t={start:Math.floor(e/r(this,Ie))*r(this,Ie),data:new Uint8Array(r(this,Ie)),written:[],shouldFlush:!1};return r(this,Ne).push(t),r(this,Ne).sort(((e,t)=>e.start-t.start)),r(this,Ne).indexOf(t)},_e=new WeakSet,qe=function(e=!1){for(let t=0;t<r(this,Ne).length;t++){let i=r(this,Ne)[t];if(i.shouldFlush||e){for(let e of i.written)r(this,De).options.onData?.(i.data.subarray(e.start,e.end),i.start+e.start);r(this,Ne).splice(t--,1)}}};var Je,Ke,Qe,Xe,Ye,Ze,et,tt,it,st,at,rt,nt,ot,ht,lt,dt,ft,ut,mt,pt,ct,wt,gt,bt,yt,kt,Tt,Ct,vt,St,xt,zt,Et,At,Mt,Wt,Ot=class extends Ge{constructor(e){super(new We({onData:(t,i)=>e.stream.write({type:"write",data:t,position:i}),chunked:!0,chunkSize:e.options?.chunkSize}))}},Bt=1e3,Ut=["avc","hevc","vp9","av1"],Dt=["aac","opus"],jt=["strict","offset","cross-track-offset"],Rt=class{constructor(e){if(n(this,nt),n(this,ht),n(this,dt),n(this,ut),n(this,pt),n(this,wt),n(this,bt),n(this,kt),n(this,Ct),n(this,St),n(this,zt),n(this,At),n(this,Je,void 0),n(this,Ke,void 0),n(this,Qe,void 0),n(this,Xe,void 0),n(this,Ye,null),n(this,Ze,null),n(this,et,Math.floor(Date.now()/1e3)+2082844800),n(this,tt,[]),n(this,it,1),n(this,st,[]),n(this,at,[]),n(this,rt,!1),h(this,nt,ot).call(this,e),e.video=j(e.video),e.audio=j(e.audio),e.fastStart=j(e.fastStart),this.target=e.target,o(this,Je,{firstTimestampBehavior:"strict",...e}),e.target instanceof Me)o(this,Ke,new Ue(e.target));else if(e.target instanceof We)o(this,Ke,new Ge(e.target));else{if(!(e.target instanceof Oe))throw new Error(`Invalid target: ${e.target}`);o(this,Ke,new Ot(e.target))}h(this,ut,mt).call(this),h(this,ht,lt).call(this)}addVideoChunk(e,t,i,s){if(!(e instanceof EncodedVideoChunk))throw new TypeError("addVideoChunk's first argument (sample) must be of type EncodedVideoChunk.");if(t&&"object"!=typeof t)throw new TypeError("addVideoChunk's second argument (meta), when provided, must be an object.");if(void 0!==i&&(!Number.isFinite(i)||i<0))throw new TypeError("addVideoChunk's third argument (timestamp), when provided, must be a non-negative real number.");if(void 0!==s&&!Number.isFinite(s))throw new TypeError("addVideoChunk's fourth argument (compositionTimeOffset), when provided, must be a real number.");let a=new Uint8Array(e.byteLength);e.copyTo(a),this.addVideoChunkRaw(a,e.type,i??e.timestamp,e.duration,t,s)}addVideoChunkRaw(e,t,i,s,a,n){if(!(e instanceof Uint8Array))throw new TypeError("addVideoChunkRaw's first argument (data) must be an instance of Uint8Array.");if("key"!==t&&"delta"!==t)throw new TypeError("addVideoChunkRaw's second argument (type) must be either 'key' or 'delta'.");if(!Number.isFinite(i)||i<0)throw new TypeError("addVideoChunkRaw's third argument (timestamp) must be a non-negative real number.");if(!Number.isFinite(s)||s<0)throw new TypeError("addVideoChunkRaw's fourth argument (duration) must be a non-negative real number.");if(a&&"object"!=typeof a)throw new TypeError("addVideoChunkRaw's fifth argument (meta), when provided, must be an object.");if(void 0!==n&&!Number.isFinite(n))throw new TypeError("addVideoChunkRaw's sixth argument (compositionTimeOffset), when provided, must be a real number.");if(h(this,At,Mt).call(this),!r(this,Je).video)throw new Error("No video track declared.");if("object"==typeof r(this,Je).fastStart&&r(this,Ye).samples.length===r(this,Je).fastStart.expectedVideoChunks)throw new Error(`Cannot add more video chunks than specified in 'fastStart' (${r(this,Je).fastStart.expectedVideoChunks}).`);let o=h(this,wt,gt).call(this,r(this,Ye),e,t,i,s,a,n);if("fragmented"===r(this,Je).fastStart&&r(this,Ze)){for(;r(this,at).length>0&&r(this,at)[0].decodeTimestamp<=o.decodeTimestamp;){let e=r(this,at).shift();h(this,bt,yt).call(this,r(this,Ze),e)}o.decodeTimestamp<=r(this,Ze).lastDecodeTimestamp?h(this,bt,yt).call(this,r(this,Ye),o):r(this,st).push(o)}else h(this,bt,yt).call(this,r(this,Ye),o)}addAudioChunk(e,t,i){if(!(e instanceof EncodedAudioChunk))throw new TypeError("addAudioChunk's first argument (sample) must be of type EncodedAudioChunk.");if(t&&"object"!=typeof t)throw new TypeError("addAudioChunk's second argument (meta), when provided, must be an object.");if(void 0!==i&&(!Number.isFinite(i)||i<0))throw new TypeError("addAudioChunk's third argument (timestamp), when provided, must be a non-negative real number.");let s=new Uint8Array(e.byteLength);e.copyTo(s),this.addAudioChunkRaw(s,e.type,i??e.timestamp,e.duration,t)}addAudioChunkRaw(e,t,i,s,a){if(!(e instanceof Uint8Array))throw new TypeError("addAudioChunkRaw's first argument (data) must be an instance of Uint8Array.");if("key"!==t&&"delta"!==t)throw new TypeError("addAudioChunkRaw's second argument (type) must be either 'key' or 'delta'.");if(!Number.isFinite(i)||i<0)throw new TypeError("addAudioChunkRaw's third argument (timestamp) must be a non-negative real number.");if(!Number.isFinite(s)||s<0)throw new TypeError("addAudioChunkRaw's fourth argument (duration) must be a non-negative real number.");if(a&&"object"!=typeof a)throw new TypeError("addAudioChunkRaw's fifth argument (meta), when provided, must be an object.");if(h(this,At,Mt).call(this),!r(this,Je).audio)throw new Error("No audio track declared.");if("object"==typeof r(this,Je).fastStart&&r(this,Ze).samples.length===r(this,Je).fastStart.expectedAudioChunks)throw new Error(`Cannot add more audio chunks than specified in 'fastStart' (${r(this,Je).fastStart.expectedAudioChunks}).`);let n=h(this,wt,gt).call(this,r(this,Ze),e,t,i,s,a);if("fragmented"===r(this,Je).fastStart&&r(this,Ye)){for(;r(this,st).length>0&&r(this,st)[0].decodeTimestamp<=n.decodeTimestamp;){let e=r(this,st).shift();h(this,bt,yt).call(this,r(this,Ye),e)}n.decodeTimestamp<=r(this,Ye).lastDecodeTimestamp?h(this,bt,yt).call(this,r(this,Ze),n):r(this,at).push(n)}else h(this,bt,yt).call(this,r(this,Ze),n)}finalize(){if(r(this,rt))throw new Error("Cannot finalize a muxer more than once.");if("fragmented"===r(this,Je).fastStart){for(let e of r(this,st))h(this,bt,yt).call(this,r(this,Ye),e);for(let e of r(this,at))h(this,bt,yt).call(this,r(this,Ze),e);h(this,St,xt).call(this,!1)}else r(this,Ye)&&h(this,Ct,vt).call(this,r(this,Ye)),r(this,Ze)&&h(this,Ct,vt).call(this,r(this,Ze));let e=[r(this,Ye),r(this,Ze)].filter(Boolean);if("in-memory"===r(this,Je).fastStart){let t;for(let i=0;i<2;i++){let i=F(e,r(this,et)),s=r(this,Ke).measureBox(i);t=r(this,Ke).measureBox(r(this,Xe));let a=r(this,Ke).pos+s+t;for(let e of r(this,tt)){e.offset=a;for(let{data:i}of e.samples)a+=i.byteLength,t+=i.byteLength}if(a<2**32)break;t>=2**32&&(r(this,Xe).largeSize=!0)}let i=F(e,r(this,et));r(this,Ke).writeBox(i),r(this,Xe).size=t,r(this,Ke).writeBox(r(this,Xe));for(let e of r(this,tt))for(let t of e.samples)r(this,Ke).write(t.data),t.data=null}else if("fragmented"===r(this,Je).fastStart){let t=r(this,Ke).pos,i=(e=>I("mfra",null,[...e.map(Ce),ve()]))(e);r(this,Ke).writeBox(i);let s=r(this,Ke).pos-t;r(this,Ke).seek(r(this,Ke).pos-4),r(this,Ke).writeU32(s)}else{let t=r(this,Ke).offsets.get(r(this,Xe)),i=r(this,Ke).pos-t;r(this,Xe).size=i,r(this,Xe).largeSize=i>=2**32,r(this,Ke).patchBox(r(this,Xe));let s=F(e,r(this,et));if("object"==typeof r(this,Je).fastStart){r(this,Ke).seek(r(this,Qe)),r(this,Ke).writeBox(s);let e=t-r(this,Ke).pos;r(this,Ke).writeBox({type:"free",size:e})}else r(this,Ke).writeBox(s)}h(this,zt,Et).call(this),r(this,Ke).finalize(),o(this,rt,!0)}};return Je=new WeakMap,Ke=new WeakMap,Qe=new WeakMap,Xe=new WeakMap,Ye=new WeakMap,Ze=new WeakMap,et=new WeakMap,tt=new WeakMap,it=new WeakMap,st=new WeakMap,at=new WeakMap,rt=new WeakMap,nt=new WeakSet,ot=function(e){if("object"!=typeof e)throw new TypeError("The muxer requires an options object to be passed to its constructor.");if(!(e.target instanceof Ae))throw new TypeError("The target must be provided and an instance of Target.");if(e.video){if(!Ut.includes(e.video.codec))throw new TypeError(`Unsupported video codec: ${e.video.codec}`);if(!Number.isInteger(e.video.width)||e.video.width<=0)throw new TypeError(`Invalid video width: ${e.video.width}. Must be a positive integer.`);if(!Number.isInteger(e.video.height)||e.video.height<=0)throw new TypeError(`Invalid video height: ${e.video.height}. Must be a positive integer.`);const t=e.video.rotation;if("number"==typeof t&&![0,90,180,270].includes(t))throw new TypeError(`Invalid video rotation: ${t}. Has to be 0, 90, 180 or 270.`);if(Array.isArray(t)&&(9!==t.length||t.some((e=>"number"!=typeof e))))throw new TypeError(`Invalid video transformation matrix: ${t.join()}`);if(void 0!==e.video.frameRate&&(!Number.isInteger(e.video.frameRate)||e.video.frameRate<=0))throw new TypeError(`Invalid video frame rate: ${e.video.frameRate}. Must be a positive integer.`)}if(e.audio){if(!Dt.includes(e.audio.codec))throw new TypeError(`Unsupported audio codec: ${e.audio.codec}`);if(!Number.isInteger(e.audio.numberOfChannels)||e.audio.numberOfChannels<=0)throw new TypeError(`Invalid number of audio channels: ${e.audio.numberOfChannels}. Must be a positive integer.`);if(!Number.isInteger(e.audio.sampleRate)||e.audio.sampleRate<=0)throw new TypeError(`Invalid audio sample rate: ${e.audio.sampleRate}. Must be a positive integer.`)}if(e.firstTimestampBehavior&&!jt.includes(e.firstTimestampBehavior))throw new TypeError(`Invalid first timestamp behavior: ${e.firstTimestampBehavior}`);if("object"==typeof e.fastStart){if(e.video){if(void 0===e.fastStart.expectedVideoChunks)throw new TypeError("'fastStart' is an object but is missing property 'expectedVideoChunks'.");if(!Number.isInteger(e.fastStart.expectedVideoChunks)||e.fastStart.expectedVideoChunks<0)throw new TypeError("'expectedVideoChunks' must be a non-negative integer.")}if(e.audio){if(void 0===e.fastStart.expectedAudioChunks)throw new TypeError("'fastStart' is an object but is missing property 'expectedAudioChunks'.");if(!Number.isInteger(e.fastStart.expectedAudioChunks)||e.fastStart.expectedAudioChunks<0)throw new TypeError("'expectedAudioChunks' must be a non-negative integer.")}}else if(![!1,"in-memory","fragmented"].includes(e.fastStart))throw new TypeError("'fastStart' option must be false, 'in-memory', 'fragmented' or an object.");if(void 0!==e.minFragmentDuration&&(!Number.isFinite(e.minFragmentDuration)||e.minFragmentDuration<0))throw new TypeError("'minFragmentDuration' must be a non-negative number.")},ht=new WeakSet,lt=function(){var e;if(r(this,Ke).writeBox((e={holdsAvc:"avc"===r(this,Je).video?.codec,fragmented:"fragmented"===r(this,Je).fastStart}).fragmented?I("ftyp",[A("iso5"),v(512),A("iso5"),A("iso6"),A("mp41")]):I("ftyp",[A("isom"),v(512),A("isom"),e.holdsAvc?A("avc1"):[],A("mp41")])),o(this,Qe,r(this,Ke).pos),"in-memory"===r(this,Je).fastStart)o(this,Xe,V(!1));else if("fragmented"===r(this,Je).fastStart);else{if("object"==typeof r(this,Je).fastStart){let e=h(this,dt,ft).call(this);r(this,Ke).seek(r(this,Ke).pos+e)}o(this,Xe,V(!0)),r(this,Ke).writeBox(r(this,Xe))}h(this,zt,Et).call(this)},dt=new WeakSet,ft=function(){if("object"!=typeof r(this,Je).fastStart)return;let e=0,t=[r(this,Je).fastStart.expectedVideoChunks,r(this,Je).fastStart.expectedAudioChunks];for(let i of t)i&&(e+=8*Math.ceil(2/3*i),e+=4*i,e+=12*Math.ceil(2/3*i),e+=4*i,e+=8*i);return e+=4096,e},ut=new WeakSet,mt=function(){if(r(this,Je).video&&o(this,Ye,{id:1,info:{type:"video",codec:r(this,Je).video.codec,width:r(this,Je).video.width,height:r(this,Je).video.height,rotation:r(this,Je).video.rotation??0,decoderConfig:null},timescale:r(this,Je).video.frameRate??57600,samples:[],finalizedChunks:[],currentChunk:null,firstDecodeTimestamp:void 0,lastDecodeTimestamp:-1,timeToSampleTable:[],compositionTimeOffsetTable:[],lastTimescaleUnits:null,lastSample:null,compactlyCodedChunkTable:[]}),r(this,Je).audio&&(o(this,Ze,{id:r(this,Je).video?2:1,info:{type:"audio",codec:r(this,Je).audio.codec,numberOfChannels:r(this,Je).audio.numberOfChannels,sampleRate:r(this,Je).audio.sampleRate,decoderConfig:null},timescale:r(this,Je).audio.sampleRate,samples:[],finalizedChunks:[],currentChunk:null,firstDecodeTimestamp:void 0,lastDecodeTimestamp:-1,timeToSampleTable:[],compositionTimeOffsetTable:[],lastTimescaleUnits:null,lastSample:null,compactlyCodedChunkTable:[]}),"aac"===r(this,Je).audio.codec)){let e=h(this,pt,ct).call(this,2,r(this,Je).audio.sampleRate,r(this,Je).audio.numberOfChannels);r(this,Ze).info.decoderConfig={codec:r(this,Je).audio.codec,description:e,numberOfChannels:r(this,Je).audio.numberOfChannels,sampleRate:r(this,Je).audio.sampleRate}}},pt=new WeakSet,ct=function(e,t,i){let s=[96e3,88200,64e3,48e3,44100,32e3,24e3,22050,16e3,12e3,11025,8e3,7350].indexOf(t),a=i,r="";r+=e.toString(2).padStart(5,"0"),r+=s.toString(2).padStart(4,"0"),15===s&&(r+=t.toString(2).padStart(24,"0")),r+=a.toString(2).padStart(4,"0");let n=8*Math.ceil(r.length/8);r=r.padEnd(n,"0");let o=new Uint8Array(r.length/8);for(let e=0;e<r.length;e+=8)o[e/8]=parseInt(r.slice(e,e+8),2);return o},wt=new WeakSet,gt=function(e,t,i,s,a,r,n){let o=s/1e6,l=(s-(n??0))/1e6,d=a/1e6,f=h(this,kt,Tt).call(this,o,l,e);return o=f.presentationTimestamp,l=f.decodeTimestamp,r?.decoderConfig&&(null===e.info.decoderConfig?e.info.decoderConfig=r.decoderConfig:Object.assign(e.info.decoderConfig,r.decoderConfig)),{presentationTimestamp:o,decodeTimestamp:l,duration:d,data:t,size:t.byteLength,type:i,timescaleUnitsToNextSample:O(d,e.timescale)}},bt=new WeakSet,yt=function(e,t){"fragmented"!==r(this,Je).fastStart&&e.samples.push(t);const i=O(t.presentationTimestamp-t.decodeTimestamp,e.timescale);if(null!==e.lastTimescaleUnits){let s=O(t.decodeTimestamp,e.timescale,!1),a=Math.round(s-e.lastTimescaleUnits);if(e.lastTimescaleUnits+=a,e.lastSample.timescaleUnitsToNextSample=a,"fragmented"!==r(this,Je).fastStart){let t=M(e.timeToSampleTable);1===t.sampleCount?(t.sampleDelta=a,t.sampleCount++):t.sampleDelta===a?t.sampleCount++:(t.sampleCount--,e.timeToSampleTable.push({sampleCount:2,sampleDelta:a}));const s=M(e.compositionTimeOffsetTable);s.sampleCompositionTimeOffset===i?s.sampleCount++:e.compositionTimeOffsetTable.push({sampleCount:1,sampleCompositionTimeOffset:i})}}else e.lastTimescaleUnits=0,"fragmented"!==r(this,Je).fastStart&&(e.timeToSampleTable.push({sampleCount:1,sampleDelta:O(t.duration,e.timescale)}),e.compositionTimeOffsetTable.push({sampleCount:1,sampleCompositionTimeOffset:i}));e.lastSample=t;let s=!1;if(e.currentChunk){let i=t.presentationTimestamp-e.currentChunk.startTimestamp;if("fragmented"===r(this,Je).fastStart){let a=r(this,Ye)??r(this,Ze);const n=r(this,Je).minFragmentDuration??1;e===a&&"key"===t.type&&i>=n&&(s=!0,h(this,St,xt).call(this))}else s=i>=.5}else s=!0;s&&(e.currentChunk&&h(this,Ct,vt).call(this,e),e.currentChunk={startTimestamp:t.presentationTimestamp,samples:[]}),e.currentChunk.samples.push(t)},kt=new WeakSet,Tt=function(e,t,i){const s="strict"===r(this,Je).firstTimestampBehavior,a=-1===i.lastDecodeTimestamp;if(s&&a&&0!==t)throw new Error(`The first chunk for your media track must have a timestamp of 0 (received DTS=${t}).Non-zero first timestamps are often caused by directly piping frames or audio data from a MediaStreamTrack into the encoder. Their timestamps are typically relative to the age of thedocument, which is probably what you want.\n\nIf you want to offset all timestamps of a track such that the first one is zero, set firstTimestampBehavior: 'offset' in the options.\n`);if("offset"===r(this,Je).firstTimestampBehavior||"cross-track-offset"===r(this,Je).firstTimestampBehavior){let s;void 0===i.firstDecodeTimestamp&&(i.firstDecodeTimestamp=t),s="offset"===r(this,Je).firstTimestampBehavior?i.firstDecodeTimestamp:Math.min(r(this,Ye)?.firstDecodeTimestamp??1/0,r(this,Ze)?.firstDecodeTimestamp??1/0),t-=s,e-=s}if(t<i.lastDecodeTimestamp)throw new Error(`Timestamps must be monotonically increasing (DTS went from ${1e6*i.lastDecodeTimestamp} to ${1e6*t}).`);return i.lastDecodeTimestamp=t,{presentationTimestamp:e,decodeTimestamp:t}},Ct=new WeakSet,vt=function(e){if("fragmented"===r(this,Je).fastStart)throw new Error("Can't finalize individual chunks if 'fastStart' is set to 'fragmented'.");if(e.currentChunk)if(e.finalizedChunks.push(e.currentChunk),r(this,tt).push(e.currentChunk),0!==e.compactlyCodedChunkTable.length&&M(e.compactlyCodedChunkTable).samplesPerChunk===e.currentChunk.samples.length||e.compactlyCodedChunkTable.push({firstChunk:e.finalizedChunks.length,samplesPerChunk:e.currentChunk.samples.length}),"in-memory"!==r(this,Je).fastStart){e.currentChunk.offset=r(this,Ke).pos;for(let t of e.currentChunk.samples)r(this,Ke).write(t.data),t.data=null;h(this,zt,Et).call(this)}else e.currentChunk.offset=0},St=new WeakSet,xt=function(e=!0){if("fragmented"!==r(this,Je).fastStart)throw new Error("Can't finalize a fragment unless 'fastStart' is set to 'fragmented'.");let t=[r(this,Ye),r(this,Ze)].filter((e=>e&&e.currentChunk));if(0===t.length)return;let i=(s=this,a=it,{set _(e){o(s,a,e,n)},get _(){return r(s,a,l)}})._++;var s,a,n,l;if(1===i){let e=F(t,r(this,et),!0);r(this,Ke).writeBox(e)}let d=r(this,Ke).pos,f=ce(i,t);r(this,Ke).writeBox(f);{let e=V(!1),i=0;for(let e of t)for(let t of e.currentChunk.samples)i+=t.size;let s=r(this,Ke).measureBox(e)+i;s>=2**32&&(e.largeSize=!0,s=r(this,Ke).measureBox(e)+i),e.size=s,r(this,Ke).writeBox(e)}for(let e of t){e.currentChunk.offset=r(this,Ke).pos,e.currentChunk.moofOffset=d;for(let t of e.currentChunk.samples)r(this,Ke).write(t.data),t.data=null}let u=r(this,Ke).pos;r(this,Ke).seek(r(this,Ke).offsets.get(f));let m=ce(i,t);r(this,Ke).writeBox(m),r(this,Ke).seek(u);for(let e of t)e.finalizedChunks.push(e.currentChunk),r(this,tt).push(e.currentChunk),e.currentChunk=null;e&&h(this,zt,Et).call(this)},zt=new WeakSet,Et=function(){r(this,Ke)instanceof Ge&&r(this,Ke).flush()},At=new WeakSet,Mt=function(){if(r(this,rt))throw new Error("Cannot add new video or audio chunks after the file has been finalized.")},Wt=l,((a,r,n,o)=>{if(r&&"object"==typeof r||"function"==typeof r)for(let h of i(r))s.call(a,h)||h===n||e(a,h,{get:()=>r[h],enumerable:!(o=t(r,h))||o.enumerable});return a})(e({},"__esModule",{value:!0}),Wt)})();"object"==typeof module&&"object"==typeof module.exports&&Object.assign(module.exports,Mp4Muxer);
+</script>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => t * t * (3 - 2 * t);
+const easeOutBack = a => { const c1 = 1.70158, c3 = c1 + 1, x = a - 1; return 1 + c3 * x * x * x + c1 * x * x; };
+const easeOutCubic = a => 1 - Math.pow(1 - a, 3);
+const TAU = Math.PI * 2;
+const upperBound = (arr, x) => { let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] <= x) lo = m + 1; else hi = m; } return lo; };
+// yields to the event loop without timer throttling, so long jobs keep going in a background tab
+const yieldNow = () => new Promise(r => { const c = new MessageChannel(); c.port1.onmessage = () => r(); c.port2.postMessage(0); });
+
+/* ------------------------------------------------------------------ seeded randomness
+   Every random choice comes from (seed, stream), and nothing reads the clock inside the simulation,
+   so the same song, seed and settings always make the same sculpture: in preview and in export. */
+function hashInt(a, b) {
+  let h = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul((b | 0) + 0x632be5ab, 0xc2b2ae35);
+  h ^= h >>> 16; h = Math.imul(h, 0x7feb352d); h ^= h >>> 15; h = Math.imul(h, 0x846ca68b); h ^= h >>> 16; return h >>> 0;
+}
+function rngFor(seed, stream) {
+  let a = hashInt(seed | 0, stream | 0);
+  return () => { a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+const hash01 = (a, b) => hashInt(a | 0, b) / 4294967296;
+const pickR = (r, arr) => arr[(r() * arr.length) | 0];
+
+/* ------------------------------------------------------------------ settings */
+const S = {
+  look:'auto',
+  seed:1, carve:'pitch', shapes:'mixed', growth:.5, size:.5, embed:.35, melt:.12, symmetry:'none', orient:'aligned', stack:false, mass:.5, detail:128, pitchSens:.5,
+  turn:'stop', turnSpeed:.35, dist:.55, elev:.35, fov:.35, punch:.4, dolly:false, shots:'8', cuts:'splice', follow:.35,
+  pad:5, expQ:'high', variety:.6, colourRate:.4, bgChange:'sections', palShuffle:0, cut:'accent', ink:'auto', inkW:.5, ground:'plinth', shadows:true,
+  saturation:.5, warmth:.5, fps:24, grain:.55, flicker:.45, dust:.5, scratch:.5, splices:true, weave:.4, boil:.5, vignette:.55, chroma:.35, halation:.35, edge:false, quality:.85,
+};
+try { Object.assign(S, JSON.parse(localStorage.getItem('sculpture-settings') || '{}')); } catch (e) {}
+const saveSettings = () => { try { localStorage.setItem('sculpture-settings', JSON.stringify(S)); } catch (e) {} };
+
+/* ------------------------------------------------------------------ palette (the same McLaren poster colours and ladder as Synchromy) */
+const PAL = ['#e3262f','#f6cf1d','#1d3e9e','#f2701f','#2aa84a','#d81b7b','#1aa3c8','#6b2d90','#121015','#f3ecd8','#a3d13b','#ff8fb1','#0f6b5c'];
+function lum(hex) {
+  const c = [1,3,5].map(i => parseInt(hex.substr(i,2),16)/255).map(v => v <= .03928 ? v/12.92 : Math.pow((v+.055)/1.055, 2.4));
+  return .2126*c[0] + .7152*c[1] + .0722*c[2];
+}
+const contrast = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x,y)+.05)/(Math.min(x,y)+.05); };
+const NEUTRALS = ['#121015', '#f3ecd8'];
+const hueOf = hex => { const [r, g, b] = [1,3,5].map(i => parseInt(hex.substr(i,2),16)/255), mx = Math.max(r,g,b), d = mx - Math.min(r,g,b);
+  if (!d) return 0; const h = mx === r ? (g - b) / d % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; return (h * 60 + 360) % 360; };
+const WHEEL = PAL.filter(c => !NEUTRALS.includes(c)).sort((a, b) => hueOf(a) - hueOf(b));
+const GREYS = ['#5c5852', '#a6a094'];
+const EXTRA = ['#00c2a8', '#ff5a36', '#ffd6e0', '#7a4dff', '#c7f000', '#ff2bd6', '#00e0ff', '#b5793a'];
+const TIERS = [
+  { name:'black & white' },
+  { name:'greyscale', greys:true },
+  { name:'greyscale + 1 accent, sometimes', greys:true, accents:1 },
+  { name:'greyscale + 2 accents, sometimes', greys:true, accents:2 },
+  { name:'greyscale, always 1 accent', greys:true, accents:1, always:true },
+  { name:'greyscale, always 2 accents', greys:true, accents:2, always:true },
+  ...Array.from({ length:WHEEL.length - 1 }, (_, i) => ({ name:i + 2 === WHEEL.length ? 'every poster colour' : `${i + 2} neighbouring hues`, hues:i + 2 })),
+  { name:'anything goes', hues:WHEEL.length, extra:true },
+];
+const tierOf = v => TIERS[Math.min(TIERS.length - 1, Math.floor(v * TIERS.length))];
+const RGB_CACHE = new Map();
+const hexRGB = h => { let v = RGB_CACHE.get(h); if (!v) { v = [1,3,5].map(i => parseInt(h.substr(i,2),16)/255); RGB_CACHE.set(h, v); } return v; };
+
+function makeTheme(r) {
+  const t = tierOf(S.variety), s0 = (r() * WHEEL.length) | 0;
+  const hues = k => Array.from({ length:k }, (_, i) => WHEEL[(s0 + i) % WHEEL.length]);
+  const accents = t.accents ? hues(t.accents) : [];
+  return { tier:t, accents, theme:[...new Set([...NEUTRALS, ...(t.greys ? GREYS : []), ...accents, ...(t.hues ? hues(t.hues) : []), ...(t.extra ? EXTRA : [])])] };
+}
+function colourAgainst(r, bg, avoid, pool) {
+  const ok = pool.filter(c => c !== bg && contrast(c, bg) > 1.9 && !avoid.includes(c));
+  return ok.length ? pickR(r, ok) : (lum(bg) > .3 ? '#121015' : '#f3ecd8');
+}
+// one palette: ground, plinth band, the colours new pieces are cut from, and what a carved face reveals
+function nextPalette(prev, r, keepGround) {
+  const keep = prev && prev.tier === tierOf(S.variety) && r() >= .1 + S.variety * .9;
+  const th = keep ? prev : makeTheme(r);
+  const P = { tier:th.tier, accents:th.accents, theme:th.theme };
+  const t = P.tier, pool = P.theme, mono = pool.filter(c => !P.accents.includes(c));
+  const bgs = (t.hues ? pool : mono).filter(c => c !== (prev && prev.bg));
+  const coloured = bgs.filter(c => !NEUTRALS.includes(c));
+  P.bg = (t.hues && t.hues <= 4 && r() < .75 && coloured.length ? pickR(r, coloured) : null) || pickR(r, bgs) || pickR(r, pool);
+  if (keepGround && prev) P.bg = prev.bg;   // the ground holds; only the pieces' colours move
+  const bandPool = t.always ? mono : pool;
+  const bands = bandPool.filter(c => c !== P.bg && contrast(c, P.bg) > 1.2);
+  P.band = pickR(r, bands.length ? bands : bandPool.filter(c => c !== P.bg)) || P.bg;
+  if (keepGround && prev) P.band = prev.band;
+  const useAccent = P.accents.length && (t.always || r() < .5);
+  P.multi = !!(useAccent && P.accents.length > 1 && r() < .5);
+  P.colPool = useAccent ? P.accents : t.accents ? mono : pool;
+  const bars = P.colPool.filter(c => c !== P.bg && c !== P.band && contrast(c, P.bg) > 1.6);
+  P.barCol = bars.length ? pickR(r, bars) : useAccent ? P.accents[0] : colourAgainst(r, P.bg, [P.band], P.colPool);
+  const cols = [];
+  for (let i = 0; i < 5; i++) cols.push(useAccent ? P.accents[i % P.accents.length] : colourAgainst(r, P.bg, i ? [cols[i-1], P.band] : [P.band], P.colPool));
+  P.cols = cols;
+  P.unified = r() < .85 - .6 * S.variety;
+  // the cut colour: whichever colour in reach stands out most against everything the pieces are made of
+  const used = [P.barCol, ...P.cols];
+  let best = '#f3ecd8', bs = -1;
+  for (const c of [...new Set([...P.theme, ...WHEEL])]) {
+    if (used.includes(c)) continue;
+    let m = Infinity; for (const k of used) m = Math.min(m, contrast(c, k));
+    if (!t.hues && WHEEL.includes(c) && !P.accents.includes(c)) m *= .6;   // greyscale tiers keep cuts in the family
+    if (m > bs) { bs = m; best = c; }
+  }
+  P.cutAccent = best;
+  return P;
+}
+const inkFor = P => S.ink === 'black' ? '#121015' : S.ink === 'cream' ? '#f3ecd8'
+  : contrast('#121015', P.bg) >= contrast('#f3ecd8', P.bg) ? '#121015' : '#f3ecd8';
+
+/* ------------------------------------------------------------------ audio */
+const A = { ctx:null, buffer:null, src:null, t0:0, offset:0, playing:false, name:'' };
+function initAudio() { if (A.ctx) { A.ctx.resume(); return; } A.ctx = new (window.AudioContext || window.webkitAudioContext)(); }
+const cleanName = n => n.split('/').pop().replace(/\.[a-z0-9]+$/i,'').replace(/[_]+/g,' ').replace(/\s+\.\d+$/,'').trim();
+
+async function loadArrayBuffer(ab, name, autoplay = true) {
+  initAudio(); pause();
+  setStatus('decoding…');
+  let buf;
+  try { buf = await A.ctx.decodeAudioData(ab); } catch (e) { setStatus('could not decode that file'); return; }
+  const an = await analyseTrack(buf, p => setStatus(`listening… ${(p * 100) | 0}%`));
+  setStatus('carving…'); await yieldNow();
+  A.buffer = buf; A.name = cleanName(name); A.offset = 0; AN = an;
+  document.body.classList.add('loaded');
+  rebuildAll();
+  setStatus('');
+  if (autoplay) play();
+  updateUI();
+}
+function play() {
+  if (!A.buffer) return;
+  initAudio();
+  if (A.playing) return;
+  const s = A.ctx.createBufferSource(); s.buffer = A.buffer; s.connect(A.ctx.destination);
+  s.start(0, A.offset); A.t0 = A.ctx.currentTime - A.offset; A.src = s; A.playing = true;
+  s.onended = () => { if (A.src === s) { A.playing = false; A.src = null; A.offset = 0; dirty = true; updateUI(); } };
+  updateUI();
+}
+function pause() {
+  if (!A.playing) return;
+  A.offset = curTime(); const s = A.src; A.src = null; s.stop(); A.playing = false; updateUI();
+}
+let EXPORT = null;
+const curTime = () => A.playing ? A.ctx.currentTime - A.t0 : A.offset;
+const frameOf = t => Math.floor(t * S.fps + 1e-6);
+function seek(t) {
+  if (!A.buffer) return;
+  const was = A.playing; if (was) pause();
+  A.offset = clamp(t, 0, A.buffer.duration - .05);
+  if (was) play();
+  V.seekFi = was ? frameOf(A.offset) : Math.floor(performance.now() / 1000 * S.fps);
+  dirty = true;
+}
+const V = { seekFi:null };
+
+/* ------------------------------------------------------------------ offline analysis: the whole song, once, on load */
+function fft(re, im, inv) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit;
+    if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (inv ? 2 : -2) * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang), h = len >> 1;
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < h; k++) {
+        const a = i + k, b = a + h, xr = re[b] * cr - im[b] * ci, xi = re[b] * ci + im[b] * cr;
+        re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+        const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+      }
+    }
+  }
+}
+function pct(arr, p) {
+  const step = Math.max(1, Math.floor(arr.length / 4000)), s = [];
+  for (let i = 0; i < arr.length; i += step) s.push(arr[i]);
+  s.sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(p * (s.length - 1)))] || 0;
+}
+
+async function analyseTrack(buf, progress) {
+  const sr = buf.sampleRate, len = buf.length, nc = buf.numberOfChannels, RATE = 60;
+  const mono = new Float32Array(len);
+  for (let c = 0; c < nc; c++) { const d = buf.getChannelData(c); for (let i = 0; i < len; i++) mono[i] += d[i] / nc; }
+  const hop = sr / RATE, n = Math.max(8, Math.floor(len / hop)), N = 2048, half = N / 2, binHz = sr / N;
+  const win = new Float32Array(N); for (let i = 0; i < N; i++) win[i] = .5 - .5 * Math.cos(TAU * i / (N - 1));
+  const re = new Float64Array(N), im = new Float64Array(N), prevLog = new Float32Array(half);
+  const EDGES = [30, 80, 160, 320, 640, 1280, 2560, 5120, 12000];
+  const bandOf = new Int8Array(half).fill(-1), pcOf = new Int8Array(half).fill(-1);
+  for (let k = 1; k < half; k++) {
+    const f = k * binHz;
+    for (let b = 0; b < 8; b++) if (f >= EDGES[b] && f < EDGES[b + 1]) bandOf[k] = b;
+    if (f >= 80 && f <= 4000) pcOf[k] = ((Math.round(12 * Math.log2(f / 440)) + 69) % 12 + 12) % 12;
+  }
+  const bandE = Array.from({ length:8 }, () => new Float32Array(n)), bandF = Array.from({ length:8 }, () => new Float32Array(n));
+  const rms = new Float32Array(n), cent = new Float32Array(n), flat = new Float32Array(n), chroma = new Float32Array(n * 12);
+  const kF0 = Math.ceil(100 / binHz), kF1 = Math.min(half - 1, Math.floor(8000 / binHz)), kCnt = kF1 - kF0 + 1;
+  for (let i = 0; i < n; i++) {
+    const c0 = Math.round(i * hop) - half; let ss = 0;
+    for (let j = 0; j < N; j++) { const s = mono[c0 + j] || 0; ss += s * s; re[j] = s * win[j]; im[j] = 0; }
+    rms[i] = Math.sqrt(ss / N);
+    fft(re, im, false);
+    let cs = 0, cw = 0, lg = 0, am = 0;
+    for (let k = 1; k < half; k++) {
+      const m = Math.sqrt(re[k] * re[k] + im[k] * im[k]) * 4 / N;
+      const l = Math.log1p(m * 100), dl = l - prevLog[k]; prevLog[k] = l;
+      const b = bandOf[k]; if (b >= 0) { bandE[b][i] += m * m; if (dl > 0) bandF[b][i] += dl; }
+      cs += m * k; cw += m;
+      if (k >= kF0 && k <= kF1) { lg += Math.log(m + 1e-9); am += m; }
+      const pc = pcOf[k]; if (pc >= 0) chroma[i * 12 + pc] += m * m;
+    }
+    cent[i] = cw > 1e-9 ? cs / cw * binHz : 0;
+    flat[i] = am > 1e-9 ? Math.exp(lg / kCnt) / (am / kCnt) : 0;
+    if (i % 300 === 0) { progress(i / n * .65); await yieldNow(); }
+  }
+  for (let b = 0; b < 8; b++) {
+    const e = bandE[b]; for (let i = 0; i < n; i++) e[i] = Math.sqrt(e[i]);
+    const p = pct(e, .98) || 1e-9; for (let i = 0; i < n; i++) e[i] = Math.min(1, e[i] / p);
+    const f = bandF[b], q = pct(f, .95) || 1e-9; for (let i = 0; i < n; i++) f[i] /= q;
+  }
+  const rp = pct(rms, .99) || 1e-9, rmsN = rms.map(v => Math.min(1, v / rp));
+  for (let i = 0; i < n; i++) cent[i] = clamp(Math.log2(Math.max(cent[i], 100) / 100) / Math.log2(80), 0, 1);
+
+  // onsets per band: peaks of spectral flux over an adaptive threshold, at least 50 ms apart
+  const onsets = [];
+  for (let b = 0; b < 8; b++) {
+    const f = bandF[b], pre = new Float64Array(n + 1);
+    for (let i = 0; i < n; i++) pre[i + 1] = pre[i] + f[i];
+    let last = -1e9;
+    for (let i = 3; i < n - 3; i++) {
+      const v = f[i];
+      if (v < f[i-1] || v < f[i+1] || v < f[i-2] || v < f[i+2] || v < f[i-3] || v < f[i+3]) continue;
+      const a = Math.max(0, i - 12), z = Math.min(n, i + 13), mean = (pre[z] - pre[a]) / (z - a);
+      if (v < mean * 1.5 + .25 || i - last < 3) continue;
+      last = i; onsets.push({ t:i / RATE, band:b, s:clamp((v - mean) / 1.5, 0, 1) });
+    }
+  }
+  onsets.sort((a, b) => a.t - b.t);
+  progress(.68); await yieldNow();
+  const pitch = await pitchTrack(mono, sr, p => progress(.68 + p * .24));
+
+  // tempo and beats (autocorrelation, then Ellis-style dynamic programming)
+  const { beats, P } = trackBeats(bandF, n, RATE);
+  const lowAt = t => { const i = clamp(Math.round(t * RATE), 0, n - 1); return bandF[0][i] + bandF[1][i]; };
+  let phase = 0, pb = -1;
+  for (let p = 0; p < 4; p++) { let s = 0; for (let k = p; k < beats.length; k += 4) s += lowAt(beats[k]); if (s > pb) { pb = s; phase = p; } }
+  const downbeats = beats.filter((_, k) => ((k - phase) % 4 + 4) % 4 === 0);
+  const beatLen = P / RATE;
+
+  // chroma per beat → harmonic changes
+  const beatPc = new Int8Array(beats.length), beatDist = new Float32Array(beats.length);
+  let prev = null;
+  for (let k = 0; k < beats.length; k++) {
+    const f0 = clamp(Math.round(beats[k] * RATE), 0, n - 1), f1 = clamp(Math.round((beats[k + 1] ?? beats[k] + beatLen) * RATE), f0 + 1, n);
+    const v = new Float32Array(12);
+    for (let f = f0; f < f1; f++) for (let c = 0; c < 12; c++) v[c] += chroma[f * 12 + c];
+    let nn = 0, am = 0; for (let c = 0; c < 12; c++) { nn += v[c] * v[c]; if (v[c] > v[am]) am = c; }
+    nn = Math.sqrt(nn) || 1; for (let c = 0; c < 12; c++) v[c] /= nn;
+    beatPc[k] = am;
+    if (prev) { let d = 0; for (let c = 0; c < 12; c++) d += v[c] * prev[c]; beatDist[k] = 1 - d; }
+    prev = v;
+  }
+
+  // sections: big changes in 4 s mean loudness, at least 12 s apart, snapped to the nearest downbeat
+  const sw = RATE * 2, env = new Float32Array(n); { let acc = 0;
+    for (let i = 0; i < n + sw; i++) { if (i < n) acc += rms[i]; if (i - sw * 2 >= 0) acc -= rms[i - sw * 2]; const k = i - sw; if (k >= 0 && k < n) env[k] = acc; } }
+  let emax = 1e-9; for (const v of env) emax = Math.max(emax, v); for (let i = 0; i < n; i++) env[i] /= emax;
+  const w = RATE * 4, epre = new Float64Array(n + 1); for (let i = 0; i < n; i++) epre[i + 1] = epre[i] + env[i];
+  const nov = new Float32Array(n);
+  for (let i = w; i < n - w; i++) nov[i] = Math.abs((epre[i + w] - epre[i]) - (epre[i] - epre[i - w])) / w;
+  const sections = [0];
+  for (let i = w; i < n - w; i++) {
+    if (nov[i] < .14) continue;
+    let isMax = true; for (let j = i - w; j < i + w; j++) if (nov[j] > nov[i]) { isMax = false; break; }
+    if (!isMax || i / RATE - sections[sections.length - 1] <= 12) continue;
+    let t = i / RATE; const d = downbeats[clamp(upperBound(downbeats, t) - 1, 0, downbeats.length - 1)];
+    if (d !== undefined && Math.abs(d - t) < 1.6) t = d;
+    if (t - sections[sections.length - 1] > 8) sections.push(t);
+  }
+  // a look per section: quiet → lines or halftone, loudest → cut paper, the rest take turns
+  const means = sections.map((t, k) => { const a = Math.floor(t * RATE), b = Math.floor((sections[k + 1] ?? n / RATE) * RATE);
+    let s = 0; for (let i = a; i < b; i++) s += env[i]; return s / Math.max(1, b - a); });
+  const loudest = means.indexOf(Math.max(...means)), cycle = ['toon', 'cutpaper', 'clay', 'scratch', 'toon', 'halftone'];
+  let alt = 0, calm = 0;
+  const sectionLooks = means.map((m, k) => m < .32 ? (calm++ % 2 ? 'halftone' : 'lines') : (k === loudest || m > .78) ? 'cutpaper' : cycle[alt++ % cycle.length]);
+  progress(1);
+  return { rate:RATE, n, dur:len / sr, rms:rmsN, cent, flat, bandE, onsets, pitch, beats, downbeats, bpm:60 * RATE / P, beatLen,
+    sections, sectionLooks, beatPc, beatDist };
+}
+
+// McLeod pitch method on a half-rate mono copy, 30 times a second
+async function pitchTrack(mono, sr, progress) {
+  const sr2 = sr / 2, len2 = mono.length >> 1, x = new Float32Array(len2);
+  for (let i = 0; i < len2; i++) x[i] = .5 * (mono[2 * i] + mono[2 * i + 1]);
+  const PRATE = 30, hop = sr2 / PRATE, W = 2048, NF = 4096, n = Math.max(1, Math.floor(len2 / hop));
+  const minLag = Math.floor(sr2 / 1400), maxLag = Math.min(W / 2, Math.ceil(sr2 / 55));
+  const re = new Float64Array(NF), im = new Float64Array(NF), sq = new Float64Array(W + 1), nsdf = new Float32Array(maxLag + 2);
+  const hz = new Float32Array(n), clar = new Float32Array(n), amp = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const c0 = Math.round(i * hop) - W / 2;
+    re.fill(0); im.fill(0);
+    for (let j = 0; j < W; j++) { const s = x[c0 + j] || 0; re[j] = s; sq[j + 1] = sq[j] + s * s; }
+    amp[i] = Math.sqrt(sq[W] / W);
+    if (sq[W] > 1e-6) {
+      fft(re, im, false);
+      for (let k = 0; k < NF; k++) { re[k] = re[k] * re[k] + im[k] * im[k]; im[k] = 0; }
+      fft(re, im, true);
+      for (let tau = 0; tau <= maxLag + 1; tau++) { const m = sq[W - tau] + (sq[W] - sq[tau]); nsdf[tau] = m > 0 ? 2 * re[tau] / NF / m : 0; }
+      let tau = 1; while (tau < maxLag && nsdf[tau] > 0) tau++;
+      const peaks = [];
+      while (tau < maxLag) {
+        while (tau < maxLag && nsdf[tau] <= 0) tau++;
+        let pt = -1, pv = -1;
+        while (tau < maxLag && nsdf[tau] > 0) { if (nsdf[tau] > pv) { pv = nsdf[tau]; pt = tau; } tau++; }
+        if (pt > 0) peaks.push(pt);
+      }
+      let gmax = 0; for (const p of peaks) gmax = Math.max(gmax, nsdf[p]);
+      let best = -1; for (const p of peaks) if (p >= minLag && nsdf[p] >= .9 * gmax) { best = p; break; }
+      if (best > 0) {
+        const a = nsdf[best - 1], b = nsdf[best], c = nsdf[best + 1], den = a - 2 * b + c;
+        const d = den ? clamp(.5 * (a - c) / den, -.5, .5) : 0;
+        hz[i] = sr2 / (best + d); clar[i] = b - .25 * (a - c) * d;
+      }
+    }
+    if (i % 200 === 0) { progress(i / n); await yieldNow(); }
+  }
+  return { hz, clar, amp, rate:PRATE };
+}
+
+function trackBeats(bandF, n, RATE) {
+  const fw = [1.3, 1.3, 1, 1, .8, .7, .6, .5], raw = new Float32Array(n);
+  for (let b = 0; b < 8; b++) for (let i = 0; i < n; i++) raw[i] += fw[b] * bandF[b][i];
+  const pre = new Float64Array(n + 1); for (let i = 0; i < n; i++) pre[i + 1] = pre[i] + raw[i];
+  const e = new Float32Array(n); let s2 = 0;
+  for (let i = 0; i < n; i++) { const a = Math.max(0, i - 30), z = Math.min(n, i + 31); e[i] = Math.max(0, raw[i] - (pre[z] - pre[a]) / (z - a)); s2 += e[i] * e[i]; }
+  const sd = Math.sqrt(s2 / n) || 1; for (let i = 0; i < n; i++) e[i] /= sd;
+  let best = 30, bv = -1; const ac = new Float32Array(80);
+  for (let L = 18; L <= 75; L++) {
+    let s = 0; for (let i = L; i < n; i++) s += e[i] * e[i - L];
+    s = s / Math.max(1, n - L) * Math.exp(-.5 * Math.pow(Math.log2(L / 30) / .9, 2)); ac[L] = s;
+    if (s > bv) { bv = s; best = L; }
+  }
+  let P = best;
+  if (best > 18 && best < 75) { const a = ac[best - 1], b = ac[best], c = ac[best + 1], den = a - 2 * b + c; if (den) P += clamp(.5 * (a - c) / den, -.5, .5); }
+  const score = new Float32Array(n), back = new Int32Array(n).fill(-1), lo = Math.round(2 * P), hi = Math.max(1, Math.round(P / 2));
+  for (let i = 0; i < n; i++) {
+    let bs = -Infinity, bj = -1;
+    for (let j = Math.max(0, i - lo); j <= i - hi; j++) { const v = score[j] - 100 * Math.pow(Math.log((i - j) / P), 2); if (v > bs) { bs = v; bj = j; } }
+    if (bj >= 0 && bs > 0) { score[i] = e[i] + bs; back[i] = bj; } else score[i] = e[i];
+  }
+  let end = n - 1, es = -Infinity;
+  for (let i = Math.max(0, n - Math.round(2 * P)); i < n; i++) if (score[i] > es) { es = score[i]; end = i; }
+  let fr = []; for (let i = end; i >= 0; i = back[i]) fr.push(i); fr.reverse();
+  if (fr.length < 4) { fr = []; for (let f = 0; f < n; f += P) fr.push(f); }
+  // fill gaps and run the grid out to both ends of the song
+  const filled = [];
+  for (let f = fr[0] - P; f >= 0; f -= P) filled.unshift(f);
+  for (let k = 0; k < fr.length; k++) {
+    if (k) { const gap = fr[k] - fr[k - 1], m = Math.round(gap / P); if (m > 1) for (let j = 1; j < m; j++) filled.push(fr[k - 1] + gap * j / m); }
+    filled.push(fr[k]);
+  }
+  for (let f = fr[fr.length - 1] + P; f < n; f += P) filled.push(f);
+  return { beats:filled.map(f => f / RATE), P };
+}
+
+// pitched notes: a note starts when a clear pitch holds for 100 ms, and lasts while it stays
+function buildNotes(an) {
+  if (an.fakeNotes) return an.fakeNotes;
+  const { hz, clar, amp, rate } = an.pitch, n = hz.length;
+  const thr = lerp(.9, .62, S.pitchSens), floor = pct(amp, .9) * .12, ref = pct(amp, .95) || 1e-9;
+  const notes = []; let cur = null, cand = -1, cnt = 0, cs = 0;
+  const close = () => { if (cur) { cur.dur = (cur.last + 1) / rate - cur.t; cur.amp = clamp(cur.as / Math.max(1, cur.k) / ref, 0, 1); notes.push(cur); cur = null; } };
+  for (let i = 0; i < n; i++) {
+    if (clar[i] >= thr && amp[i] > floor && hz[i] >= 55 && hz[i] <= 1400) {
+      const m = Math.round(69 + 12 * Math.log2(hz[i] / 440));
+      if (m === cand) cnt++; else { cand = m; cnt = 1; cs = i; }
+      if (cur && cur.midi !== m && i - cur.last > 2) close();
+      if (cnt >= 3 && (!cur || cur.midi !== m)) { close(); cur = { t:cs / rate, midi:m, last:i, as:0, k:0 }; }
+      if (cur && cur.midi === m) { cur.last = i; cur.as += amp[i]; cur.k++; }
+    } else { cand = -1; cnt = 0; if (cur && i - cur.last > 2) close(); }
+  }
+  close();
+  return notes;
+}
+
+// before a song is loaded: a made-up 120 bpm bar pattern, so the machine has something to carve
+const DEMO_LEN = 22;
+function fakeAnalysis() {
+  const RATE = 60, dur = DEMO_LEN, n = dur * RATE, bl = .5;
+  const rms = new Float32Array(n).fill(.55), cent = new Float32Array(n), flat = new Float32Array(n).fill(.2);
+  for (let i = 0; i < n; i++) cent[i] = .5 + .25 * Math.sin(i / RATE * .7);
+  const bandE = Array.from({ length:8 }, () => new Float32Array(n).fill(.5));
+  const beats = [], onsets = [], notes = [], beatPc = [], beatDist = [];
+  const mel = [60, 64, 67, 72, 71, 67, 64, 62, 57, 60, 65, 69];
+  for (let k = 0, t = 0; t < dur; k++, t += bl) {
+    beats.push(t); beatPc.push(mel[k % 12] % 12); beatDist.push(k % 8 === 0 ? .5 : .05);
+    if (k % 4 === 0) onsets.push({ t, band:0, s:.95 });
+    if (k % 4 === 2) onsets.push({ t, band:1, s:.75 });
+    if (k % 2 === 1) onsets.push({ t, band:2, s:.6 });
+    if (k % 4 === 3) onsets.push({ t:t + bl / 2, band:3, s:.45 });
+    onsets.push({ t:t + bl / 2, band:6, s:.55 }, { t, band:7, s:.4 });
+    if (k % 2 === 0) notes.push({ t:t + bl / 4, dur:bl * .8, midi:mel[(k / 2) % 12] + (k % 8 < 4 ? 0 : 12), amp:.6 });
+  }
+  onsets.sort((a, b) => a.t - b.t);
+  return { demo:true, rate:RATE, n, dur, rms, cent, flat, bandE, onsets, fakeNotes:notes, beats, downbeats:beats.filter((_, k) => k % 4 === 0),
+    bpm:120, beatLen:bl, sections:[0, dur / 2], sectionLooks:['toon', 'cutpaper'], beatPc, beatDist };
+}
+
+/* ------------------------------------------------------------------ events: what the song asks the sculptor to do */
+let AN = null, EV = [], PRIMS = [], KICKS = Object.assign([], { ts:[] }), PALS = [], SHOTS = [], SHOT_T = [], CUTS = [];
+const SIM = { K:0, sym:0, t0s:new Float64Array(0), ends:new Float64Array(0), cx:[0], cy:[0], cz:[0], cw:[0], nAdd:0, nSub:0, mass:0 };
+const fr = (an, t) => clamp(Math.round(t * an.rate), 0, an.n - 1);
+
+function buildEvents(an) {
+  const g = S.growth, gapA = lerp(.5, .08, g), thrA = lerp(.55, .04, g), gapS = lerp(.8, .14, g);
+  const end = an.dur - 8 * an.beatLen, ev = [], inverse = S.carve === 'inverse';
+  const animA = clamp(an.beatLen * .9, .25, .8);
+  // percussive onsets: lows and low-mids, plus anything noisy enough to be a drum
+  const perc = [];
+  for (const o of an.onsets) if (o.band <= 3 || (o.band <= 5 && an.flat[fr(an, o.t)] > .45)) {
+    const p = perc[perc.length - 1];
+    if (p && o.t - p.t < .03) { if (o.s > p.s) perc[perc.length - 1] = o; } else perc.push(o);
+  }
+  KICKS = perc.filter(o => o.band <= 1 && o.s > .2).map(o => ({ t:o.t, s:o.s }));
+  KICKS.ts = KICKS.map(k => k.t);
+  let last = -1e9;
+  for (const o of perc) {
+    if (o.t > end || o.s < thrA || o.t - last < gapA) continue;
+    last = o.t; const f = fr(an, o.t);
+    if (!inverse) ev.push({ t:o.t, kind:'add', band:o.band, s:o.s, energy:an.bandE[o.band][f], cent:an.cent[f], animDur:animA });
+    else ev.push({ t:o.t, kind:'drill', band:o.band, fromBand:true, s:o.s, dur:.35 });
+  }
+  last = -1e9;
+  if (S.carve === 'pitch' || inverse) for (const nt of buildNotes(an)) {
+    if (nt.t > end || nt.t - last < gapS) continue;
+    last = nt.t;
+    const pc = ((nt.midi % 12) + 12) % 12, oct = Math.floor(nt.midi / 12) - 1;
+    if (!inverse) ev.push({ t:nt.t, kind:'drill', pc, oct, s:nt.amp, dur:nt.dur });
+    else { const band = clamp(Math.floor((nt.midi - 36) / 8), 0, 7), f = fr(an, nt.t);
+      ev.push({ t:nt.t, kind:'add', clock:true, pc, oct, band, s:nt.amp, energy:an.bandE[band][f], cent:an.cent[f], animDur:clamp(Math.min(nt.dur, an.beatLen), .25, .8) }); }
+  }
+  if (S.carve === 'hats') for (const o of an.onsets) {
+    if (o.band < 6 || o.t > end || o.s < thrA || o.t - last < Math.max(gapS * .4, .07)) continue;
+    last = o.t; ev.push({ t:o.t, kind:'punch', s:o.s });
+  }
+  if (S.carve === 'offbeat') for (let i = 0; i + 1 < an.beats.length; i++) {
+    const tb = (an.beats[i] + an.beats[i + 1]) / 2; if (tb > end) break;
+    if (g < .5 && i % 2) continue;
+    const f = fr(an, tb); if (an.rms[f] < .12) continue;
+    ev.push({ t:tb, kind:'drill', pc:an.beatPc[i], oct:3 + Math.round(an.cent[f] * 3), s:an.rms[f], dur:an.beatLen * .45 });
+  }
+  if (S.carve === 'chords') { const thr = lerp(.35, .1, g);
+    for (let k = 1; k < an.beats.length; k++) {
+      const t = an.beats[k];
+      if (t > end || an.beatDist[k] < thr || t - last < an.beatLen * 1.9) continue;
+      last = t; ev.push({ t, kind:'slide', pc:an.beatPc[k], s:clamp(an.beatDist[k] * 2, 0, 1) });
+    } }
+  ev.sort((a, b) => a.t - b.t);
+  ev.forEach((e, i) => { e.idx = i; });
+  return ev;
+}
+
+/* ------------------------------------------------------------------ geometry: signed distance primitives, mirrored exactly on the GPU */
+// types: 0 box · 1 rounded box · 2 sphere · 3 cylinder · 4 capsule · 5 octahedron · 6 prism · 7 torus
+const BOX = 1.6, FLOOR_Y = -1.25;
+function sdBoxJS(x, y, z, bx, by, bz) {
+  const qx = Math.abs(x) - bx, qy = Math.abs(y) - by, qz = Math.abs(z) - bz;
+  const mx = Math.max(qx, 0), my = Math.max(qy, 0), mz = Math.max(qz, 0);
+  return Math.sqrt(mx * mx + my * my + mz * mz) + Math.min(Math.max(qx, Math.max(qy, qz)), 0);
+}
+function sdPrimJS(type, x, y, z, s) {
+  switch (type) {
+    case 0: return sdBoxJS(x, y, z, s[0], s[1], s[2]);
+    case 1: { const r = .3 * Math.min(s[0], s[1], s[2]); return sdBoxJS(x, y, z, s[0] - r, s[1] - r, s[2] - r) - r; }
+    case 2: return Math.sqrt(x * x + y * y + z * z) - s[0];
+    case 3: { const dx = Math.sqrt(x * x + z * z) - s[0], dy = Math.abs(y) - s[1], mx = Math.max(dx, 0), my = Math.max(dy, 0);
+      return Math.min(Math.max(dx, dy), 0) + Math.sqrt(mx * mx + my * my); }
+    case 4: { const yy = y - clamp(y, -s[1], s[1]); return Math.sqrt(x * x + yy * yy + z * z) - s[0]; }
+    case 5: return (Math.abs(x) + Math.abs(y) + Math.abs(z) - s[0]) * .57735027;
+    case 6: { const qx = Math.abs(x), qz = Math.abs(z); return Math.max(qz - s[1], Math.max(qx * .866025 + y * .5, -y) - s[0] * .5); }
+    default: { const qx = Math.sqrt(x * x + z * z) - s[0]; return Math.sqrt(qx * qx + y * y) - s[1]; }
+  }
+}
+function boundOf(type, s) {
+  switch (type) {
+    case 0: case 1: return Math.sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
+    case 2: case 5: return s[0];
+    case 3: return Math.sqrt(s[0] * s[0] + s[1] * s[1]);
+    case 4: return s[0] + s[1];
+    case 6: return Math.sqrt(1.44 * s[0] * s[0] + s[1] * s[1]);
+    default: return s[0] + s[1];
+  }
+}
+// how far a piece reaches along a (local) direction: used to perch it on the surface
+function extentAlong(type, s, n) {
+  const ax = Math.abs(n[0]), ay = Math.abs(n[1]), az = Math.abs(n[2]), sxz = Math.sqrt(Math.max(0, 1 - ay * ay));
+  switch (type) {
+    case 0: case 1: return ax * s[0] + ay * s[1] + az * s[2];
+    case 2: return s[0];
+    case 3: return s[0] * sxz + s[1] * ay;
+    case 4: return s[0] + s[1] * ay;
+    case 5: return s[0] * Math.max(ax, ay, az);
+    case 6: return Math.max(ax * s[0] * .8, ay * s[0] * .6, az * s[1]);
+    default: return s[0] * sxz + s[1];
+  }
+}
+const sminJS = (a, b, k) => { if (k <= 0) return Math.min(a, b); const h = Math.max(k - Math.abs(a - b), 0) / k; return Math.min(a, b) - h * h * k * .25; };
+const smaxJS = (a, b, k) => -sminJS(-a, -b, k);
+// quaternions [x, y, z, w]; qrot rotates v by q, exactly like the shader
+const L3 = [0, 0, 0];
+function qrot(q, x, y, z, out) {
+  const qx = q[0], qy = q[1], qz = q[2], w = q[3];
+  const cx = qy * z - qz * y + w * x, cy = qz * x - qx * z + w * y, cz = qx * y - qy * x + w * z;
+  out[0] = x + 2 * (qy * cz - qz * cy); out[1] = y + 2 * (qz * cx - qx * cz); out[2] = z + 2 * (qx * cy - qy * cx); return out;
+}
+const qAxis = (x, y, z, a) => { const s = Math.sin(a / 2); return [x * s, y * s, z * s, Math.cos(a / 2)]; };
+const qMul = (a, b) => [a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1], a[3]*b[1] - a[0]*b[2] + a[1]*b[3] + a[2]*b[0],
+  a[3]*b[2] + a[0]*b[1] - a[1]*b[0] + a[2]*b[3], a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2]];
+const qConj = q => [-q[0], -q[1], -q[2], q[3]];
+const vlen = v => Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+const vnorm = v => { const l = vlen(v) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
+function qFromTo(u, v) {
+  const d = u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+  if (d < -.9999) return Math.abs(u[0]) < .9 ? [1, 0, 0, 0] : [0, 0, 1, 0];
+  const c = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+  const q = [c[0], c[1], c[2], 1 + d], l = Math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+  return q.map(x => x / l);
+}
+const dirVec = (az, el) => [Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)];
+
+// symmetry: space is folded before the sculpture is read, so one piece shows up in every mirror
+const FQ = [0, 0, 0];
+function foldJS(x, y, z) {
+  const n = SIM.sym;
+  if (n === 1) x = Math.abs(x);
+  else if (n >= 2) {
+    const sec = TAU / n; let a = Math.atan2(z, x) + sec / 2; a = a - Math.floor(a / sec) * sec - sec / 2; a = Math.abs(a);
+    const r = Math.sqrt(x * x + z * z); x = r * Math.cos(a); z = r * Math.sin(a);
+  }
+  FQ[0] = x; FQ[1] = y; FQ[2] = z; return FQ;
+}
+// the sculpture so far (first n pieces, at full size), at a point in folded space
+function sceneD(x, y, z, n) {
+  let d = 1e3; const K = SIM.K;
+  for (let i = 0; i < n; i++) {
+    const P = PRIMS[i], dx = x - P.pos[0], dy = y - P.pos[1], dz = z - P.pos[2];
+    const lb = Math.sqrt(dx * dx + dy * dy + dz * dz) - P.bound;
+    if (P.sub ? lb >= K - d : lb >= d + K) continue;
+    qrot(P.qi, dx, dy, dz, L3);
+    const dp = sdPrimJS(P.type, L3[0], L3[1], L3[2], P.size);
+    d = P.sub ? smaxJS(d, -dp, K) : sminJS(d, dp, K);
+  }
+  return d;
+}
+const mapCPU = (x, y, z, n) => { const q = foldJS(x, y, z); return sceneD(q[0], q[1], q[2], n); };
+function raycast(o, rd, n) {
+  const b = o[0] * rd[0] + o[1] * rd[1] + o[2] * rd[2], c = o[0] * o[0] + o[1] * o[1] + o[2] * o[2] - 1.75 * 1.75, h = b * b - c;
+  if (h < 0 || !n) return -1;
+  let t = Math.max(0, -b - Math.sqrt(h)); const t1 = -b + Math.sqrt(h);
+  for (let i = 0; i < 90 && t < t1; i++) {
+    const d = mapCPU(o[0] + rd[0] * t, o[1] + rd[1] * t, o[2] + rd[2] * t, n);
+    if (d < .002) return t;
+    t += Math.max(d * .9, .002);
+  }
+  return -1;
+}
+function normalCPU(p, n) {
+  const e = .005, f = (x, y, z) => mapCPU(x, y, z, n);
+  return vnorm([f(p[0] + e, p[1], p[2]) - f(p[0] - e, p[1], p[2]), f(p[0], p[1] + e, p[2]) - f(p[0], p[1] - e, p[2]), f(p[0], p[1], p[2] + e) - f(p[0], p[1], p[2] - e)]);
+}
+// a hit point and direction in the world, moved into the folded frame the pieces are stored in
+function toFolded(p, dir) {
+  const q = foldJS(p[0], p[1], p[2]).slice(), q2 = foldJS(p[0] + dir[0] * .01, p[1] + dir[1] * .01, p[2] + dir[2] * .01);
+  return [q, vnorm([q2[0] - q[0], q2[1] - q[1], q2[2] - q[2]])];
+}
+const MASS_PTS = (() => { const r = rngFor(7, 7), pts = []; while (pts.length < 256) { const p = [r() * 2 - 1, r() * 2 - 1, r() * 2 - 1]; if (vlen(p) <= 1) pts.push(p); } return pts; })();
+const massFrac = n => { let k = 0; for (const p of MASS_PTS) if (mapCPU(p[0], p[1], p[2], n) < 0) k++; return k / MASS_PTS.length; };
+
+const BAND_SCALE = [1.35, 1.1, 1, .85, .7, .6, .45, .4];
+function shapeFor(band, s, gr) {
+  const set = S.shapes, perm = v => { const k = (gr() * 3) | 0; return k === 0 ? v : k === 1 ? [v[2], v[0], v[1]] : [v[1], v[2], v[0]]; };
+  const j = () => .8 + gr() * .4;
+  if (set === 'blocks') {
+    if (band === 0) return { type:0, size:[s * 1.1, s * .3, s * .8] };
+    if (band === 1) return { type:0, size:[s * .75 * j(), s * .75 * j(), s * .75 * j()] };
+    if (band === 2) return { type:0, size:[s * .35, s * 1.1, s * .35] };
+    if (band === 3) return { type:0, size:perm([s * 1.2, s * .26, s * .26]) };
+    return { type:0, size:[s * .5, s * .5, s * .5] };
+  }
+  if (set === 'spheres') return band === 3 ? { type:4, size:[s * .4, s * .7, 0] } : { type:2, size:[s * .9, s * .9, s * .9] };
+  if (set === 'rods') return { type:gr() < .5 ? 3 : 4, size:[s * .18, s * (1 + gr() * .8), 0] };
+  switch (band) {
+    case 0: return { type:0, size:gr() < .3 ? perm([s * 1.1, s * .32, s * .8]) : [s * 1.1, s * .32, s * .8] };
+    case 1: return { type:2, size:[s * .85, s * .85, s * .85] };
+    case 2: return { type:1, size:[s * .7 * j(), s * .7 * j(), s * .7 * j()] };
+    case 3: return { type:3, size:[s * .4, s * (.6 + gr() * .8), 0] };
+    case 4: return { type:5, size:[s * 1.1, 0, 0] };
+    case 5: return { type:6, size:[s * 1.2, s * .5, 0] };
+    default: return { type:0, size:[s * .55, s * .55, s * .55] };
+  }
+}
+function orientation(gr, nq) {
+  const mode = S.shapes === 'rods' && S.orient === 'aligned' ? 'tumbled' : S.orient;
+  if (mode === 'normal') return qFromTo([0, 1, 0], nq);
+  if (mode === 'tumbled') {
+    const ax = [[1, 0, 0], [0, 1, 0], [0, 0, 1]], a = pickR(gr, ax), b = pickR(gr, ax);
+    return qMul(qAxis(...a, ((gr() * 8) | 0) * Math.PI / 4), qAxis(...b, ((gr() * 8) | 0) * Math.PI / 4));
+  }
+  return [0, 0, 0, 1];
+}
+function finishPrim(P) {
+  P.bound = P.bound || boundOf(P.type, P.size);
+  P.col = [1, 1, 1];
+  return P;
+}
+
+// an added piece: find where a ray from outside meets the sculpture, then perch the piece on it
+function placeAdd(E, gr, sizeMul, massK) {
+  const band = E.band;
+  const s = clamp(.2 * sizeMul * (.45 + .9 * Math.pow(E.s, .7)) * (.6 + .6 * E.energy) * BAND_SCALE[band] * massK, .05, .55);
+  const sh = shapeFor(band, s, gr);
+  let az, el;
+  if (E.clock) { az = E.pc / 12 * TAU + (gr() - .5) * .15; el = clamp((E.oct - 4.5) * .45, -1, 1.2); }
+  else { az = band * TAU / 5 + E.idx * 2.39996 * .35 + (gr() - .5) * 1.2; el = clamp((E.cent - .45) * 2.2 + (gr() - .5) * 1.5, -1.1, 1.3); }
+  const n0 = PRIMS.length;
+  let q, nq;
+  if (S.stack) {
+    const rad = .78 * Math.sqrt(gr()), x = Math.cos(az) * rad, z = Math.sin(az) * rad;
+    const t = raycast([x, 2.2, z], [0, -1, 0], n0), y = t >= 0 ? 2.2 - t : -.95;
+    [q] = toFolded([x, y, z], [0, 1, 0]); nq = [0, 1, 0];
+  } else {
+    const dir = dirVec(az, el), aim = [(gr() - .5) * .3, (gr() - .5) * .3, (gr() - .5) * .3], o = dir.map(v => v * 2.6);
+    let rd = vnorm([aim[0] - o[0], aim[1] - o[1], aim[2] - o[2]]), t = raycast(o, rd, n0);
+    if (t < 0 && n0) { rd = vnorm(o.map(v => -v)); t = raycast(o, rd, n0); }
+    if (t < 0) {
+      if (n0) { const c = comOfAll(); q = c; nq = dir; } else { q = [0, 0, 0]; nq = dir; }
+    } else {
+      const p = [o[0] + rd[0] * t, o[1] + rd[1] * t, o[2] + rd[2] * t];
+      [q, nq] = toFolded(p, normalCPU(p, n0));
+    }
+  }
+  const qR = orientation(gr, nq), qi = qConj(qR);
+  const nl = qrot(qi, nq[0], nq[1], nq[2], [0, 0, 0]);
+  const e = n0 ? extentAlong(sh.type, sh.size, nl) : 0;
+  let pos = [q[0] + nq[0] * e * (1 - 2 * S.embed), q[1] + nq[1] * e * (1 - 2 * S.embed), q[2] + nq[2] * e * (1 - 2 * S.embed)];
+  const rr = vlen(pos), lim = 1 - .25 * Math.max(...sh.size);
+  if (rr > lim) pos = pos.map(v => v * lim / rr);
+  return finishPrim({ t0:E.t, dur:E.animDur, anim:'pop', type:sh.type, sub:false, pos, size:sh.size, qi, band });
+}
+function comOfAll() {
+  let x = 0, y = 0, z = 0, w = 0;
+  for (const P of PRIMS) if (!P.sub) { const v = P.size[0] * (P.size[1] || P.size[0]) * (P.size[2] || P.size[0]); x += P.pos[0] * v; y += P.pos[1] * v; z += P.pos[2] * v; w += v; }
+  return w ? [x / w, y / w, z / w] : [0, 0, 0];
+}
+// a cut: drills bore towards the middle, punches pop holes, slides shave a plane off one side
+function placeCut(E, gr, sizeMul, massK) {
+  let az, el;
+  if (E.kind === 'punch') { az = gr() * TAU; el = (gr() - .5) * 1.6; }
+  else if (E.fromBand) { az = E.band * TAU / 5 + E.idx * .83 + (gr() - .5) * .8; el = (gr() - .5) * 1.2; }
+  else { az = E.pc / 12 * TAU + (gr() - .5) * (E.kind === 'slide' ? .4 : .1); el = E.kind === 'slide' ? (gr() - .5) * 1.2 : clamp((E.oct - 4.5) * .45, -1, 1.1); }
+  const dir = dirVec(az, el), o = dir.map(v => v * 2.6), aim = [0, dir[1] * .4, 0];
+  const rd = vnorm([aim[0] - o[0], aim[1] - o[1], aim[2] - o[2]]), t = raycast(o, rd, PRIMS.length);
+  if (t < 0) return null;
+  const hit = [o[0] + rd[0] * t, o[1] + rd[1] * t, o[2] + rd[2] * t], [q, ax] = toFolded(hit, rd);
+  if (E.kind === 'punch') {
+    const r = clamp((.04 + .07 * E.s) * sizeMul * massK, .03, .16), cube = S.shapes === 'blocks';
+    return finishPrim({ t0:E.t, dur:.18, anim:'punch', type:cube ? 0 : 2, sub:true, pos:[q[0] + ax[0] * r * .25, q[1] + ax[1] * r * .25, q[2] + ax[2] * r * .25],
+      size:cube ? [r * .8, r * .8, r * .8] : [r, r, r], qi:cube ? qConj(qFromTo([0, 0, 1], ax)) : [0, 0, 0, 1] });
+  }
+  if (E.kind === 'slide') {
+    const shave = vlen(hit) * (.12 + .2 * E.s) * massK, face = q.map((v, i) => v + ax[i] * shave);
+    const qR = qMul(qFromTo([0, 0, 1], ax), qAxis(0, 0, 1, gr() * TAU));
+    return finishPrim({ t0:E.t, dur:.4, anim:'slide', type:0, sub:true, pos:face.map((v, i) => v - ax[i] * 1.3), size:[2.6, 2.6, 1.3],
+      qi:qConj(qR), hit:q, face, axis:ax, bound:3.9 });
+  }
+  const r = clamp((.05 + .09 * E.s) * sizeMul * massK, .035, .24), L = (.3 + .6 * clamp(E.dur / 1.2, 0, 1)) * lerp(.7, 1.3, S.size) * massK;
+  const entry = q.map((v, i) => v - ax[i] * .06), box = S.shapes === 'blocks';
+  let qR = qFromTo([0, 1, 0], ax); if (box) qR = qMul(qR, qAxis(0, 1, 0, gr() * TAU));
+  return finishPrim({ t0:E.t, dur:clamp(E.dur, .25, 1.6), anim:'drill', type:box ? 0 : 3, sub:true, pos:entry.map((v, i) => v + ax[i] * L / 2),
+    size:[r, L / 2, r], qi:qConj(qR), entry, axis:ax, L });
+}
+
+function simulate(ev) {
+  PRIMS = [];
+  SIM.sym = S.symmetry === 'none' ? 0 : S.symmetry === 'mirror' ? 1 : +S.symmetry;
+  SIM.K = S.melt * .22;
+  const gr = rngFor(S.seed, 21), sizeMul = lerp(.5, 1.6, S.size), target = lerp(.12, .42, S.mass);
+  let mass = 0, nAdd = 0, nSub = 0;
+  for (let e = 0; e < ev.length; e++) {
+    const E = ev[e];
+    if (e % 10 === 0 && PRIMS.length) mass = massFrac(PRIMS.length);
+    if (E.kind === 'add' && mass > target + .06 && nAdd > 8 && gr() < clamp((mass - target) * 4, 0, .5)) {
+      const P = placeCut({ t:E.t, kind:'punch', s:E.s, idx:E.idx }, gr, sizeMul, 1.6); if (P) { PRIMS.push(P); nSub++; }
+    } else if (E.kind === 'add') {
+      const k = mass > target ? .6 : mass > target * .75 ? .85 : mass < target * .4 ? 1.15 : 1;
+      PRIMS.push(placeAdd(E, gr, sizeMul, k)); nAdd++;
+    } else {
+      if (!nAdd || mass < .04) continue;
+      const P = placeCut(E, gr, sizeMul, mass > target ? 1.4 : mass < target * .5 ? .7 : 1); if (P) { PRIMS.push(P); nSub++; }
+    }
+  }
+  const n = PRIMS.length;
+  SIM.t0s = new Float64Array(n); SIM.ends = new Float64Array(n);
+  SIM.cx = new Float64Array(n + 1); SIM.cy = new Float64Array(n + 1); SIM.cz = new Float64Array(n + 1); SIM.cw = new Float64Array(n + 1);
+  let endMax = -1e9;
+  for (let i = 0; i < n; i++) {
+    const P = PRIMS[i]; SIM.t0s[i] = P.t0; endMax = Math.max(endMax, P.t0 + P.dur); SIM.ends[i] = endMax;
+    const w = P.sub ? 0 : P.size[0] * (P.size[1] || P.size[0]) * (P.size[2] || P.size[0]);
+    SIM.cx[i + 1] = SIM.cx[i] + P.pos[0] * w; SIM.cy[i + 1] = SIM.cy[i] + P.pos[1] * w; SIM.cz[i + 1] = SIM.cz[i] + P.pos[2] * w; SIM.cw[i + 1] = SIM.cw[i] + w;
+  }
+  SIM.nAdd = nAdd; SIM.nSub = nSub; SIM.mass = n ? massFrac(n) : 0;
+}
+
+/* ------------------------------------------------------------------ colour, camera and cut plans (all precomputed from the song) */
+const BAND_SLOT = [1, 1, 4, 0, 0, 2, 3, 3];
+function buildPalettes() {
+  const r = rngFor(S.seed * 31 + S.palShuffle, 31);
+  let P = nextPalette(null, r); PALS = [{ t:0, P }];
+  const every = [16, 8, 4, 2, 1][Math.round(S.colourRate * 4)], times = new Set(), secs = new Set(AN.sections.slice(1).map(t => +t.toFixed(3)));
+  secs.forEach(t => times.add(t));
+  AN.downbeats.forEach((t, k) => { if (k > 0 && k % every === 0) times.add(+t.toFixed(3)); });
+  for (const t of [...times].sort((a, b) => a - b)) {
+    const keep = S.bgChange === 'never' || (S.bgChange === 'sections' && !secs.has(t));
+    P = nextPalette(P, r, keep); PALS.push({ t, P });
+  }
+  PALS.ts = PALS.map(p => p.t);
+}
+const palAt = t => PALS[Math.max(0, upperBound(PALS.ts, t) - 1)].P;
+function assignColours() {
+  // each piece keeps the colour it was born with, so the sculpture becomes a layered record of the song
+  PRIMS.forEach((P, i) => {
+    const pal = palAt(P.t0);
+    const hex = P.sub ? (S.cut === 'cream' ? '#f3ecd8' : S.cut === 'black' ? '#121015' : S.cut === 'ground' ? pal.bg : pal.cutAccent)
+      : pal.multi ? pal.accents[i % pal.accents.length] : pal.unified ? pal.barCol : pal.cols[BAND_SLOT[P.band]];
+    P.col = hexRGB(hex);
+  });
+}
+const sectionIdx = t => Math.max(0, upperBound(AN.sections, t) - 1);
+const LOOKS = ['cutpaper', 'toon', 'clay', 'halftone', 'lines', 'scratch'];
+const lookAt = t => S.look !== 'auto' ? S.look : AN.sectionLooks[sectionIdx(t)] || 'toon';
+const rmsAt = t => AN.rms[fr(AN, t)];
+
+const SHOT_KINDS = {
+  orbit:{ elev:0, dist:1, fov:1, follow:0 },
+  wide:{ elev:.15, dist:1.35, fov:1, follow:0 },
+  hero:{ elev:-.45, dist:.85, fov:1.15, follow:0 },
+  plan:{ elev:1.0, dist:1.15, fov:1, follow:0 },
+  close:{ elev:-.05, dist:.55, fov:.9, follow:.8 },
+  elevation:{ abs:.03, dist:1.1, fov:1, follow:0, ortho:true },
+};
+function chooseShot(r, e) {
+  const w = e > .6 ? { orbit:2, close:3, hero:3, wide:1, plan:.5, elevation:.5 } : e < .3 ? { orbit:2, wide:3, plan:2, elevation:2, hero:.5, close:.5 }
+    : { orbit:2, wide:1.5, hero:1.5, close:1.5, plan:1, elevation:1 };
+  let s = 0; for (const k in w) s += w[k];
+  let x = r() * s; for (const k in w) { x -= w[k]; if (x <= 0) return k; }
+  return 'orbit';
+}
+function buildCameraPlan() {
+  const r = rngFor(S.seed, 41);
+  SHOTS = [{ t:0, kind:'orbit', az:0 }];
+  const times = new Set(AN.sections.slice(1));
+  if (S.shots !== 'off') { const every = +S.shots; AN.downbeats.forEach((t, k) => { if (k > 0 && k % every === 0) times.add(t); }); }
+  let az = 0, prev = 0;
+  for (const t of [...times].sort((a, b) => a - b)) {
+    if (t - prev < 1.5) continue; prev = t;
+    az += (r() < .5 ? -1 : 1) * (.7 + r() * 1.6);
+    SHOTS.push({ t, kind:S.shots === 'off' ? 'orbit' : chooseShot(r, rmsAt(t)), az });
+  }
+  // the finished piece gets a low hero shot for the last two bars
+  const tEnd = AN.dur - 8 * AN.beatLen;
+  if (S.shots !== 'off' && tEnd > 4 && tEnd - prev > 1.5) SHOTS.push({ t:tEnd, kind:'hero', az:az + 1.2 });
+  SHOT_T = SHOTS.map(s => s.t);
+  CUTS = S.cuts === 'glide' ? AN.sections.slice(1) : SHOTS.slice(1).map(s => s.t);
+  buildAngles();
+}
+let ANG = new Float32Array(2);
+function buildAngles() {
+  const n = AN.n, w = lerp(.05, 1.2, S.turnSpeed), endT = AN.dur - 8 * AN.beatLen;
+  ANG = new Float32Array(n + 1);
+  for (let i = 0; i < n; i++) {
+    const t = i / AN.rate, m = t > endT ? lerp(1, .2, clamp((t - endT) / (4 * AN.beatLen), 0, 1)) : 1;   // the turntable winds down at the end
+    ANG[i + 1] = ANG[i] + (S.turn === 'loud' ? w * (.15 + 1.7 * AN.rms[i]) : w) * m / AN.rate;
+  }
+}
+function turnAngle(t) {
+  if (S.turn === 'still') return 0;
+  if (S.turn === 'pingpong') return lerp(.3, 1.4, S.turnSpeed) * Math.sin(t * .5);
+  // outside the song (the silent padding of an export) the turntable keeps drifting slowly
+  const drift = lerp(.05, 1.2, S.turnSpeed) * .2;
+  if (t < 0) return songAngle(0) + drift * t;
+  if (t > AN.dur) return songAngle(AN.dur) + drift * (t - AN.dur);
+  return songAngle(t);
+}
+function songAngle(t) {
+  if (S.turn === 'ratchet') {
+    const k = upperBound(AN.beats, t); if (!k) return 0;
+    return lerp(10, 90, S.turnSpeed) * Math.PI / 180 * (k - 1 + easeOutCubic(clamp((t - AN.beats[k - 1]) / .16, 0, 1)));
+  }
+  const f = clamp(t * AN.rate, 0, ANG.length - 1.001), i = Math.floor(f);
+  return lerp(ANG[i], ANG[i + 1], f - i);
+}
+function punchAt(t) {
+  let i = upperBound(KICKS.ts, t) - 1, p = 0;
+  for (; i >= 0; i--) { const age = t - KICKS[i].t; if (age > .6) break; p = Math.max(p, KICKS[i].s * (1 - Math.exp(-age * 40)) * Math.exp(-age * 7)); }
+  return p;
+}
+function comAt(t) {
+  const n = upperBound(SIM.t0s, t), w = SIM.cw[n];
+  if (!(w > 1e-9)) return [0, 0, 0];
+  let x = SIM.cx[n] / w, y = SIM.cy[n] / w, z = SIM.cz[n] / w;
+  if (SIM.sym >= 2) x = z = 0; else if (SIM.sym === 1) x = 0;
+  return [x, y, z];
+}
+function resolveShot(sh) {
+  const k = SHOT_KINDS[sh.kind] || SHOT_KINDS.orbit, base = lerp(-.15, 1.0, S.elev);
+  return { el:k.abs != null ? k.abs : clamp(base + k.elev, -.35, 1.4), dist:k.dist, fov:k.fov, follow:k.follow, az:sh.az, ortho:!!k.ortho };
+}
+function cameraAt(t) {
+  const si = Math.max(0, upperBound(SHOT_T, t) - 1);
+  let p = resolveShot(SHOTS[si]);
+  if (S.cuts === 'glide' && si > 0) {
+    const q = resolveShot(SHOTS[si - 1]), k = ease(clamp((t - SHOTS[si].t) / (AN.beatLen * 2), 0, 1));
+    p = { el:lerp(q.el, p.el, k), dist:lerp(q.dist, p.dist, k), fov:lerp(q.fov, p.fov, k), follow:lerp(q.follow, p.follow, k), az:lerp(q.az, p.az, k), ortho:k > .5 ? p.ortho : q.ortho };
+  }
+  const th = turnAngle(t) + p.az;
+  const fov0 = lerp(16, 60, S.fov) * p.fov, k = punchAt(t) * S.punch, fov = fov0 * (1 - .22 * k);
+  let D = lerp(2.6, 7, S.dist) * p.dist;
+  if (S.dolly) D *= Math.tan(fov0 * Math.PI / 360) / Math.tan(fov * Math.PI / 360);   // vertigo: lens punches in, camera pulls back
+  // the camera eases after the centre of mass, and glances at each new piece
+  let gx = 0, gy = 0, gz = 0;
+  for (let j = 0; j < 6; j++) { const c = comAt(t - j * .35); gx += c[0]; gy += c[1]; gz += c[2]; }
+  gx = gx / 6 * .7; gy = gy / 6 * .6 - .08; gz = gz / 6 * .7;
+  const fol = clamp(S.follow + p.follow, 0, 1.5), n = upperBound(SIM.t0s, t);
+  let ws = 1;
+  if (fol > 0) for (let i = n - 1; i >= Math.max(0, n - 6); i--) {
+    const P = PRIMS[i], age = t - P.t0; if (age > 3) break;
+    const w = fol * (1 - Math.exp(-age * 5)) * Math.exp(-age * 1.2) * .8;
+    gx += P.pos[0] * w; gy += P.pos[1] * w; gz += P.pos[2] * w; ws += w;
+  }
+  const tg = [gx / ws, gy / ws, gz / ws];
+  const eye = [tg[0] + D * Math.cos(p.el) * Math.sin(th), tg[1] + D * Math.sin(p.el), tg[2] + D * Math.cos(p.el) * Math.cos(th)];
+  return { eye, tg, fov, D, ortho:p.ortho };
+}
+
+/* ------------------------------------------------------------------ rebuilds */
+let dirty = true;
+function rebuildAll() { EV = buildEvents(AN); simulate(EV); buildPalettes(); assignColours(); buildCameraPlan(); BK.baked = 0; dirty = true; showStats(); }
+function rebuildColour() { buildPalettes(); assignColours(); BK.baked = 0; dirty = true; showSwatches(); }
+let rbTimer = null, rbKind = 0;
+function schedule(kind) {   // 1 camera · 2 colour · 3 geometry
+  rbKind = Math.max(rbKind, kind); clearTimeout(rbTimer);
+  rbTimer = setTimeout(() => { const k = rbKind; rbKind = 0; if (k === 3) rebuildAll(); else if (k === 2) rebuildColour(); else { buildCameraPlan(); dirty = true; } }, 220);
+}
+
+/* ------------------------------------------------------------------ WebGL2: raymarch → ink → film */
+const view = $('#view');
+const gl = view.getContext('webgl2', { antialias:false, alpha:false, premultipliedAlpha:false });
+const GLOK = !!gl && !!gl.getExtension('EXT_color_buffer_float');
+const MAXP = GLOK ? clamp(Math.floor((gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 48) / 4), 12, 48) : 12;
+const CHUNK = Math.min(16, MAXP >> 1);
+const dmgC = document.createElement('canvas'), dg = dmgC.getContext('2d');
+let W = 0, H = 0, RW = 2, RH = 2, U = 1;
+
+const VS = `#version 300 es
+void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2. - 1., 0., 1.); }`;
+
+const COMMON = `#version 300 es
+precision highp float; precision highp int; precision highp sampler3D;
+#define MAXP ${MAXP}
+uniform vec4 uP[MAXP * 4];
+uniform int uCount, uSym;
+uniform float uK, uSymN;
+vec3 qrot(vec4 q, vec3 v){ return v + 2. * cross(q.xyz, cross(q.xyz, v) + q.w * v); }
+float sdBox(vec3 p, vec3 b){ vec3 q = abs(p) - b; return length(max(q, 0.)) + min(max(q.x, max(q.y, q.z)), 0.); }
+float sdPrim(int type, vec3 p, vec3 s){
+  if (type == 0) return sdBox(p, s);
+  if (type == 1) { float r = .3 * min(s.x, min(s.y, s.z)); return sdBox(p, s - r) - r; }
+  if (type == 2) return length(p) - s.x;
+  if (type == 3) { vec2 d = vec2(length(p.xz) - s.x, abs(p.y) - s.y); return min(max(d.x, d.y), 0.) + length(max(d, 0.)); }
+  if (type == 4) { p.y -= clamp(p.y, -s.y, s.y); return length(p) - s.x; }
+  if (type == 5) { p = abs(p); return (p.x + p.y + p.z - s.x) * .57735027; }
+  if (type == 6) { vec3 q = abs(p); return max(q.z - s.y, max(q.x * .866025 + p.y * .5, -p.y) - s.x * .5); }
+  vec2 q = vec2(length(p.xz) - s.x, p.y); return length(q) - s.y;
+}
+float smin(float a, float b, float k){ if (k <= 0.) return min(a, b); float h = max(k - abs(a - b), 0.) / k; return min(a, b) - h * h * k * .25; }
+float smax(float a, float b, float k){ return -smin(-a, -b, k); }
+vec3 fold(vec3 p){
+  if (uSym == 1) p.x = abs(p.x);
+  else if (uSym >= 2) { float sec = 6.2831853 / uSymN, a = atan(p.z, p.x); a = abs(mod(a + sec * .5, sec) - sec * .5); float r = length(p.xz); p.x = r * cos(a); p.z = r * sin(a); }
+  return p;
+}
+// pieces are applied in the order the song made them: union for additions, subtraction for cuts
+void applyPrims(vec3 p, inout float d, inout vec3 col, inout float fl){
+  for (int i = 0; i < MAXP; i++) {
+    if (i >= uCount) break;
+    vec4 a = uP[i * 4], b = uP[i * 4 + 1];
+    bool sub = a.w > 9.5;
+    float lb = length(p - a.xyz) - b.w;
+    if (sub ? (lb >= uK - d) : (lb >= d + uK)) continue;
+    vec4 q = uP[i * 4 + 2], c = uP[i * 4 + 3];
+    float dp = sdPrim(int(a.w - (sub ? 10. : 0.) + .5), qrot(q, p - a.xyz), b.xyz);
+    if (sub) { if (-dp > d) { col = c.rgb; fl = 0.; } d = smax(d, -dp, uK); }
+    else { if (dp < d) { col = c.rgb; fl = c.w; } d = smin(d, dp, uK); }
+  }
+}
+`;
+
+// bake: fold finished pieces into one layer of the 3D distance volume (distance + colour)
+const BAKE_FS = COMMON + `
+uniform sampler3D uOld; uniform float uLayer, uVolN, uB, uHasOld;
+out vec4 o;
+void main(){
+  ivec3 ix = ivec3(ivec2(gl_FragCoord.xy), int(uLayer));
+  vec3 p = ((vec3(ix) + .5) / uVolN - .5) * 2. * uB;
+  float d = 1e3; vec3 col = vec3(0.); float fl = 0.;
+  if (uHasOld > .5) { vec4 v = texelFetch(uOld, ix, 0); d = v.r; col = v.gba; }
+  applyPrims(p, d, col, fl);
+  o = vec4(d, col);
+}`;
+
+const RAY_FS = COMMON + `
+uniform sampler3D uVol; uniform float uB, uVolN, uVolOn; uniform vec4 uBoil;
+uniform vec2 uRes, uJit; uniform vec3 uEye, uFwd, uRight, uUp, uLight, uBg, uBand, uInkC;
+uniform float uTan, uAspect, uOrtho, uOrthoH, uFloorY, uShadows, uPx; uniform int uLook, uGround;
+layout(location = 0) out vec4 oCol; layout(location = 1) out vec4 oND; layout(location = 2) out vec4 oID;
+float volD(vec3 p){
+  if (uVolOn < .5) return 1e3;
+  vec3 q = abs(p) - uB * .995;
+  float d = texture(uVol, clamp(p / (2. * uB) + .5, .5 / uVolN, 1. - .5 / uVolN)).r;
+  if (max(q.x, max(q.y, q.z)) > 0.) d = max(d, 0.) + length(max(q, 0.));
+  return d;
+}
+// baked colours: pick the corner colour nearest the blended one, so boundaries sit on smooth lines, not voxel steps
+vec3 volC(vec3 p){
+  if (uVolOn < .5) return vec3(0.);
+  vec3 g = clamp(p / (2. * uB) + .5, 0., 1.) * uVolN - .5, f = fract(g); ivec3 i0 = ivec3(floor(g)), hi = ivec3(int(uVolN) - 1);
+  vec3 cs[8]; vec3 cb = vec3(0.);
+  for (int k = 0; k < 8; k++) {
+    ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+    cs[k] = texelFetch(uVol, clamp(i0 + o, ivec3(0), hi), 0).gba;
+    vec3 w = mix(1. - f, f, vec3(o)); cb += cs[k] * w.x * w.y * w.z;
+  }
+  vec3 best = cs[0]; float bd = 1e9;
+  for (int k = 0; k < 8; k++) { float dd = distance(cs[k], cb); if (dd < bd) { bd = dd; best = cs[k]; } }
+  return best;
+}
+vec3 warp(vec3 p){ return fold(p + uBoil.w * vec3(sin(p.y * 7. + uBoil.x), sin(p.z * 7. + uBoil.y), sin(p.x * 7. + uBoil.z))); }   // hand-made boil
+float mapS(vec3 p){ p = warp(p); float d = volD(p); vec3 c; float f; applyPrims(p, d, c, f); return d; }
+float mapD(vec3 p, out vec3 col, out float fl){ p = warp(p); float d = volD(p); col = volC(p); fl = 0.; applyPrims(p, d, col, fl); return d; }
+// normals are taken over about a voxel: the baked field is trilinear, and a finer step shows its facets as stepped shading
+vec3 calcN(vec3 p){ vec2 e = vec2(1., -1.) * (uVolOn > .5 ? .8 * uB / uVolN : .0015);
+  return normalize(e.xyy * mapS(p + e.xyy) + e.yyx * mapS(p + e.yyx) + e.yxy * mapS(p + e.yxy) + e.xxx * mapS(p + e.xxx)); }
+bool sphereHit(vec3 ro, vec3 rd, float r, out float t0, out float t1){
+  float b = dot(ro, rd), c = dot(ro, ro) - r * r, h = b * b - c; t0 = 0.; t1 = 0.;
+  if (h < 0.) return false; h = sqrt(h); t0 = -b - h; t1 = -b + h; return t1 > 0.;
+}
+float shadowT(vec3 ro, vec3 rd){
+  float a, b; if (!sphereHit(ro, rd, 1.75, a, b)) return 1.;
+  float res = 1., t = max(a, .02);
+  for (int i = 0; i < 48; i++) { float h = mapS(ro + rd * t); if (h < .0008) return 0.; res = min(res, 12. * h / t); t += clamp(h, .015, .2); if (t > b) break; }
+  return clamp(res, 0., 1.);
+}
+float calcAO(vec3 p, vec3 n){ float o = 0., s = 1.; for (int i = 1; i <= 5; i++) { float h = .02 + .05 * float(i); o += (h - mapS(p + n * h)) * s; s *= .7; } return clamp(1. - 2.2 * o, 0., 1.); }
+vec3 shade(vec3 col, float fl, vec3 p, vec3 n, vec3 rd, float sh, float ao){
+  vec3 ink = uInkC, cream = vec3(.953, .925, .847);
+  float l = clamp(dot(n, uLight), 0., 1.), lh = l * step(.5, sh);
+  vec2 sp = gl_FragCoord.xy / uPx + uJit;
+  vec3 c;
+  if (uLook == 0) c = lh > .32 ? col : mix(col, ink, .32);                                   // cut paper: two flat tones
+  else if (uLook == 1) c = lh > .78 ? mix(col, cream, .32) : lh > .3 ? col : mix(col, ink, .4); // toon: three
+  else if (uLook == 2) { float lam = .3 + .7 * l * mix(.35, 1., sh);                          // clay
+    c = col * (.38 + .7 * lam) * mix(.55, 1., ao) + pow(max(dot(reflect(-uLight, n), -rd), 0.), 16.) * .08 * sh; }
+  else if (uLook == 3) { mat2 R = mat2(.966, .259, -.259, .966); vec2 g = R * sp / 6.5;      // halftone dots
+    float r = sqrt(clamp(.95 - lh * .9, 0., 1.)) * .6, m = 1. - smoothstep(r - .07, r + .07, length(fract(g) - .5));
+    c = mix(mix(col, cream, .1), mix(col, ink, .7), m); }
+  else if (uLook == 4) { float y = p.y * 15., d = abs(fract(y) - .5) * 2., aa = fwidth(y) * 2., w = mix(.1, .55, 1. - lh);  // contour lines
+    c = mix(col, ink, .85 * smoothstep(1. - w - aa, 1. - w + aa, d)); }
+  else { float h1 = abs(fract((sp.x + sp.y) / 4.5) - .5) * 2., w = .08 + .5 * lh;          // scratched into black emulsion
+    float m = smoothstep(1. - w - .15, 1. - w + .15, h1);
+    if (lh > .7) m = max(m, smoothstep(.75, .9, abs(fract((sp.x - sp.y) / 4.5) - .5) * 2.));
+    c = mix(vec3(.05, .045, .05), col, m); }
+  return mix(c, cream, fl * .85);   // new pieces flash as they land
+}
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes * 2. - 1.;
+  vec3 ro, rd;
+  if (uOrtho > .5) { ro = uEye + (uRight * uv.x * uAspect + uUp * uv.y) * uOrthoH; rd = uFwd; }
+  else { ro = uEye; rd = normalize(uFwd + (uRight * uv.x * uAspect + uUp * uv.y) * uTan); }
+  float tHit = 1e9, fl = 0., a, b; vec3 col = vec3(0.);
+  if (sphereHit(ro, rd, 1.75, a, b)) {
+    float t = max(a, 0.);
+    for (int i = 0; i < 150; i++) {
+      float d = mapS(ro + rd * t);
+      if (d < .0006 * (1. + t)) { tHit = t; break; }
+      t += d * .9; if (t > b) break;
+    }
+    if (tHit < 1e8) mapD(ro + rd * tHit, col, fl);
+  }
+  vec3 outC = uBg; vec4 nd = vec4(0., 0., 0., 1e4), id = vec4(uBg, 0.);
+  float tf = rd.y < 0. ? (uFloorY - ro.y) / rd.y : 1e9;
+  if (tHit < 1e8 && tHit < tf) {
+    vec3 p = ro + rd * tHit, n = calcN(p);
+    float sh = uShadows > .5 ? shadowT(p + n * .004, uLight) : 1.;
+    float ao = uLook == 2 ? calcAO(p, n) : 1.;
+    outC = shade(col, fl, p, n, rd, sh, ao); nd = vec4(n, tHit); id = vec4(col, 1.);
+  } else if (uGround > 0 && tf > 0. && tf < 1e8) {
+    vec3 p = ro + rd * tf; float r = length(p.xz);
+    if (uGround == 1 && r < 1.3) {   // the turntable: a flat disc with a ring and ticks that show it turning
+      float sh = uShadows > .5 ? shadowT(p + vec3(0., .002, 0.), uLight) : 1.;
+      vec3 pc = uBand; float ang = atan(p.z, p.x);
+      if (abs(r - 1.16) < .012 || (r > 1.2 && abs(fract(ang / 6.2831853 * 24.) - .5) > .44)) pc = mix(uBand, uInkC, .55);
+      outC = mix(pc, mix(uBand, uInkC, .35), 1. - step(.5, sh)); nd = vec4(0., 1., 0., tf); id = vec4(uBand, .5);
+    } else if (uGround == 2) {      // just a cast shadow on the ground colour
+      float sh = shadowT(p + vec3(0., .002, 0.), uLight);
+      outC = mix(uBg, mix(uBg, uInkC, .22), 1. - step(.5, sh));
+    }
+  }
+  oCol = vec4(outC, 1.); oND = nd; oID = id;
+}`;
+
+// ink: outlines drawn from depth, normal and colour edges, wobbling a little every frame like hand-inked cels
+const INK_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uCol, uND, uID; uniform vec2 uRes; uniform float uW, uBoil, uOn; uniform vec3 uInkC, uSeed;
+out vec4 o;
+void main(){
+  vec2 px = 1. / uRes, uv = gl_FragCoord.xy * px;
+  vec2 j = uBoil * 1.4 * px * vec2(sin(uv.y * 37. + uSeed.x) + .6 * sin(uv.y * 91. + uSeed.y), sin(uv.x * 33. + uSeed.z) + .6 * sin(uv.x * 87. + uSeed.x));
+  vec2 q = uv + j;
+  vec4 n0 = texture(uND, q), i0 = texture(uID, q);
+  float w = uW * (.7 + .6 * (.5 + .5 * sin(uv.x * 13. + uv.y * 19. + uSeed.y))), e = 0.;
+  for (int k = 0; k < 8; k++) {
+    float a = float(k) * .7853982; vec2 off = vec2(cos(a), sin(a)) * w * px;
+    vec4 n1 = texture(uND, q + off), i1 = texture(uID, q + off);
+    e = max(e, step(.05, abs(n1.w - n0.w) / max(min(n1.w, n0.w), .05)));
+    if (i0.a > 0. && i1.a > 0.) { e = max(e, step(dot(n0.xyz, n1.xyz), .72)); e = max(e, step(.12, distance(i0.rgb, i1.rgb))); }
+  }
+  o = vec4(mix(texture(uCol, uv).rgb, uInkC, e * uOn), 1.);
+}`;
+
+// film: the same print stock as Synchromy — weave, roll, fringe, halation, S-curve, grain, flicker, vignette
+const POST_FS = `#version 300 es
+precision highp float;
+uniform sampler2D tex, dmg; uniform vec2 res, weave;
+uniform float seed, grain, gsize, flick, vign, chroma, hal, roll, sat, temp;
+out vec4 o;
+float hash(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+void main(){
+  vec2 v = gl_FragCoord.xy / res, uv = v + weave;
+  uv.y = fract(uv.y + roll);
+  vec2 d = uv - .5; float k = chroma * .012;
+  vec3 c = vec3(texture(tex, uv + d * k).r, texture(tex, uv).g, texture(tex, uv - d * k).b);
+  if (hal > 0.) {
+    vec3 h = vec3(0.);
+    for (int i = 0; i < 8; i++) {
+      float a = float(i) * .785398; vec2 off = vec2(cos(a), sin(a) * res.x / res.y) * .006;
+      h += max(texture(tex, uv + off).rgb - .55, 0.) + .6 * max(texture(tex, uv + off * 2.4).rgb - .55, 0.);
+    }
+    c += h / 16. * hal * vec3(1., .45, .3) * 2.4;
+  }
+  vec4 dm = texture(dmg, uv); c = mix(c, dm.rgb, dm.a);
+  c = mix(c, c * c * (3. - 2. * c), .3);
+  c = c * .93 + .035; c *= vec3(1., .985, .95);
+  float L = dot(c, vec3(.299, .587, .114));
+  c = clamp(mix(vec3(L), c, sat), 0., 1.);
+  c *= vec3(1. + .16 * temp, 1. + .02 * temp, 1. - .2 * temp);
+  if (abs(roll) > .001) { float fy = v.y + weave.y + roll; float e = abs(fract(fy + .5) - .5); c *= smoothstep(.0, .03, e); }
+  vec2 gp = floor(gl_FragCoord.xy / gsize);
+  float n = (hash(gp + seed * vec2(17.3, 91.7)) + .7 * hash(floor(gp * .5) + seed * vec2(5.1, 3.3))) / 1.7 - .5;
+  float l = dot(c, vec3(.299, .587, .114));
+  c += n * grain * .34 * (.4 + 2.2 * l * (1. - l));
+  c += (vec3(hash(gp + seed + 1.3), hash(gp + seed + 2.7), hash(gp + seed + 4.1)) - .5) * grain * .05;
+  c *= flick;
+  vec2 qv = (v - .5) * vec2(1.1, 1.25); c *= mix(1., clamp(1. - dot(qv, qv) * 1.7, 0., 1.), vign);
+  o = vec4(clamp(c, 0., 1.), 1.);
+}`;
+
+const PROG = {}, T = {}, BK = { N:128, vols:[null, null], cur:0, baked:0, fb:null };
+const liveArr = new Float32Array(MAXP * 16), bakeArr = new Float32Array(MAXP * 16);
+function program(fs) {
+  const sh = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o);
+    if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
+  const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {};
+  for (let i = 0, n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS); i < n; i++) { const nm = gl.getActiveUniform(p, i).name; u[nm.replace(/\[0\]$/, '')] = gl.getUniformLocation(p, nm); }
+  return { p, u };
+}
+function tex2D(w, h, ifmt, fmt, type, filter) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, fmt, type, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+function allocTargets() {
+  for (const k of ['col', 'nd', 'id', 'ink']) if (T[k]) gl.deleteTexture(T[k]);
+  T.col = tex2D(RW, RH, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
+  T.nd = tex2D(RW, RH, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.NEAREST);
+  T.id = tex2D(RW, RH, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
+  T.ink = tex2D(RW, RH, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);   // upscaled with hard pixel edges
+  T.fbRay = T.fbRay || gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, T.fbRay);
+  [T.col, T.nd, T.id].forEach((t, i) => gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, t, 0));
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2]);
+  T.fbInk = T.fbInk || gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, T.fbInk);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, T.ink, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+function allocVolume() {
+  const N = BK.N = +S.detail;
+  for (let i = 0; i < 2; i++) {
+    if (BK.vols[i]) gl.deleteTexture(BK.vols[i]);
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D, t);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA16F, N, N, N, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.CLAMP_TO_EDGE);
+    BK.vols[i] = t;
+  }
+  BK.fb = BK.fb || gl.createFramebuffer(); BK.baked = 0;
+}
+function initGL() {
+  gl.bindVertexArray(gl.createVertexArray());
+  PROG.bake = program(BAKE_FS); PROG.ray = program(RAY_FS); PROG.ink = program(INK_FS); PROG.post = program(POST_FS);
+  T.dmg = tex2D(1, 1, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR);
+  allocVolume();
+}
+
+// a piece's state at time t, packed as four vec4s: position+type, size+bound, rotation, colour+flash
+function packPrim(arr, k, P, t) {
+  const a = clamp((t - P.t0) / P.dur, 0, 1), o = k * 16;
+  let px = P.pos[0], py = P.pos[1], pz = P.pos[2], sx = P.size[0], sy = P.size[1], sz = P.size[2], bound = P.bound, flash = 0;
+  if (a < 1) {
+    if (P.anim === 'pop') { const s = easeOutBack(a); sx *= s; sy *= s; sz *= s; bound *= 1.15; flash = (1 - a) * (1 - a); }
+    else if (P.anim === 'punch') { const s = easeOutCubic(a); sx *= s; sy *= s; sz *= s; }
+    else if (P.anim === 'drill') { const h = Math.max(.003, P.L * .5 * easeOutCubic(a)); px = P.entry[0] + P.axis[0] * h; py = P.entry[1] + P.axis[1] * h; pz = P.entry[2] + P.axis[2] * h; sy = h; bound = h + sx * 1.5; }
+    else if (P.anim === 'slide') { const f = easeOutCubic(a); px = lerp(P.hit[0], P.face[0], f) - P.axis[0] * 1.3; py = lerp(P.hit[1], P.face[1], f) - P.axis[1] * 1.3; pz = lerp(P.hit[2], P.face[2], f) - P.axis[2] * 1.3; }
+  }
+  arr[o] = px; arr[o + 1] = py; arr[o + 2] = pz; arr[o + 3] = P.type + (P.sub ? 10 : 0);
+  arr[o + 4] = sx; arr[o + 5] = sy; arr[o + 6] = sz; arr[o + 7] = bound;
+  arr[o + 8] = P.qi[0]; arr[o + 9] = P.qi[1]; arr[o + 10] = P.qi[2]; arr[o + 11] = P.qi[3];
+  arr[o + 12] = P.col[0]; arr[o + 13] = P.col[1]; arr[o + 14] = P.col[2]; arr[o + 15] = flash;
+}
+function bakeRange(from, to) {
+  const N = BK.N, pr = PROG.bake, u = pr.u;
+  for (let k = 0; k < to - from; k++) packPrim(bakeArr, k, PRIMS[from + k], Infinity);
+  gl.useProgram(pr.p);
+  gl.uniform4fv(u.uP, bakeArr); gl.uniform1i(u.uCount, to - from); gl.uniform1f(u.uK, SIM.K);
+  gl.uniform1f(u.uVolN, N); gl.uniform1f(u.uB, BOX); gl.uniform1f(u.uHasOld, from > 0 ? 1 : 0);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_3D, BK.vols[BK.cur]); gl.uniform1i(u.uOld, 0);
+  const dst = BK.vols[1 - BK.cur];
+  gl.bindFramebuffer(gl.FRAMEBUFFER, BK.fb); gl.viewport(0, 0, N, N);
+  for (let z = 0; z < N; z++) { gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, dst, 0, z); gl.uniform1f(u.uLayer, z); gl.drawArrays(gl.TRIANGLES, 0, 3); }
+  BK.cur = 1 - BK.cur;
+}
+function ensureBaked(target) {
+  if (target < BK.baked) BK.baked = 0;
+  while (BK.baked < target) { const to = Math.min(target, BK.baked + MAXP); bakeRange(BK.baked, to); BK.baked = to; }
+}
+
+/* ------------------------------------------------------------------ film damage (drawn on its own layer, every speck seeded by frame number) */
+function cutInfo(t, fi, live) {
+  let k = -1, idx = -1;
+  if (S.splices) {
+    if (live) { const ci = upperBound(CUTS, t + 1e-6) - 1; if (ci >= 0) { k = fi - frameOf(CUTS[ci]); idx = ci; } }
+    if (!EXPORT && V.seekFi != null && fi >= V.seekFi && (k < 0 || fi - V.seekFi < k)) { k = fi - V.seekFi; idx = 9999 + V.seekFi; }
+  }
+  if (k < 0 || k > 12) return { k:-1, roll:0, y:0 };
+  const r = rngFor(S.seed, 4000037 + idx), roll0 = (r() < .5 ? -1 : 1) * (.12 + r() * .2), y = r() * H;
+  let roll = roll0 * Math.pow(.62, k); if (Math.abs(roll) < .002) roll = 0;
+  return { k, roll, y };
+}
+function filmDamage(t, fi, cut) {
+  dg.clearRect(0, 0, W, H);
+  const r = rngFor(S.seed, 1000003 + fi), d = S.dust;
+  for (let i = 0, n = (r() * d * 7) | 0; i < n; i++) {   // dust specks
+    dg.fillStyle = r() < .75 ? 'rgba(10,8,6,.85)' : 'rgba(255,250,235,.85)';
+    const s = (1 + r() * r() * 7) * U;
+    dg.beginPath(); dg.ellipse(r() * W, r() * H, s, s * (.4 + r() * .6), r() * 3, 0, 6.283); dg.fill();
+  }
+  if (r() < d * .12) {   // fibres
+    dg.strokeStyle = r() < .7 ? 'rgba(10,8,6,.8)' : 'rgba(255,250,235,.7)'; dg.lineWidth = (.8 + r()) * U;
+    const x = r() * W, y = r() * H, l = (10 + r() * 40) * U;
+    dg.beginPath(); dg.moveTo(x, y); dg.quadraticCurveTo(x + (r() - .5) * l, y + (r() - .5) * l, x + (r() - .5) * l, y + (r() - .5) * l); dg.stroke();
+  }
+  // long vertical scratches: each is born on some frame and wanders for a while
+  for (let f0 = fi - 70; f0 <= fi; f0++) {
+    const q = rngFor(S.seed, 2000003 + f0); if (q() >= S.scratch * .05) continue;
+    const life = 10 + q() * 60, age = fi - f0; if (age >= life) continue;
+    const a = .25 + q() * .45, w = (.6 + q() * 1.4) * U, dark = q() < .25, v = (q() - .5) * 2 * U, ph = q() * 6;
+    if (hash01(f0 * 131 + age, 5) < .1) continue;   // flickers in and out
+    const x = q() * W + v * age + Math.sin(age * .7 + ph) * 2 * U;
+    dg.strokeStyle = dark ? `rgba(10,8,6,${a})` : `rgba(255,250,235,${a})`; dg.lineWidth = w;
+    dg.beginPath(); dg.moveTo(x, 0); dg.bezierCurveTo(x + 3 * U, H * .3, x - 3 * U, H * .7, x + (r() - .5) * 2 * U, H); dg.stroke();
+  }
+  // a hair caught in the gate
+  for (let f0 = fi - 11; f0 <= fi; f0++) {
+    const q = rngFor(S.seed, 3000017 + f0); if (q() >= S.scratch * .006) continue;
+    const life = 3 + q() * 8, age = fi - f0; if (age >= life) continue;
+    const x = (q() < .5 ? q() * W * .2 : W - q() * W * .2) + (r() - .5) * 3 * U * age, y = q() * H, s = (40 + q() * 120) * U, p = q() * 6;
+    dg.strokeStyle = 'rgba(10,8,6,.9)'; dg.lineWidth = 1.4 * U;
+    dg.beginPath(); dg.moveTo(x, y); dg.bezierCurveTo(x + Math.cos(p) * s, y + Math.sin(p) * s, x - Math.sin(p) * s, y + s, x + s * .3, y + s * 1.3); dg.stroke();
+  }
+  // splice: tape edge and cement line across the frame
+  if (cut.k >= 0 && cut.k < 2) {
+    dg.fillStyle = 'rgba(255,250,230,.18)'; dg.fillRect(0, cut.y - 30 * U, W, 60 * U);
+    dg.fillStyle = 'rgba(10,8,6,.7)'; dg.fillRect(0, cut.y - 2 * U, W, 4 * U);
+  }
+  if (S.edge) drawFilmEdge(t);
+  if (cut.k === 0) { dg.fillStyle = 'rgba(255,252,240,.85)'; dg.fillRect(0, 0, W, H); }
+}
+function drawFilmEdge(t) {
+  const ew = W * .065;
+  dg.fillStyle = '#0b0907'; dg.fillRect(0, 0, ew, H);
+  dg.fillStyle = '#d9cfb4';
+  const ph = H / 4, hh = ew * .3;
+  for (let i = 0; i < 5; i++) { const y = i * ph + ph / 2 - hh / 2; dg.beginPath(); dg.roundRect ? dg.roundRect(ew * .12, y, ew * .28, hh, ew * .05) : dg.rect(ew * .12, y, ew * .28, hh); dg.fill(); }
+  if (!A.buffer) return;
+  // variable-area soundtrack of the mix at this frame
+  const data = A.buffer.getChannelData(0), st = Math.floor(t * A.buffer.sampleRate), span = 2400, cx = ew * .72, half = ew * .2;
+  let pk = .02; for (let i = 0; i < span; i += 3) pk = Math.max(pk, Math.abs(data[st + i] || 0));
+  const pts = []; for (let y = 0; y <= H; y += 3 * U) pts.push([y, Math.abs(data[st + ((y / H * span) | 0)] || 0) / pk * half]);
+  dg.fillStyle = '#f3ecd8'; dg.beginPath();
+  pts.forEach(([y, w], j) => j ? dg.lineTo(cx - w, y) : dg.moveTo(cx - w, y));
+  for (let j = pts.length - 1; j >= 0; j--) dg.lineTo(cx + pts[j][1], pts[j][0]);
+  dg.fill();
+}
+
+/* ------------------------------------------------------------------ one frame */
+const LOOK_IDS = { cutpaper:0, toon:1, clay:2, halftone:3, lines:4, scratch:5 };
+const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+function render(t, fi, live) {
+  const lid = LOOK_IDS[lookAt(t)] ?? 1, P = palAt(t), scratch = lid === 5;
+  // finished pieces are baked into the volume in chunks; the newest are drawn live, still moving
+  const nBorn = upperBound(SIM.t0s, t);
+  let B = Math.min(nBorn, Math.floor(upperBound(SIM.ends, t) / CHUNK) * CHUNK);
+  if (nBorn - B > MAXP) B = nBorn - MAXP;
+  ensureBaked(B);
+  const nLive = nBorn - B;
+  for (let k = 0; k < nLive; k++) packPrim(liveArr, k, PRIMS[B + k], t);
+
+  const cam = cameraAt(t), fwd = vnorm([cam.tg[0] - cam.eye[0], cam.tg[1] - cam.eye[1], cam.tg[2] - cam.eye[2]]);
+  const right = vnorm(cross3(fwd, [0, 1, 0])), up = cross3(right, fwd);
+  const light = vnorm([-.55 * right[0] + .8 * up[0] - .35 * fwd[0], -.55 * right[1] + .8 * up[1] - .35 * fwd[1], -.55 * right[2] + .8 * up[2] - .35 * fwd[2]]);
+  const aspect = RW / RH; let tanY = Math.tan(cam.fov * Math.PI / 360); if (aspect < 1) tanY /= aspect;
+  const h1 = hash01(fi, 31), h2 = hash01(fi, 37), h3 = hash01(fi, 41);
+  const bg = scratch ? '#121015' : P.bg, band = scratch ? '#1f1b20' : P.band, ink = scratch ? '#f3ecd8' : inkFor(P);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, T.fbRay); gl.viewport(0, 0, RW, RH);
+  let pr = PROG.ray, u = pr.u; gl.useProgram(pr.p);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_3D, BK.vols[BK.cur]); gl.uniform1i(u.uVol, 0);
+  gl.uniform4fv(u.uP, liveArr); gl.uniform1i(u.uCount, nLive); gl.uniform1f(u.uK, SIM.K);
+  gl.uniform1i(u.uSym, SIM.sym); gl.uniform1f(u.uSymN, Math.max(2, SIM.sym));
+  gl.uniform1f(u.uB, BOX); gl.uniform1f(u.uVolN, BK.N); gl.uniform1f(u.uVolOn, BK.baked > 0 ? 1 : 0);
+  gl.uniform4f(u.uBoil, h1 * TAU, h2 * TAU, h3 * TAU, S.boil * .006);
+  gl.uniform2f(u.uRes, RW, RH); gl.uniform2f(u.uJit, (h1 - .5) * 4 * S.boil, (h2 - .5) * 4 * S.boil);
+  gl.uniform3fv(u.uEye, cam.eye); gl.uniform3fv(u.uFwd, fwd); gl.uniform3fv(u.uRight, right); gl.uniform3fv(u.uUp, up); gl.uniform3fv(u.uLight, light);
+  gl.uniform1f(u.uTan, tanY); gl.uniform1f(u.uAspect, aspect); gl.uniform1f(u.uOrtho, cam.ortho ? 1 : 0); gl.uniform1f(u.uOrthoH, cam.D * tanY);
+  gl.uniform3fv(u.uBg, hexRGB(bg)); gl.uniform3fv(u.uBand, hexRGB(band)); gl.uniform3fv(u.uInkC, hexRGB(ink));
+  gl.uniform1i(u.uLook, lid); gl.uniform1i(u.uGround, { void:0, plinth:1, shadow:2 }[S.ground] ?? 1);
+  gl.uniform1f(u.uFloorY, FLOOR_Y); gl.uniform1f(u.uShadows, S.shadows ? 1 : 0); gl.uniform1f(u.uPx, RW / 1280);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, T.fbInk);
+  pr = PROG.ink; u = pr.u; gl.useProgram(pr.p);
+  [T.col, T.nd, T.id].forEach((tx, i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tx); });
+  gl.uniform1i(u.uCol, 0); gl.uniform1i(u.uND, 1); gl.uniform1i(u.uID, 2);
+  gl.uniform2f(u.uRes, RW, RH); gl.uniform1f(u.uW, Math.max(.75, lerp(.6, 4, S.inkW) * RW / 1280)); gl.uniform1f(u.uBoil, S.boil);
+  gl.uniform1f(u.uOn, S.ink === 'none' && !scratch ? 0 : 1); gl.uniform3fv(u.uInkC, hexRGB(ink)); gl.uniform3f(u.uSeed, h1 * TAU, h2 * TAU, h3 * TAU);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  const cut = cutInfo(t, fi, live);
+  filmDamage(t, fi, cut);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, view.width, view.height);
+  pr = PROG.post; u = pr.u; gl.useProgram(pr.p);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, T.ink); gl.uniform1i(u.tex, 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, T.dmg);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, dmgC); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.uniform1i(u.dmg, 1);
+  // projector gate weave and lamp flicker, both functions of the frame number
+  const wx = S.weave * (.0011 * Math.sin(fi * .37 + 1.3) + .0007 * Math.sin(fi * 1.13 + 4.1) + (hash01(fi, 11) - .5) * .0008);
+  const wy = S.weave * (.0016 * Math.sin(fi * .29 + .4) + .0009 * Math.sin(fi * .97 + 2.2) + (hash01(fi, 13) - .5) * .0012
+    + (hash01(Math.floor(fi / 3), 17) < .01 ? (hash01(fi, 19) - .5) * .006 : 0));
+  const flick = 1 + (hash01(fi, 7) - .5) * .14 * S.flicker + Math.sin(fi / S.fps * 13) * .015 * S.flicker + punchAt(t) * .05;
+  gl.uniform2f(u.res, view.width, view.height); gl.uniform2f(u.weave, wx, wy);
+  gl.uniform1f(u.seed, hash01(fi, 23) * 100); gl.uniform1f(u.grain, S.grain); gl.uniform1f(u.gsize, Math.max(1, view.width / 1500));
+  gl.uniform1f(u.flick, flick); gl.uniform1f(u.vign, S.vignette); gl.uniform1f(u.chroma, S.chroma);
+  gl.uniform1f(u.hal, S.halation); gl.uniform1f(u.roll, cut.roll);
+  gl.uniform1f(u.sat, S.saturation * 2); gl.uniform1f(u.temp, S.warmth * 2 - 1);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+function setSizes(vw, vh, sw, sh, q) {
+  view.width = vw; view.height = vh; W = sw; H = sh; U = Math.max(W, H * .8) / 1280;
+  dmgC.width = W; dmgC.height = H;
+  RW = Math.max(2, Math.round(W * q)); RH = Math.max(2, Math.round(H * q));
+  if (GLOK) allocTargets();
+  dirty = true;
+}
+// resolution is a fraction of the frame, so a chunky preview exports just as chunky at any size
+const resScale = () => lerp(.06, 1, S.quality * S.quality);
+function resize() {
+  if (EXPORT) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), sw = Math.round(Math.min(innerWidth * dpr, 1600));
+  setSizes((innerWidth * dpr) | 0, (innerHeight * dpr) | 0, sw, Math.round(sw * innerHeight / innerWidth), resScale());
+}
+
+/* ------------------------------------------------------------------ main loop: draws at the film frame rate; on twos it is stop-motion */
+let lastKey = -1;
+function loop(ts) {
+  requestAnimationFrame(loop);
+  if (EXPORT || !GLOK) return;
+  const now = ts / 1000;
+  let t = A.buffer ? curTime() : Math.min(now % (DEMO_LEN + 4), DEMO_LEN);
+  const live = A.playing || !A.buffer;
+  const fi = live ? frameOf(t) : Math.floor(now * S.fps);   // the projector keeps running while paused
+  if (fi === lastKey && !dirty) return;
+  lastKey = fi; dirty = false;
+  render(frameOf(t) / S.fps, fi, live);
+  if (A.buffer && !seeking && !statusMsg) { const d = A.buffer.duration; $('#seek').value = (t / d * 1000) | 0; $('#time').textContent = `${fmt(t)} / ${fmt(d)}`; }
+}
+
+/* ------------------------------------------------------------------ MP4 export: deterministic, frame by frame */
+const SIZES = { '1080p':[1920, 1080], '720p':[1280, 720], 'square':[1080, 1080], 'vertical':[1080, 1920], '4k':[3840, 2160] };
+// bits per pixel per frame; the grain is fresh noise every frame, so it is what these mostly pay for
+const EXPORT_BPP = { master:.4, high:.2, small:.1 };
+async function pickCodecs(w, h, fps, sr, ch) {
+  const bpp = EXPORT_BPP[S.expQ] || .4, out = {}, bitrate = Math.round(Math.min(60e6 * bpp / .4, w * h * fps * bpp));
+  for (const codec of ['avc1.640033', 'avc1.640034', 'avc1.64002A', 'avc1.640028', 'avc1.4D0033', 'avc1.42E033']) {
+    const cfg = { codec, width:w, height:h, bitrate, framerate:fps, avc:{ format:'avc' } };
+    try { if ((await VideoEncoder.isConfigSupported(cfg)).supported) { out.video = cfg; break; } } catch (e) {}
+  }
+  if (window.AudioEncoder) for (const [codec, mux] of [['mp4a.40.2', 'aac'], ['opus', 'opus']]) {
+    const cfg = { codec, sampleRate:sr, numberOfChannels:ch, bitrate:256000 };
+    try { if ((await AudioEncoder.isConfigSupported(cfg)).supported) { out.audio = cfg; out.audioMux = mux; break; } } catch (e) {}
+  }
+  return out;
+}
+function encodeAudio(buf, enc) {
+  const ch = buf.numberOfChannels, sr = buf.sampleRate, block = 4096;
+  for (let off = 0; off < buf.length; off += block) {
+    const n = Math.min(block, buf.length - off), data = new Float32Array(n * ch);
+    for (let c = 0; c < ch; c++) data.set(buf.getChannelData(c).subarray(off, off + n), c * n);
+    const ad = new AudioData({ format:'f32-planar', sampleRate:sr, numberOfFrames:n, numberOfChannels:ch, timestamp:Math.round(off / sr * 1e6), data });
+    enc.encode(ad); ad.close();
+  }
+}
+const exportName = lengthKey => `${A.name || 'sculpture'} sculpture${lengthKey === 'clip' ? ' (clip)' : ''}.mp4`;
+// file: a FileSystemFileHandle to stream into (memory stays flat at any size); without one the video is built in memory
+async function exportMP4(sizeKey, lengthKey, file) {
+  if (!A.buffer || EXPORT || !GLOK) return;
+  if (!window.VideoEncoder || !window.Mp4Muxer) return setExportMsg('MP4 export needs a recent Chrome, Edge or Safari.');
+  initAudio(); pause();
+  const [w, h] = SIZES[sizeKey], fps = S.fps, sr = 48000, ch = Math.min(2, A.buffer.numberOfChannels);
+  const songStart = lengthKey === 'clip' ? A.offset : 0;
+  const songDur = lengthKey === 'clip' ? Math.min(30, A.buffer.duration - songStart) : A.buffer.duration;
+  // silent padding: the empty turntable before the music, the finished piece turning after it
+  const pad = +S.pad || 0, start = songStart - pad, dur = songDur + 2 * pad;
+  const codecs = await pickCodecs(w, h, fps, sr, ch);
+  if (!codecs.video) return setExportMsg('This browser cannot encode H.264 at that size.');
+  const stream = file ? await file.createWritable() : null;
+  const target = stream ? new Mp4Muxer.FileSystemWritableFileStreamTarget(stream) : new Mp4Muxer.ArrayBufferTarget();
+  const muxer = new Mp4Muxer.Muxer({ target, fastStart:stream ? false : 'in-memory', firstTimestampBehavior:'offset',
+    video:{ codec:'avc', width:w, height:h, frameRate:fps },
+    audio:codecs.audio ? { codec:codecs.audioMux, numberOfChannels:ch, sampleRate:sr } : undefined });
+  let failed = null;
+  const ve = new VideoEncoder({ output:(c, m) => muxer.addVideoChunk(c, m), error:e => { failed = e; } });
+  ve.configure(codecs.video);
+  EXPORT = { cancel:false, t0:performance.now() };
+  document.body.classList.add('exporting');
+  setSizes(w, h, w, h, resScale()); BK.baked = 0;
+  let saved = false;
+  const total = Math.max(1, Math.floor(dur * fps)), f0 = frameOf(start);
+  try {
+    for (let i = 0; i < total; i++) {
+      const fi = f0 + i;
+      render(fi / fps, fi, true);
+      const vf = new VideoFrame(view, { timestamp:Math.round(i * 1e6 / fps), duration:Math.round(1e6 / fps) });
+      ve.encode(vf, { keyFrame:i % (fps * 2) === 0 }); vf.close();
+      while (ve.encodeQueueSize > 4) await yieldNow();
+      if (i % 4 === 0) { showProgress(i / total); await yieldNow(); }
+      if (failed) throw failed;
+      if (EXPORT.cancel) throw new Error('cancelled');
+      if (gl.isContextLost()) throw new Error('the graphics card reset (try a smaller size or lower resolution)');
+    }
+    setExportMsg('finishing…');
+    await ve.flush();
+    if (codecs.audio) {
+      const oc = new OfflineAudioContext(ch, Math.ceil(dur * sr), sr), src = oc.createBufferSource();
+      src.buffer = A.buffer; src.connect(oc.destination); src.start(pad, songStart, songDur);
+      const rendered = await oc.startRendering();
+      const ae = new AudioEncoder({ output:(c, m) => muxer.addAudioChunk(c, m), error:e => { failed = e; } });
+      ae.configure(codecs.audio); encodeAudio(rendered, ae); await ae.flush(); ae.close();
+    }
+    if (failed) throw failed;
+    muxer.finalize();
+    if (stream) { await stream.close(); saved = true; setExportMsg(`saved ${file.name}`); }
+    else {
+      const a = document.createElement('a'), blob = new Blob([target.buffer], { type:'video/mp4' });
+      target.buffer = null;
+      a.href = URL.createObjectURL(blob); a.download = exportName(lengthKey); a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      setExportMsg(`saved ${a.download} · ${(blob.size / 1048576).toFixed(0)} MB`);
+    }
+  } catch (e) {
+    setExportMsg(e.message === 'cancelled' ? 'export cancelled' : 'export failed: ' + e.message);
+    console.error(e);
+  } finally {
+    try { ve.close(); } catch (e) {}
+    if (stream && !saved) try { await stream.abort(); } catch (e) {}
+    EXPORT = null; document.body.classList.remove('exporting');
+    BK.baked = 0; resize(); A.offset = songStart; dirty = true;
+  }
+}
+function showProgress(p) {
+  const el = (performance.now() - EXPORT.t0) / 1000, eta = p > .01 ? el / p - el : 0;
+  $('#exp-bar').style.width = `${(p * 100).toFixed(1)}%`;
+  $('#exp-text').textContent = `rendering ${(p * 100).toFixed(0)}%${p > .02 ? ` · about ${fmt(eta)} left` : ''}`;
+}
+function setExportMsg(m) { $('#exp-text').textContent = m; $('#exp-msg').textContent = m; }
+
+/* ------------------------------------------------------------------ UI */
+const fmt = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+let statusMsg = '';
+function setStatus(m) { statusMsg = m; if (m) $('#time').textContent = m; }
+function updateUI() { $('#play').textContent = A.playing ? 'Pause' : 'Play'; $('#look').value = S.look; }
+function togglePlay() { if (EXPORT) return; initAudio(); if (!A.buffer) return $('#file').click(); A.playing ? pause() : play(); }
+
+function addSlider(parent, k, label, after) {
+  const l = document.createElement('label'); l.innerHTML = `<span>${label}</span><input type="range" min="0" max="1" step="0.01" value="${S[k]}">`;
+  l.querySelector('input').oninput = e => { S[k] = +e.target.value; saveSettings(); after ? after() : (dirty = true); }; parent.appendChild(l);
+  return l;
+}
+function addSelect(parent, k, label, opts, after) {
+  const l = document.createElement('label');
+  l.innerHTML = `<span>${label}</span><select>${opts.map(([v, txt]) => `<option value="${v}">${txt}</option>`).join('')}</select>`;
+  const s = l.querySelector('select'); s.value = String(S[k]);
+  s.onchange = () => { S[k] = typeof S[k] === 'number' ? +s.value : s.value; saveSettings(); after ? after() : (dirty = true); };
+  parent.appendChild(l); return l;
+}
+function addCheck(parent, k, label, after) {
+  const c = document.createElement('label'); c.className = 'check';
+  c.innerHTML = `<input type="checkbox" ${S[k] ? 'checked' : ''}> ${label}`;
+  c.querySelector('input').onchange = e => { S[k] = e.target.checked; saveSettings(); after ? after() : (dirty = true); }; parent.appendChild(c);
+  return c;
+}
+function addHint(parent, text) { const h = document.createElement('div'); h.className = 'hint'; h.textContent = text; parent.appendChild(h); return h; }
+const geom = () => schedule(3), colour = () => schedule(2), camera = () => schedule(1);
+
+// sculpt
+const sp = $('#sculptPanel');
+const seedBox = document.createElement('label');
+seedBox.innerHTML = `<span>Seed <b id="seedNo"></b></span><button>New seed</button>`;
+seedBox.querySelector('button').onclick = () => reseed(); sp.appendChild(seedBox);
+function reseed() { S.seed = hashInt(S.seed, 99) % 99999 + 1; saveSettings(); $('#seedNo').textContent = S.seed; geom(); }
+addSelect(sp, 'carve', 'Carving', [['pitch', 'Notes drill in'], ['hats', 'Hi-hats punch holes'], ['offbeat', 'Offbeats bore'], ['chords', 'Chord changes chisel'], ['inverse', 'Inverse: notes add, drums carve']], geom);
+addSelect(sp, 'shapes', 'Pieces', [['mixed', 'Mixed, by band'], ['blocks', 'Blocks'], ['spheres', 'Spheres'], ['rods', 'Rods']], geom);
+addSlider(sp, 'growth', 'Growth: sparse ↔ dense', geom);
+addSlider(sp, 'size', 'Piece size', geom);
+addSlider(sp, 'embed', 'Perched ↔ buried', geom);
+addSlider(sp, 'melt', 'Hard edges ↔ melted', geom);
+addSlider(sp, 'mass', 'Mass budget: airy ↔ solid', geom);
+addSlider(sp, 'pitchSens', 'Pitch sensitivity', geom);
+addSelect(sp, 'symmetry', 'Symmetry', [['none', 'None'], ['mirror', 'Mirror'], ['3', '3-fold'], ['4', '4-fold'], ['5', '5-fold'], ['6', '6-fold'], ['8', '8-fold']], geom);
+addSelect(sp, 'orient', 'Orientation', [['aligned', 'Squared up'], ['normal', 'Follow the surface'], ['tumbled', 'Tumbled, 45° steps']], geom);
+addSelect(sp, 'detail', 'Baked detail', [['96', '96³ · fast'], ['128', '128³'], ['160', '160³'], ['192', '192³ · fine']], () => { if (GLOK) allocVolume(); dirty = true; });
+addCheck(sp, 'stack', 'Stack under gravity', geom);
+const stats = addHint(sp, '');
+function showStats() {
+  $('#seedNo').textContent = S.seed;
+  stats.textContent = `${PRIMS.length} pieces · ${SIM.nAdd} built · ${SIM.nSub} carved · mass ${(SIM.mass * 100) | 0}%` + (AN && !AN.demo ? ` · ${AN.bpm.toFixed(0)} bpm · ${AN.sections.length} sections` : ' · demo pattern');
+}
+
+// camera
+const cp = $('#cameraPanel');
+addSelect(cp, 'turn', 'Turntable', [['stop', 'Steady turn'], ['ratchet', 'Ratchet on the beat'], ['loud', 'Speed follows loudness'], ['pingpong', 'Rock back and forth'], ['still', 'Still']], camera);
+addSlider(cp, 'turnSpeed', 'Turn speed', camera);
+addSlider(cp, 'dist', 'Distance');
+addSlider(cp, 'elev', 'Low ↔ overhead');
+addSlider(cp, 'fov', 'Lens: long ↔ wide');
+addSlider(cp, 'punch', 'Kick punch-in');
+addSlider(cp, 'follow', 'Glance at new pieces');
+addSelect(cp, 'shots', 'Shots', [['off', 'One shot per section'], ['2', 'New shot every 2 bars'], ['4', 'Every 4 bars'], ['8', 'Every 8 bars'], ['16', 'Every 16 bars']], camera);
+addSelect(cp, 'cuts', 'Between shots', [['splice', 'Splice cut'], ['clean', 'Clean cut'], ['glide', 'Glide']], camera);
+addCheck(cp, 'dolly', 'Dolly-zoom on kicks');
+
+// colour
+const kp = $('#colourPanel');
+const palLabel = addSlider(kp, 'variety', '', colour);
+addSlider(kp, 'colourRate', 'Colour changes: rare ↔ every bar', colour);
+addSelect(kp, 'bgChange', 'Ground colour changes', [['sections', 'At new sections'], ['never', 'Never'], ['colours', 'With every colour change']], colour);
+addSelect(kp, 'cut', 'Carved faces', [['accent', 'Contrasting colour'], ['cream', 'Cream'], ['black', 'Black'], ['ground', 'Ground colour']], colour);
+addSelect(kp, 'ink', 'Ink', [['auto', 'Black or cream'], ['black', 'Black'], ['cream', 'Cream'], ['none', 'None']]);
+addSlider(kp, 'inkW', 'Ink weight');
+addSelect(kp, 'ground', 'Ground', [['plinth', 'Turntable'], ['shadow', 'Shadow only'], ['void', 'Nothing']]);
+addCheck(kp, 'shadows', 'Cast shadows');
+const swatchBox = document.createElement('label');
+swatchBox.innerHTML = `<span>Colours at the playhead</span><div class="swatches"></div>`; kp.appendChild(swatchBox);
+const shuffle = document.createElement('button'); shuffle.textContent = 'Shuffle colours';
+shuffle.onclick = () => { S.palShuffle++; saveSettings(); rebuildColour(); }; kp.appendChild(shuffle);
+function showSwatches() {
+  palLabel.querySelector('span').textContent = `Palette: ${tierOf(S.variety).name}`;
+  if (!PALS.length) return;
+  const P = palAt(A.buffer ? curTime() : 0);
+  swatchBox.querySelector('.swatches').innerHTML = P.theme.map(c => `<i style="background:${c}" class="${[P.bg, P.band, P.barCol, P.cutAccent].includes(c) ? 'used' : ''}"></i>`).join('');
+}
+setInterval(() => { if (kp.classList.contains('open')) showSwatches(); }, 500);
+
+// film
+const fp = $('#filmPanel');
+for (const [k, label] of [['saturation','Film stock: B&W ↔ Saturated'], ['warmth','Cool ↔ Warm'], ['grain','Grain'], ['flicker','Shutter flicker'],
+  ['dust','Dust & specks'], ['scratch','Scratches & hairs'], ['weave','Gate weave'], ['boil','Hand-made boil'], ['vignette','Vignette'], ['chroma','Colour fringe'], ['halation','Halation']]) addSlider(fp, k, label);
+addSelect(fp, 'fps', 'Frame rate', [['12', '12 · on twos'], ['24', '24 · film'], ['30', '30'], ['60', '60 · smooth']]);
+addSlider(fp, 'quality', 'Resolution: chunky pixels ↔ full', resize);
+addCheck(fp, 'edge', 'Show film edge');
+addCheck(fp, 'splices', 'Splice cuts (flash + frame roll)');
+addHint(fp, 'space play · 1–7 looks · ← → seek · r new seed · e export · f fullscreen · h hide controls · drop a file anywhere');
+
+const PANELS = [['#sculptBtn', '#sculptPanel'], ['#cameraBtn', '#cameraPanel'], ['#colourBtn', '#colourPanel'], ['#filmBtn', '#filmPanel'], ['#exportBtn', '#exportPanel']];
+function togglePanel(btn, panel) {
+  const open = !$(panel).classList.contains('open');
+  for (const [b, p] of PANELS) { $(b).classList.remove('on'); $(p).classList.remove('open'); }
+  if (open) { $(btn).classList.add('on'); $(panel).classList.add('open'); if (panel === '#colourPanel') showSwatches(); }
+}
+for (const [b, p] of PANELS) $(b).onclick = () => togglePanel(b, p);
+
+$('#load').onclick = () => { initAudio(); $('#file').click(); };
+$('#file').onchange = async e => { const f = e.target.files[0]; if (f) loadArrayBuffer(await f.arrayBuffer(), f.name); e.target.value = ''; };
+$('#play').onclick = togglePlay;
+view.onclick = togglePlay;
+$('#look').onchange = e => { S.look = e.target.value; saveSettings(); dirty = true; };
+$('#exp-go').onclick = async () => {
+  if (!A.buffer || EXPORT) return;
+  const len = $('#exp-len').value; let file = null;
+  // ask where to save first, so the video can stream straight to disk while it renders
+  if (window.showSaveFilePicker) {
+    try { file = await showSaveFilePicker({ suggestedName:exportName(len), types:[{ description:'MP4 video', accept:{ 'video/mp4':['.mp4'] } }] }); }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  exportMP4($('#exp-size').value, len, file);
+};
+$('#exp-pad').value = String(S.pad);
+$('#exp-q').value = S.expQ;
+$('#exp-q').onchange = e => { S.expQ = e.target.value; saveSettings(); };
+$('#exp-pad').onchange = e => { S.pad = +e.target.value; saveSettings(); };
+$('#exp-cancel').onclick = () => { if (EXPORT) EXPORT.cancel = true; };
+$('#fs').onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.();
+let seeking = false;
+$('#seek').oninput = () => { seeking = true; };
+$('#seek').onchange = e => { seeking = false; if (A.buffer) seek(e.target.value / 1000 * A.buffer.duration); };
+
+addEventListener('keydown', e => {
+  if (EXPORT) return;
+  if (e.target.tagName === 'SELECT' || (e.target.tagName === 'INPUT' && e.target.type !== 'range')) return;
+  const looks = ['auto', ...LOOKS];
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if (e.key >= '1' && e.key <= '7') { S.look = looks[+e.key - 1]; saveSettings(); updateUI(); dirty = true; }
+  else if (e.key === 'ArrowRight') seek(curTime() + 5);
+  else if (e.key === 'ArrowLeft') seek(curTime() - 5);
+  else if (e.key === 'r') reseed();
+  else if (e.key === 'e') togglePanel('#exportBtn', '#exportPanel');
+  else if (e.key === 'f') $('#fs').click();
+  else if (e.key === 'h') document.body.classList.toggle('idle');
+});
+let idleTimer;
+addEventListener('pointermove', () => {
+  document.body.classList.remove('idle'); clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => { if (A.playing) document.body.classList.add('idle'); }, 2500);
+});
+addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('dragging'); });
+addEventListener('dragleave', e => { if (!e.relatedTarget) document.body.classList.remove('dragging'); });
+addEventListener('drop', async e => {
+  e.preventDefault(); document.body.classList.remove('dragging'); initAudio();
+  const f = e.dataTransfer.files[0]; if (f) loadArrayBuffer(await f.arrayBuffer(), f.name);
+});
+addEventListener('resize', resize);
+view.addEventListener('webglcontextlost', e => { e.preventDefault(); setStatus('graphics card reset: reload the page'); });
+
+/* ------------------------------------------------------------------ start */
+AN = fakeAnalysis();
+if (!GLOK) { setStatus('needs WebGL2 with float render targets'); $('#intro').textContent = 'This browser cannot run the raymarcher. Try desktop Chrome or Edge.'; }
+else {
+  try { initGL(); } catch (e) { console.error(e); setStatus('shader error, see console'); }
+  resize(); rebuildAll(); updateUI(); requestAnimationFrame(loop);
+}
+// ?src=song.m4a preloads a file when served over http (still needs a click to start the sound)
+const qs = new URLSearchParams(location.search).get('src');
+if (qs) fetch(qs).then(r => r.arrayBuffer()).then(ab => loadArrayBuffer(ab, qs, false)).catch(() => setStatus('could not load ' + qs));
+window.sculpt = { A, S, SIM, BK, get AN() { return AN; }, get PRIMS() { return PRIMS; }, seek, play, pause, exportMP4, rebuildAll, render };
+</script>
+<script src="../../shared/source.js"></script>
+<script src="../../shared/hub.js"></script>
+</body>
+</html>

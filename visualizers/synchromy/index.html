@@ -1,0 +1,1143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Synchromy Machine</title>
+<style>
+  :root { --ink:#f3ecd8; --panel:rgba(14,12,10,.78); --line:rgba(243,236,216,.2); --accent:#f6cf1d; }
+  html,body { margin:0; height:100%; background:#0c0a08; overflow:hidden; color:var(--ink);
+    font:13px/1.3 Futura,"Avenir Next","Helvetica Neue",Arial,sans-serif; }
+  canvas#view { position:fixed; inset:0; width:100%; height:100%; display:block; cursor:pointer; }
+  body.idle canvas#view { cursor:none; }
+  .ui { position:fixed; left:16px; right:16px; bottom:16px; display:flex; flex-direction:column; gap:8px; transition:opacity .5s; }
+  body.idle .ui { opacity:0; pointer-events:none; }
+  .bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; background:var(--panel); backdrop-filter:blur(8px);
+    -webkit-backdrop-filter:blur(8px); border:1px solid var(--line); border-radius:6px; padding:8px 10px; }
+  button,select { font:inherit; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink);
+    background:transparent; border:1px solid var(--line); border-radius:4px; padding:6px 10px; cursor:pointer; }
+  select option { background:#1a1714; }
+  button:hover,select:hover { border-color:var(--ink); }
+  button.on { background:var(--ink); color:#0c0a08; }
+  button.rec.on { background:#e3262f; border-color:#e3262f; color:#fff; }
+  #seek { flex:1; min-width:120px; accent-color:var(--accent); }
+  .time { font-variant-numeric:tabular-nums; opacity:.7; min-width:92px; text-align:right; font-size:12px; }
+  .settings { display:none; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px 18px; }
+  .settings.open { display:grid; }
+  .settings label { display:flex; flex-direction:column; gap:4px; font-size:10px; letter-spacing:.12em; text-transform:uppercase; opacity:.85; }
+  .settings input[type=range] { accent-color:var(--accent); width:100%; }
+  .settings label.check { flex-direction:row; align-items:center; gap:8px; }
+  .bgrow { display:flex; gap:6px; align-items:center; }
+  .bgrow select { flex:1; }
+  .bgrow input[type=color] { width:34px; height:28px; padding:0; border:1px solid var(--line); border-radius:4px; background:none; }
+  .bgrow input[hidden] { display:none; }
+  .swatches { display:flex; flex-wrap:wrap; gap:4px; }
+  .swatches i { width:16px; height:16px; border-radius:3px; border:1px solid var(--line); opacity:.55; }
+  .swatches i.used { opacity:1; outline:1.5px solid var(--ink); outline-offset:1px; }
+  canvas#view { object-fit:contain; }
+  #exporting { display:none; position:fixed; left:50%; bottom:24px; transform:translateX(-50%); width:min(420px, calc(100% - 32px));
+    background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:12px; box-sizing:border-box;
+    flex-direction:column; gap:8px; font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+  #exporting .track { height:4px; background:var(--line); border-radius:2px; overflow:hidden; }
+  #exp-bar { height:100%; width:0; background:var(--accent); }
+  body.exporting #exporting { display:flex; }
+  body.exporting .ui { display:none; }
+  .hint { font-size:10px; letter-spacing:.1em; text-transform:uppercase; opacity:.45; grid-column:1/-1; }
+  .drop { position:fixed; inset:12px; border:3px dashed var(--accent); border-radius:10px; display:none; pointer-events:none; }
+  body.dragging .drop { display:block; }
+  @media (max-width:640px) { .hide-sm { display:none; } }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div class="drop"></div>
+<div class="ui">
+  <div class="settings bar" id="exportPanel">
+    <label>Size<select id="exp-size"><option value="1080p">1920 × 1080</option><option value="720p">1280 × 720</option><option value="square">1080 × 1080 square</option><option value="vertical">1080 × 1920 vertical</option></select></label>
+    <label>Length<select id="exp-len"><option value="full">Whole song</option><option value="clip">30 s from the playhead</option></select></label>
+    <label>File size<select id="exp-q"><option value="master">Master · largest</option><option value="high">High · about half</option><option value="small">Small · for sharing</option></select></label>
+    <label>Silence before &amp; after<select id="exp-pad"><option value="0">None</option><option value="2">2 s</option><option value="5">5 s</option><option value="10">10 s</option></select></label>
+    <label><span>&nbsp;</span><button id="exp-go">Render MP4</button></label>
+    <div class="hint" id="exp-msg">Renders frame by frame with your current mode, colour and film settings, at the film frame rate. Takes about as long as the song or less.</div>
+  </div>
+  <div class="settings bar" id="colour"></div>
+  <div class="settings bar" id="settings"></div>
+  <div class="bar">
+    <button id="load">Load</button>
+    <button id="play">Play</button>
+    <input id="seek" type="range" min="0" max="1000" value="0">
+    <span class="time" id="time">0:00 / 0:00</span>
+    <select id="mode" title="Mode (1–6)">
+      <option value="auto">Auto</option>
+      <option value="synchromy">Synchromy</option>
+      <option value="optical">Optical track</option>
+      <option value="dullcare">Dull Care</option>
+      <option value="rows">Rows</option>
+      <option value="rings">Rings</option>
+    </select>
+    <button id="mic" class="hide-sm">Mic</button>
+    <button id="rec" class="rec hide-sm">Rec</button>
+    <button id="palette">Colour</button>
+    <button id="export">Export</button>
+    <button id="gear">Film</button>
+    <button id="fs" class="hide-sm">Full</button>
+  </div>
+</div>
+<input type="file" id="file" accept="audio/*,video/*" hidden>
+<div id="exporting"><div id="exp-text">rendering…</div><div class="track"><div id="exp-bar"></div></div><button id="exp-cancel">Cancel</button></div>
+
+<script>
+/* mp4-muxer 5.2.2 (MIT, Vanilagy) — inlined so export works offline and from file:// */
+/**
+ * Minified by jsDelivr using Terser v5.39.0.
+ * Original file: /npm/mp4-muxer@5.2.2/build/mp4-muxer.js
+ *
+ * Do NOT use SRI with dynamically generated files! More information: https://www.jsdelivr.com/using-sri-with-dynamic-files
+ */
+"use strict";var Mp4Muxer=(()=>{var e=Object.defineProperty,t=Object.getOwnPropertyDescriptor,i=Object.getOwnPropertyNames,s=Object.prototype.hasOwnProperty,a=(e,t,i)=>{if(!t.has(e))throw TypeError("Cannot "+i)},r=(e,t,i)=>(a(e,t,"read from private field"),i?i.call(e):t.get(e)),n=(e,t,i)=>{if(t.has(e))throw TypeError("Cannot add the same private member more than once");t instanceof WeakSet?t.add(e):t.set(e,i)},o=(e,t,i,s)=>(a(e,t,"write to private field"),s?s.call(e,i):t.set(e,i),i),h=(e,t,i)=>(a(e,t,"access private method"),i),l={};((t,i)=>{for(var s in i)e(t,s,{get:i[s],enumerable:!0})})(l,{ArrayBufferTarget:()=>Me,FileSystemWritableFileStreamTarget:()=>Oe,Muxer:()=>Rt,StreamTarget:()=>We});var d,f,u,m,p,c,w,g,b=new Uint8Array(8),y=new DataView(b.buffer),k=e=>[(e%256+256)%256],T=e=>(y.setUint16(0,e,!1),[b[0],b[1]]),C=e=>(y.setUint32(0,e,!1),[b[1],b[2],b[3]]),v=e=>(y.setUint32(0,e,!1),[b[0],b[1],b[2],b[3]]),S=e=>(y.setUint32(0,Math.floor(e/2**32),!1),y.setUint32(4,e,!1),[b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]]),x=e=>(y.setInt16(0,256*e,!1),[b[0],b[1]]),z=e=>(y.setInt32(0,65536*e,!1),[b[0],b[1],b[2],b[3]]),E=e=>(y.setInt32(0,2**30*e,!1),[b[0],b[1],b[2],b[3]]),A=(e,t=!1)=>{let i=Array(e.length).fill(null).map(((t,i)=>e.charCodeAt(i)));return t&&i.push(0),i},M=e=>e&&e[e.length-1],W=e=>{let t;for(let i of e)(!t||i.presentationTimestamp>t.presentationTimestamp)&&(t=i);return t},O=(e,t,i=!0)=>{let s=e*t;return i?Math.round(s):s},B=e=>{let t=e*(Math.PI/180),i=Math.cos(t),s=Math.sin(t);return[i,s,0,-s,i,0,0,0,1]},U=B(0),D=e=>[z(e[0]),z(e[1]),E(e[2]),z(e[3]),z(e[4]),E(e[5]),z(e[6]),z(e[7]),E(e[8])],j=e=>e?"object"!=typeof e?e:Array.isArray(e)?e.map(j):Object.fromEntries(Object.entries(e).map((([e,t])=>[e,j(t)]))):e,R=e=>e>=0&&e<2**32,I=(e,t,i)=>({type:e,contents:t&&new Uint8Array(t.flat(10)),children:i}),N=(e,t,i,s,a)=>I(e,[k(t),C(i),s??[]],a),V=e=>({type:"mdat",largeSize:e}),F=(e,t,i=!1)=>I("moov",null,[L(t,e),...e.map((e=>$(e,t))),i?me(e):null]),L=(e,t)=>{let i=O(Math.max(0,...t.filter((e=>e.samples.length>0)).map((e=>{const t=W(e.samples);return t.presentationTimestamp+t.duration}))),Bt),s=Math.max(...t.map((e=>e.id)))+1,a=!R(e)||!R(i),r=a?S:v;return N("mvhd",+a,0,[r(e),r(e),v(Bt),r(i),z(1),x(1),Array(10).fill(0),D(U),Array(24).fill(0),v(s)])},$=(e,t)=>I("trak",null,[P(e,t),H(e,t)]),P=(e,t)=>{let i,s=W(e.samples),a=O(s?s.presentationTimestamp+s.duration:0,Bt),r=!R(t)||!R(a),n=r?S:v;return i="video"===e.info.type?"number"==typeof e.info.rotation?B(e.info.rotation):e.info.rotation:U,N("tkhd",+r,3,[n(t),n(t),v(e.id),v(0),n(a),Array(8).fill(0),T(0),T(0),x("audio"===e.info.type?1:0),T(0),D(i),z("video"===e.info.type?e.info.width:0),z("video"===e.info.type?e.info.height:0)])},H=(e,t)=>I("mdia",null,[_(e,t),q("video"===e.info.type?"vide":"soun"),G(e)]),_=(e,t)=>{let i=W(e.samples),s=O(i?i.presentationTimestamp+i.duration:0,e.timescale),a=!R(t)||!R(s),r=a?S:v;return N("mdhd",+a,0,[r(t),r(t),v(e.timescale),r(s),T(21956),T(0)])},q=e=>N("hdlr",0,0,[A("mhlr"),A(e),v(0),v(0),v(0),A("mp4-muxer-hdlr",!0)]),G=e=>I("minf",null,["video"===e.info.type?J():K(),Q(),Z(e)]),J=()=>N("vmhd",0,1,[T(0),T(0),T(0),T(0)]),K=()=>N("smhd",0,0,[T(0),T(0)]),Q=()=>I("dinf",null,[X()]),X=()=>N("dref",0,0,[v(1)],[Y()]),Y=()=>N("url ",0,1),Z=e=>{const t=e.compositionTimeOffsetTable.length>1||e.compositionTimeOffsetTable.some((e=>0!==e.sampleCompositionTimeOffset));return I("stbl",null,[ee(e),oe(e),he(e),le(e),de(e),fe(e),t?ue(e):null])},ee=e=>N("stsd",0,0,[v(1)],["video"===e.info.type?te(Se[e.info.codec],e):ne(ze[e.info.codec],e)]),te=(e,t)=>{return I(e,[Array(6).fill(0),T(1),T(0),T(0),Array(12).fill(0),T(t.info.width),T(t.info.height),v(4718592),v(4718592),v(0),T(1),Array(32).fill(0),T(24),(i=65535,y.setInt16(0,i,!1),[b[0],b[1]])],[xe[t.info.codec](t),t.info.decoderConfig.colorSpace?re(t):null]);var i},ie={bt709:1,bt470bg:5,smpte170m:6},se={bt709:1,smpte170m:6,"iec61966-2-1":13},ae={rgb:0,bt709:1,bt470bg:5,smpte170m:6},re=e=>I("colr",[A("nclx"),T(ie[e.info.decoderConfig.colorSpace.primaries]),T(se[e.info.decoderConfig.colorSpace.transfer]),T(ae[e.info.decoderConfig.colorSpace.matrix]),k((e.info.decoderConfig.colorSpace.fullRange?1:0)<<7)]),ne=(e,t)=>I(e,[Array(6).fill(0),T(1),T(0),T(0),v(0),T(t.info.numberOfChannels),T(16),T(0),T(0),z(t.info.sampleRate)],[Ee[t.info.codec](t)]),oe=e=>N("stts",0,0,[v(e.timeToSampleTable.length),e.timeToSampleTable.map((e=>[v(e.sampleCount),v(e.sampleDelta)]))]),he=e=>{if(e.samples.every((e=>"key"===e.type)))return null;let t=[...e.samples.entries()].filter((([,e])=>"key"===e.type));return N("stss",0,0,[v(t.length),t.map((([e])=>v(e+1)))])},le=e=>N("stsc",0,0,[v(e.compactlyCodedChunkTable.length),e.compactlyCodedChunkTable.map((e=>[v(e.firstChunk),v(e.samplesPerChunk),v(1)]))]),de=e=>N("stsz",0,0,[v(0),v(e.samples.length),e.samples.map((e=>v(e.size)))]),fe=e=>e.finalizedChunks.length>0&&M(e.finalizedChunks).offset>=2**32?N("co64",0,0,[v(e.finalizedChunks.length),e.finalizedChunks.map((e=>S(e.offset)))]):N("stco",0,0,[v(e.finalizedChunks.length),e.finalizedChunks.map((e=>v(e.offset)))]),ue=e=>N("ctts",0,0,[v(e.compositionTimeOffsetTable.length),e.compositionTimeOffsetTable.map((e=>[v(e.sampleCount),v(e.sampleCompositionTimeOffset)]))]),me=e=>I("mvex",null,e.map(pe)),pe=e=>N("trex",0,0,[v(e.id),v(1),v(0),v(0),v(0)]),ce=(e,t)=>I("moof",null,[we(e),...t.map(be)]),we=e=>N("mfhd",0,0,[v(e)]),ge=e=>{let t=0,i=0,s="delta"===e.type;return i|=+s,t|=s?1:2,t<<24|i<<16},be=e=>I("traf",null,[ye(e),ke(e),Te(e)]),ye=e=>{let t=0;t|=8,t|=16,t|=32,t|=131072;let i=e.currentChunk.samples[1]??e.currentChunk.samples[0],s={duration:i.timescaleUnitsToNextSample,size:i.size,flags:ge(i)};return N("tfhd",0,131128,[v(e.id),v(s.duration),v(s.size),v(s.flags)])},ke=e=>N("tfdt",1,0,[S(O(e.currentChunk.startTimestamp,e.timescale))]),Te=e=>{let t=e.currentChunk.samples.map((e=>e.timescaleUnitsToNextSample)),i=e.currentChunk.samples.map((e=>e.size)),s=e.currentChunk.samples.map(ge),a=e.currentChunk.samples.map((t=>O(t.presentationTimestamp-t.decodeTimestamp,e.timescale))),r=new Set(t),n=new Set(i),o=new Set(s),h=new Set(a),l=2===o.size&&s[0]!==s[1],d=r.size>1,f=n.size>1,u=!l&&o.size>1,m=h.size>1||[...h].some((e=>0!==e)),p=0;return p|=1,p|=4*+l,p|=256*+d,p|=512*+f,p|=1024*+u,p|=2048*+m,N("trun",1,p,[v(e.currentChunk.samples.length),v(e.currentChunk.offset-e.currentChunk.moofOffset||0),l?v(s[0]):[],e.currentChunk.samples.map(((e,r)=>{return[d?v(t[r]):[],f?v(i[r]):[],u?v(s[r]):[],m?(n=a[r],y.setInt32(0,n,!1),[b[0],b[1],b[2],b[3]]):[]];var n}))])},Ce=(e,t)=>N("tfra",1,0,[v(e.id),v(63),v(e.finalizedChunks.length),e.finalizedChunks.map((i=>[S(O(i.startTimestamp,e.timescale)),S(i.moofOffset),v(t+1),v(1),v(1)]))]),ve=()=>N("mfro",0,0,[v(0)]),Se={avc:"avc1",hevc:"hvc1",vp9:"vp09",av1:"av01"},xe={avc:e=>e.info.decoderConfig&&I("avcC",[...new Uint8Array(e.info.decoderConfig.description)]),hevc:e=>e.info.decoderConfig&&I("hvcC",[...new Uint8Array(e.info.decoderConfig.description)]),vp9:e=>{if(!e.info.decoderConfig)return null;let t=e.info.decoderConfig;if(!t.colorSpace)throw new Error("'colorSpace' is required in the decoder config for VP9.");let i=t.codec.split("."),s=Number(i[1]),a=Number(i[2]),r=0+(Number(i[3])<<4)+Number(t.colorSpace.fullRange);return N("vpcC",1,0,[k(s),k(a),k(r),k(2),k(2),k(2),T(0)])},av1:()=>I("av1C",[129,0,0,0])},ze={aac:"mp4a",opus:"Opus"},Ee={aac:e=>{let t=new Uint8Array(e.info.decoderConfig.description);return N("esds",0,0,[v(58753152),k(32+t.byteLength),T(1),k(0),v(75530368),k(18+t.byteLength),k(64),k(21),C(0),v(130071),v(130071),v(92307584),k(t.byteLength),...t,v(109084800),k(1),k(2)])},opus:e=>{let t=3840,i=0;const s=e.info.decoderConfig?.description;if(s){if(s.byteLength<18)throw new TypeError("Invalid decoder description provided for Opus; must be at least 18 bytes long.");const e=ArrayBuffer.isView(s)?new DataView(s.buffer,s.byteOffset,s.byteLength):new DataView(s);t=e.getUint16(10,!0),i=e.getInt16(14,!0)}return I("dOps",[k(0),k(e.info.numberOfChannels),T(t),v(e.info.sampleRate),x(i),k(0)])}},Ae=(Symbol("isTarget"),class{}),Me=class extends Ae{constructor(){super(...arguments),this.buffer=null}},We=class extends Ae{constructor(e){if(super(),this.options=e,"object"!=typeof e)throw new TypeError("StreamTarget requires an options object to be passed to its constructor.");if(e.onData){if("function"!=typeof e.onData)throw new TypeError("options.onData, when provided, must be a function.");if(e.onData.length<2)throw new TypeError("options.onData, when provided, must be a function that takes in at least two arguments (data and position). Ignoring the position argument, which specifies the byte offset at which the data is to be written, can lead to broken outputs.")}if(void 0!==e.chunked&&"boolean"!=typeof e.chunked)throw new TypeError("options.chunked, when provided, must be a boolean.");if(void 0!==e.chunkSize&&(!Number.isInteger(e.chunkSize)||e.chunkSize<1024))throw new TypeError("options.chunkSize, when provided, must be an integer and not smaller than 1024.")}},Oe=class extends Ae{constructor(e,t){if(super(),this.stream=e,this.options=t,!(e instanceof FileSystemWritableFileStream))throw new TypeError("FileSystemWritableFileStreamTarget requires a FileSystemWritableFileStream instance.");if(void 0!==t&&"object"!=typeof t)throw new TypeError("FileSystemWritableFileStreamTarget's options, when provided, must be an object.");if(t&&void 0!==t.chunkSize&&(!Number.isInteger(t.chunkSize)||t.chunkSize<=0))throw new TypeError("options.chunkSize, when provided, must be a positive integer")}},Be=class{constructor(){this.pos=0,n(this,d,new Uint8Array(8)),n(this,f,new DataView(r(this,d).buffer)),this.offsets=new WeakMap}seek(e){this.pos=e}writeU32(e){r(this,f).setUint32(0,e,!1),this.write(r(this,d).subarray(0,4))}writeU64(e){r(this,f).setUint32(0,Math.floor(e/2**32),!1),r(this,f).setUint32(4,e,!1),this.write(r(this,d).subarray(0,8))}writeAscii(e){for(let t=0;t<e.length;t++)r(this,f).setUint8(t%8,e.charCodeAt(t)),t%8==7&&this.write(r(this,d));e.length%8!=0&&this.write(r(this,d).subarray(0,e.length%8))}writeBox(e){if(this.offsets.set(e,this.pos),e.contents&&!e.children)this.writeBoxHeader(e,e.size??e.contents.byteLength+8),this.write(e.contents);else{let t=this.pos;if(this.writeBoxHeader(e,0),e.contents&&this.write(e.contents),e.children)for(let t of e.children)t&&this.writeBox(t);let i=this.pos,s=e.size??i-t;this.seek(t),this.writeBoxHeader(e,s),this.seek(i)}}writeBoxHeader(e,t){this.writeU32(e.largeSize?1:t),this.writeAscii(e.type),e.largeSize&&this.writeU64(t)}measureBoxHeader(e){return 8+(e.largeSize?8:0)}patchBox(e){let t=this.pos;this.seek(this.offsets.get(e)),this.writeBox(e),this.seek(t)}measureBox(e){if(e.contents&&!e.children){return this.measureBoxHeader(e)+e.contents.byteLength}{let t=this.measureBoxHeader(e);if(e.contents&&(t+=e.contents.byteLength),e.children)for(let i of e.children)i&&(t+=this.measureBox(i));return t}}};d=new WeakMap,f=new WeakMap;var Ue=class extends Be{constructor(e){super(),n(this,w),n(this,u,void 0),n(this,m,new ArrayBuffer(65536)),n(this,p,new Uint8Array(r(this,m))),n(this,c,0),o(this,u,e)}write(e){h(this,w,g).call(this,this.pos+e.byteLength),r(this,p).set(e,this.pos),this.pos+=e.byteLength,o(this,c,Math.max(r(this,c),this.pos))}finalize(){h(this,w,g).call(this,this.pos),r(this,u).buffer=r(this,m).slice(0,Math.max(r(this,c),this.pos))}};u=new WeakMap,m=new WeakMap,p=new WeakMap,c=new WeakMap,w=new WeakSet,g=function(e){let t=r(this,m).byteLength;for(;t<e;)t*=2;if(t===r(this,m).byteLength)return;let i=new ArrayBuffer(t),s=new Uint8Array(i);s.set(r(this,p),0),o(this,m,i),o(this,p,s)};var De,je,Re,Ie,Ne,Ve,Fe,Le,$e,Pe,He,_e,qe,Ge=class extends Be{constructor(e){super(),n(this,Ve),n(this,Le),n(this,Pe),n(this,_e),n(this,De,void 0),n(this,je,[]),n(this,Re,void 0),n(this,Ie,void 0),n(this,Ne,[]),o(this,De,e),o(this,Re,e.options?.chunked??!1),o(this,Ie,e.options?.chunkSize??16777216)}write(e){r(this,je).push({data:e.slice(),start:this.pos}),this.pos+=e.byteLength}flush(){if(0===r(this,je).length)return;let e=[],t=[...r(this,je)].sort(((e,t)=>e.start-t.start));e.push({start:t[0].start,size:t[0].data.byteLength});for(let i=1;i<t.length;i++){let s=e[e.length-1],a=t[i];a.start<=s.start+s.size?s.size=Math.max(s.size,a.start+a.data.byteLength-s.start):e.push({start:a.start,size:a.data.byteLength})}for(let t of e){t.data=new Uint8Array(t.size);for(let e of r(this,je))t.start<=e.start&&e.start<t.start+t.size&&t.data.set(e.data,e.start-t.start);r(this,Re)?(h(this,Ve,Fe).call(this,t.data,t.start),h(this,_e,qe).call(this)):r(this,De).options.onData?.(t.data,t.start)}r(this,je).length=0}finalize(){r(this,Re)&&h(this,_e,qe).call(this,!0)}};De=new WeakMap,je=new WeakMap,Re=new WeakMap,Ie=new WeakMap,Ne=new WeakMap,Ve=new WeakSet,Fe=function(e,t){let i=r(this,Ne).findIndex((e=>e.start<=t&&t<e.start+r(this,Ie)));-1===i&&(i=h(this,Pe,He).call(this,t));let s=r(this,Ne)[i],a=t-s.start,n=e.subarray(0,Math.min(r(this,Ie)-a,e.byteLength));s.data.set(n,a);let o={start:a,end:a+n.byteLength};if(h(this,Le,$e).call(this,s,o),0===s.written[0].start&&s.written[0].end===r(this,Ie)&&(s.shouldFlush=!0),r(this,Ne).length>2){for(let e=0;e<r(this,Ne).length-1;e++)r(this,Ne)[e].shouldFlush=!0;h(this,_e,qe).call(this)}n.byteLength<e.byteLength&&h(this,Ve,Fe).call(this,e.subarray(n.byteLength),t+n.byteLength)},Le=new WeakSet,$e=function(e,t){let i=0,s=e.written.length-1,a=-1;for(;i<=s;){let r=Math.floor(i+(s-i+1)/2);e.written[r].start<=t.start?(i=r+1,a=r):s=r-1}for(e.written.splice(a+1,0,t),(-1===a||e.written[a].end<t.start)&&a++;a<e.written.length-1&&e.written[a].end>=e.written[a+1].start;)e.written[a].end=Math.max(e.written[a].end,e.written[a+1].end),e.written.splice(a+1,1)},Pe=new WeakSet,He=function(e){let t={start:Math.floor(e/r(this,Ie))*r(this,Ie),data:new Uint8Array(r(this,Ie)),written:[],shouldFlush:!1};return r(this,Ne).push(t),r(this,Ne).sort(((e,t)=>e.start-t.start)),r(this,Ne).indexOf(t)},_e=new WeakSet,qe=function(e=!1){for(let t=0;t<r(this,Ne).length;t++){let i=r(this,Ne)[t];if(i.shouldFlush||e){for(let e of i.written)r(this,De).options.onData?.(i.data.subarray(e.start,e.end),i.start+e.start);r(this,Ne).splice(t--,1)}}};var Je,Ke,Qe,Xe,Ye,Ze,et,tt,it,st,at,rt,nt,ot,ht,lt,dt,ft,ut,mt,pt,ct,wt,gt,bt,yt,kt,Tt,Ct,vt,St,xt,zt,Et,At,Mt,Wt,Ot=class extends Ge{constructor(e){super(new We({onData:(t,i)=>e.stream.write({type:"write",data:t,position:i}),chunked:!0,chunkSize:e.options?.chunkSize}))}},Bt=1e3,Ut=["avc","hevc","vp9","av1"],Dt=["aac","opus"],jt=["strict","offset","cross-track-offset"],Rt=class{constructor(e){if(n(this,nt),n(this,ht),n(this,dt),n(this,ut),n(this,pt),n(this,wt),n(this,bt),n(this,kt),n(this,Ct),n(this,St),n(this,zt),n(this,At),n(this,Je,void 0),n(this,Ke,void 0),n(this,Qe,void 0),n(this,Xe,void 0),n(this,Ye,null),n(this,Ze,null),n(this,et,Math.floor(Date.now()/1e3)+2082844800),n(this,tt,[]),n(this,it,1),n(this,st,[]),n(this,at,[]),n(this,rt,!1),h(this,nt,ot).call(this,e),e.video=j(e.video),e.audio=j(e.audio),e.fastStart=j(e.fastStart),this.target=e.target,o(this,Je,{firstTimestampBehavior:"strict",...e}),e.target instanceof Me)o(this,Ke,new Ue(e.target));else if(e.target instanceof We)o(this,Ke,new Ge(e.target));else{if(!(e.target instanceof Oe))throw new Error(`Invalid target: ${e.target}`);o(this,Ke,new Ot(e.target))}h(this,ut,mt).call(this),h(this,ht,lt).call(this)}addVideoChunk(e,t,i,s){if(!(e instanceof EncodedVideoChunk))throw new TypeError("addVideoChunk's first argument (sample) must be of type EncodedVideoChunk.");if(t&&"object"!=typeof t)throw new TypeError("addVideoChunk's second argument (meta), when provided, must be an object.");if(void 0!==i&&(!Number.isFinite(i)||i<0))throw new TypeError("addVideoChunk's third argument (timestamp), when provided, must be a non-negative real number.");if(void 0!==s&&!Number.isFinite(s))throw new TypeError("addVideoChunk's fourth argument (compositionTimeOffset), when provided, must be a real number.");let a=new Uint8Array(e.byteLength);e.copyTo(a),this.addVideoChunkRaw(a,e.type,i??e.timestamp,e.duration,t,s)}addVideoChunkRaw(e,t,i,s,a,n){if(!(e instanceof Uint8Array))throw new TypeError("addVideoChunkRaw's first argument (data) must be an instance of Uint8Array.");if("key"!==t&&"delta"!==t)throw new TypeError("addVideoChunkRaw's second argument (type) must be either 'key' or 'delta'.");if(!Number.isFinite(i)||i<0)throw new TypeError("addVideoChunkRaw's third argument (timestamp) must be a non-negative real number.");if(!Number.isFinite(s)||s<0)throw new TypeError("addVideoChunkRaw's fourth argument (duration) must be a non-negative real number.");if(a&&"object"!=typeof a)throw new TypeError("addVideoChunkRaw's fifth argument (meta), when provided, must be an object.");if(void 0!==n&&!Number.isFinite(n))throw new TypeError("addVideoChunkRaw's sixth argument (compositionTimeOffset), when provided, must be a real number.");if(h(this,At,Mt).call(this),!r(this,Je).video)throw new Error("No video track declared.");if("object"==typeof r(this,Je).fastStart&&r(this,Ye).samples.length===r(this,Je).fastStart.expectedVideoChunks)throw new Error(`Cannot add more video chunks than specified in 'fastStart' (${r(this,Je).fastStart.expectedVideoChunks}).`);let o=h(this,wt,gt).call(this,r(this,Ye),e,t,i,s,a,n);if("fragmented"===r(this,Je).fastStart&&r(this,Ze)){for(;r(this,at).length>0&&r(this,at)[0].decodeTimestamp<=o.decodeTimestamp;){let e=r(this,at).shift();h(this,bt,yt).call(this,r(this,Ze),e)}o.decodeTimestamp<=r(this,Ze).lastDecodeTimestamp?h(this,bt,yt).call(this,r(this,Ye),o):r(this,st).push(o)}else h(this,bt,yt).call(this,r(this,Ye),o)}addAudioChunk(e,t,i){if(!(e instanceof EncodedAudioChunk))throw new TypeError("addAudioChunk's first argument (sample) must be of type EncodedAudioChunk.");if(t&&"object"!=typeof t)throw new TypeError("addAudioChunk's second argument (meta), when provided, must be an object.");if(void 0!==i&&(!Number.isFinite(i)||i<0))throw new TypeError("addAudioChunk's third argument (timestamp), when provided, must be a non-negative real number.");let s=new Uint8Array(e.byteLength);e.copyTo(s),this.addAudioChunkRaw(s,e.type,i??e.timestamp,e.duration,t)}addAudioChunkRaw(e,t,i,s,a){if(!(e instanceof Uint8Array))throw new TypeError("addAudioChunkRaw's first argument (data) must be an instance of Uint8Array.");if("key"!==t&&"delta"!==t)throw new TypeError("addAudioChunkRaw's second argument (type) must be either 'key' or 'delta'.");if(!Number.isFinite(i)||i<0)throw new TypeError("addAudioChunkRaw's third argument (timestamp) must be a non-negative real number.");if(!Number.isFinite(s)||s<0)throw new TypeError("addAudioChunkRaw's fourth argument (duration) must be a non-negative real number.");if(a&&"object"!=typeof a)throw new TypeError("addAudioChunkRaw's fifth argument (meta), when provided, must be an object.");if(h(this,At,Mt).call(this),!r(this,Je).audio)throw new Error("No audio track declared.");if("object"==typeof r(this,Je).fastStart&&r(this,Ze).samples.length===r(this,Je).fastStart.expectedAudioChunks)throw new Error(`Cannot add more audio chunks than specified in 'fastStart' (${r(this,Je).fastStart.expectedAudioChunks}).`);let n=h(this,wt,gt).call(this,r(this,Ze),e,t,i,s,a);if("fragmented"===r(this,Je).fastStart&&r(this,Ye)){for(;r(this,st).length>0&&r(this,st)[0].decodeTimestamp<=n.decodeTimestamp;){let e=r(this,st).shift();h(this,bt,yt).call(this,r(this,Ye),e)}n.decodeTimestamp<=r(this,Ye).lastDecodeTimestamp?h(this,bt,yt).call(this,r(this,Ze),n):r(this,at).push(n)}else h(this,bt,yt).call(this,r(this,Ze),n)}finalize(){if(r(this,rt))throw new Error("Cannot finalize a muxer more than once.");if("fragmented"===r(this,Je).fastStart){for(let e of r(this,st))h(this,bt,yt).call(this,r(this,Ye),e);for(let e of r(this,at))h(this,bt,yt).call(this,r(this,Ze),e);h(this,St,xt).call(this,!1)}else r(this,Ye)&&h(this,Ct,vt).call(this,r(this,Ye)),r(this,Ze)&&h(this,Ct,vt).call(this,r(this,Ze));let e=[r(this,Ye),r(this,Ze)].filter(Boolean);if("in-memory"===r(this,Je).fastStart){let t;for(let i=0;i<2;i++){let i=F(e,r(this,et)),s=r(this,Ke).measureBox(i);t=r(this,Ke).measureBox(r(this,Xe));let a=r(this,Ke).pos+s+t;for(let e of r(this,tt)){e.offset=a;for(let{data:i}of e.samples)a+=i.byteLength,t+=i.byteLength}if(a<2**32)break;t>=2**32&&(r(this,Xe).largeSize=!0)}let i=F(e,r(this,et));r(this,Ke).writeBox(i),r(this,Xe).size=t,r(this,Ke).writeBox(r(this,Xe));for(let e of r(this,tt))for(let t of e.samples)r(this,Ke).write(t.data),t.data=null}else if("fragmented"===r(this,Je).fastStart){let t=r(this,Ke).pos,i=(e=>I("mfra",null,[...e.map(Ce),ve()]))(e);r(this,Ke).writeBox(i);let s=r(this,Ke).pos-t;r(this,Ke).seek(r(this,Ke).pos-4),r(this,Ke).writeU32(s)}else{let t=r(this,Ke).offsets.get(r(this,Xe)),i=r(this,Ke).pos-t;r(this,Xe).size=i,r(this,Xe).largeSize=i>=2**32,r(this,Ke).patchBox(r(this,Xe));let s=F(e,r(this,et));if("object"==typeof r(this,Je).fastStart){r(this,Ke).seek(r(this,Qe)),r(this,Ke).writeBox(s);let e=t-r(this,Ke).pos;r(this,Ke).writeBox({type:"free",size:e})}else r(this,Ke).writeBox(s)}h(this,zt,Et).call(this),r(this,Ke).finalize(),o(this,rt,!0)}};return Je=new WeakMap,Ke=new WeakMap,Qe=new WeakMap,Xe=new WeakMap,Ye=new WeakMap,Ze=new WeakMap,et=new WeakMap,tt=new WeakMap,it=new WeakMap,st=new WeakMap,at=new WeakMap,rt=new WeakMap,nt=new WeakSet,ot=function(e){if("object"!=typeof e)throw new TypeError("The muxer requires an options object to be passed to its constructor.");if(!(e.target instanceof Ae))throw new TypeError("The target must be provided and an instance of Target.");if(e.video){if(!Ut.includes(e.video.codec))throw new TypeError(`Unsupported video codec: ${e.video.codec}`);if(!Number.isInteger(e.video.width)||e.video.width<=0)throw new TypeError(`Invalid video width: ${e.video.width}. Must be a positive integer.`);if(!Number.isInteger(e.video.height)||e.video.height<=0)throw new TypeError(`Invalid video height: ${e.video.height}. Must be a positive integer.`);const t=e.video.rotation;if("number"==typeof t&&![0,90,180,270].includes(t))throw new TypeError(`Invalid video rotation: ${t}. Has to be 0, 90, 180 or 270.`);if(Array.isArray(t)&&(9!==t.length||t.some((e=>"number"!=typeof e))))throw new TypeError(`Invalid video transformation matrix: ${t.join()}`);if(void 0!==e.video.frameRate&&(!Number.isInteger(e.video.frameRate)||e.video.frameRate<=0))throw new TypeError(`Invalid video frame rate: ${e.video.frameRate}. Must be a positive integer.`)}if(e.audio){if(!Dt.includes(e.audio.codec))throw new TypeError(`Unsupported audio codec: ${e.audio.codec}`);if(!Number.isInteger(e.audio.numberOfChannels)||e.audio.numberOfChannels<=0)throw new TypeError(`Invalid number of audio channels: ${e.audio.numberOfChannels}. Must be a positive integer.`);if(!Number.isInteger(e.audio.sampleRate)||e.audio.sampleRate<=0)throw new TypeError(`Invalid audio sample rate: ${e.audio.sampleRate}. Must be a positive integer.`)}if(e.firstTimestampBehavior&&!jt.includes(e.firstTimestampBehavior))throw new TypeError(`Invalid first timestamp behavior: ${e.firstTimestampBehavior}`);if("object"==typeof e.fastStart){if(e.video){if(void 0===e.fastStart.expectedVideoChunks)throw new TypeError("'fastStart' is an object but is missing property 'expectedVideoChunks'.");if(!Number.isInteger(e.fastStart.expectedVideoChunks)||e.fastStart.expectedVideoChunks<0)throw new TypeError("'expectedVideoChunks' must be a non-negative integer.")}if(e.audio){if(void 0===e.fastStart.expectedAudioChunks)throw new TypeError("'fastStart' is an object but is missing property 'expectedAudioChunks'.");if(!Number.isInteger(e.fastStart.expectedAudioChunks)||e.fastStart.expectedAudioChunks<0)throw new TypeError("'expectedAudioChunks' must be a non-negative integer.")}}else if(![!1,"in-memory","fragmented"].includes(e.fastStart))throw new TypeError("'fastStart' option must be false, 'in-memory', 'fragmented' or an object.");if(void 0!==e.minFragmentDuration&&(!Number.isFinite(e.minFragmentDuration)||e.minFragmentDuration<0))throw new TypeError("'minFragmentDuration' must be a non-negative number.")},ht=new WeakSet,lt=function(){var e;if(r(this,Ke).writeBox((e={holdsAvc:"avc"===r(this,Je).video?.codec,fragmented:"fragmented"===r(this,Je).fastStart}).fragmented?I("ftyp",[A("iso5"),v(512),A("iso5"),A("iso6"),A("mp41")]):I("ftyp",[A("isom"),v(512),A("isom"),e.holdsAvc?A("avc1"):[],A("mp41")])),o(this,Qe,r(this,Ke).pos),"in-memory"===r(this,Je).fastStart)o(this,Xe,V(!1));else if("fragmented"===r(this,Je).fastStart);else{if("object"==typeof r(this,Je).fastStart){let e=h(this,dt,ft).call(this);r(this,Ke).seek(r(this,Ke).pos+e)}o(this,Xe,V(!0)),r(this,Ke).writeBox(r(this,Xe))}h(this,zt,Et).call(this)},dt=new WeakSet,ft=function(){if("object"!=typeof r(this,Je).fastStart)return;let e=0,t=[r(this,Je).fastStart.expectedVideoChunks,r(this,Je).fastStart.expectedAudioChunks];for(let i of t)i&&(e+=8*Math.ceil(2/3*i),e+=4*i,e+=12*Math.ceil(2/3*i),e+=4*i,e+=8*i);return e+=4096,e},ut=new WeakSet,mt=function(){if(r(this,Je).video&&o(this,Ye,{id:1,info:{type:"video",codec:r(this,Je).video.codec,width:r(this,Je).video.width,height:r(this,Je).video.height,rotation:r(this,Je).video.rotation??0,decoderConfig:null},timescale:r(this,Je).video.frameRate??57600,samples:[],finalizedChunks:[],currentChunk:null,firstDecodeTimestamp:void 0,lastDecodeTimestamp:-1,timeToSampleTable:[],compositionTimeOffsetTable:[],lastTimescaleUnits:null,lastSample:null,compactlyCodedChunkTable:[]}),r(this,Je).audio&&(o(this,Ze,{id:r(this,Je).video?2:1,info:{type:"audio",codec:r(this,Je).audio.codec,numberOfChannels:r(this,Je).audio.numberOfChannels,sampleRate:r(this,Je).audio.sampleRate,decoderConfig:null},timescale:r(this,Je).audio.sampleRate,samples:[],finalizedChunks:[],currentChunk:null,firstDecodeTimestamp:void 0,lastDecodeTimestamp:-1,timeToSampleTable:[],compositionTimeOffsetTable:[],lastTimescaleUnits:null,lastSample:null,compactlyCodedChunkTable:[]}),"aac"===r(this,Je).audio.codec)){let e=h(this,pt,ct).call(this,2,r(this,Je).audio.sampleRate,r(this,Je).audio.numberOfChannels);r(this,Ze).info.decoderConfig={codec:r(this,Je).audio.codec,description:e,numberOfChannels:r(this,Je).audio.numberOfChannels,sampleRate:r(this,Je).audio.sampleRate}}},pt=new WeakSet,ct=function(e,t,i){let s=[96e3,88200,64e3,48e3,44100,32e3,24e3,22050,16e3,12e3,11025,8e3,7350].indexOf(t),a=i,r="";r+=e.toString(2).padStart(5,"0"),r+=s.toString(2).padStart(4,"0"),15===s&&(r+=t.toString(2).padStart(24,"0")),r+=a.toString(2).padStart(4,"0");let n=8*Math.ceil(r.length/8);r=r.padEnd(n,"0");let o=new Uint8Array(r.length/8);for(let e=0;e<r.length;e+=8)o[e/8]=parseInt(r.slice(e,e+8),2);return o},wt=new WeakSet,gt=function(e,t,i,s,a,r,n){let o=s/1e6,l=(s-(n??0))/1e6,d=a/1e6,f=h(this,kt,Tt).call(this,o,l,e);return o=f.presentationTimestamp,l=f.decodeTimestamp,r?.decoderConfig&&(null===e.info.decoderConfig?e.info.decoderConfig=r.decoderConfig:Object.assign(e.info.decoderConfig,r.decoderConfig)),{presentationTimestamp:o,decodeTimestamp:l,duration:d,data:t,size:t.byteLength,type:i,timescaleUnitsToNextSample:O(d,e.timescale)}},bt=new WeakSet,yt=function(e,t){"fragmented"!==r(this,Je).fastStart&&e.samples.push(t);const i=O(t.presentationTimestamp-t.decodeTimestamp,e.timescale);if(null!==e.lastTimescaleUnits){let s=O(t.decodeTimestamp,e.timescale,!1),a=Math.round(s-e.lastTimescaleUnits);if(e.lastTimescaleUnits+=a,e.lastSample.timescaleUnitsToNextSample=a,"fragmented"!==r(this,Je).fastStart){let t=M(e.timeToSampleTable);1===t.sampleCount?(t.sampleDelta=a,t.sampleCount++):t.sampleDelta===a?t.sampleCount++:(t.sampleCount--,e.timeToSampleTable.push({sampleCount:2,sampleDelta:a}));const s=M(e.compositionTimeOffsetTable);s.sampleCompositionTimeOffset===i?s.sampleCount++:e.compositionTimeOffsetTable.push({sampleCount:1,sampleCompositionTimeOffset:i})}}else e.lastTimescaleUnits=0,"fragmented"!==r(this,Je).fastStart&&(e.timeToSampleTable.push({sampleCount:1,sampleDelta:O(t.duration,e.timescale)}),e.compositionTimeOffsetTable.push({sampleCount:1,sampleCompositionTimeOffset:i}));e.lastSample=t;let s=!1;if(e.currentChunk){let i=t.presentationTimestamp-e.currentChunk.startTimestamp;if("fragmented"===r(this,Je).fastStart){let a=r(this,Ye)??r(this,Ze);const n=r(this,Je).minFragmentDuration??1;e===a&&"key"===t.type&&i>=n&&(s=!0,h(this,St,xt).call(this))}else s=i>=.5}else s=!0;s&&(e.currentChunk&&h(this,Ct,vt).call(this,e),e.currentChunk={startTimestamp:t.presentationTimestamp,samples:[]}),e.currentChunk.samples.push(t)},kt=new WeakSet,Tt=function(e,t,i){const s="strict"===r(this,Je).firstTimestampBehavior,a=-1===i.lastDecodeTimestamp;if(s&&a&&0!==t)throw new Error(`The first chunk for your media track must have a timestamp of 0 (received DTS=${t}).Non-zero first timestamps are often caused by directly piping frames or audio data from a MediaStreamTrack into the encoder. Their timestamps are typically relative to the age of thedocument, which is probably what you want.\n\nIf you want to offset all timestamps of a track such that the first one is zero, set firstTimestampBehavior: 'offset' in the options.\n`);if("offset"===r(this,Je).firstTimestampBehavior||"cross-track-offset"===r(this,Je).firstTimestampBehavior){let s;void 0===i.firstDecodeTimestamp&&(i.firstDecodeTimestamp=t),s="offset"===r(this,Je).firstTimestampBehavior?i.firstDecodeTimestamp:Math.min(r(this,Ye)?.firstDecodeTimestamp??1/0,r(this,Ze)?.firstDecodeTimestamp??1/0),t-=s,e-=s}if(t<i.lastDecodeTimestamp)throw new Error(`Timestamps must be monotonically increasing (DTS went from ${1e6*i.lastDecodeTimestamp} to ${1e6*t}).`);return i.lastDecodeTimestamp=t,{presentationTimestamp:e,decodeTimestamp:t}},Ct=new WeakSet,vt=function(e){if("fragmented"===r(this,Je).fastStart)throw new Error("Can't finalize individual chunks if 'fastStart' is set to 'fragmented'.");if(e.currentChunk)if(e.finalizedChunks.push(e.currentChunk),r(this,tt).push(e.currentChunk),0!==e.compactlyCodedChunkTable.length&&M(e.compactlyCodedChunkTable).samplesPerChunk===e.currentChunk.samples.length||e.compactlyCodedChunkTable.push({firstChunk:e.finalizedChunks.length,samplesPerChunk:e.currentChunk.samples.length}),"in-memory"!==r(this,Je).fastStart){e.currentChunk.offset=r(this,Ke).pos;for(let t of e.currentChunk.samples)r(this,Ke).write(t.data),t.data=null;h(this,zt,Et).call(this)}else e.currentChunk.offset=0},St=new WeakSet,xt=function(e=!0){if("fragmented"!==r(this,Je).fastStart)throw new Error("Can't finalize a fragment unless 'fastStart' is set to 'fragmented'.");let t=[r(this,Ye),r(this,Ze)].filter((e=>e&&e.currentChunk));if(0===t.length)return;let i=(s=this,a=it,{set _(e){o(s,a,e,n)},get _(){return r(s,a,l)}})._++;var s,a,n,l;if(1===i){let e=F(t,r(this,et),!0);r(this,Ke).writeBox(e)}let d=r(this,Ke).pos,f=ce(i,t);r(this,Ke).writeBox(f);{let e=V(!1),i=0;for(let e of t)for(let t of e.currentChunk.samples)i+=t.size;let s=r(this,Ke).measureBox(e)+i;s>=2**32&&(e.largeSize=!0,s=r(this,Ke).measureBox(e)+i),e.size=s,r(this,Ke).writeBox(e)}for(let e of t){e.currentChunk.offset=r(this,Ke).pos,e.currentChunk.moofOffset=d;for(let t of e.currentChunk.samples)r(this,Ke).write(t.data),t.data=null}let u=r(this,Ke).pos;r(this,Ke).seek(r(this,Ke).offsets.get(f));let m=ce(i,t);r(this,Ke).writeBox(m),r(this,Ke).seek(u);for(let e of t)e.finalizedChunks.push(e.currentChunk),r(this,tt).push(e.currentChunk),e.currentChunk=null;e&&h(this,zt,Et).call(this)},zt=new WeakSet,Et=function(){r(this,Ke)instanceof Ge&&r(this,Ke).flush()},At=new WeakSet,Mt=function(){if(r(this,rt))throw new Error("Cannot add new video or audio chunks after the file has been finalized.")},Wt=l,((a,r,n,o)=>{if(r&&"object"==typeof r||"function"==typeof r)for(let h of i(r))s.call(a,h)||h===n||e(a,h,{get:()=>r[h],enumerable:!(o=t(r,h))||o.enumerable});return a})(e({},"__esModule",{value:!0}),Wt)})();"object"==typeof module&&"object"==typeof module.exports&&Object.assign(module.exports,Mp4Muxer);
+
+</script>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const rand = Math.random;
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const pick = arr => arr[(rand() * arr.length) | 0];
+
+/* ------------------------------------------------------------------ settings */
+const S = { mode:'auto', saturation:.5, warmth:.5, variety:.6, colourRate:.6, bgMode:'auto', bgCustom:'#1d3e9e', fps:24, grain:.55, flicker:.45, dust:.5, scratch:.5, splices:true, weave:.4, boil:.5, vignette:.55, chroma:.35, halation:.35, edge:false, quality:1, bgChange:'sections', expQ:'high', pad:5 };
+try { Object.assign(S, JSON.parse(localStorage.getItem('synchromy-settings') || '{}')); } catch (e) {}
+const saveSettings = () => { try { localStorage.setItem('synchromy-settings', JSON.stringify(S)); } catch (e) {} };
+
+/* ------------------------------------------------------------------ canvases */
+const view = $('#view');
+const gl = view.getContext('webgl', { antialias:false, premultipliedAlpha:false });
+const view2d = gl ? null : view.getContext('2d');
+const scene = document.createElement('canvas'), g = scene.getContext('2d');
+const paint = document.createElement('canvas'), pg = paint.getContext('2d');
+let W = 0, H = 0, U = 1; // U = scale unit relative to 1280px wide
+
+// resolution is a fraction of the frame, so a chunky preview exports just as chunky at any size
+const resScale = () => lerp(.06, 1, S.quality * S.quality);
+function setCanvasSize(vw, vh, sw, sh) {
+  const q = resScale(); sw = Math.max(2, Math.round(sw * q)); sh = Math.max(2, Math.round(sh * q));
+  view.width = vw; view.height = vh; W = sw; H = sh;
+  scene.width = paint.width = W; scene.height = paint.height = H; U = Math.max(W, H * .8) / 1280;
+  pg.fillStyle = V.bg; pg.fillRect(0, 0, W, H);
+}
+function resize() {
+  if (EXPORT) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), sw = Math.round(Math.min(innerWidth * dpr, 1600));
+  setCanvasSize((innerWidth * dpr) | 0, (innerHeight * dpr) | 0, sw, Math.round(sw * innerHeight / innerWidth));
+}
+
+/* ------------------------------------------------------------------ palette (McLaren-ish flat poster colours) */
+const PAL = ['#e3262f','#f6cf1d','#1d3e9e','#f2701f','#2aa84a','#d81b7b','#1aa3c8','#6b2d90','#121015','#f3ecd8','#a3d13b','#ff8fb1','#0f6b5c'];
+function lum(hex) {
+  const c = [1,3,5].map(i => parseInt(hex.substr(i,2),16)/255).map(v => v <= .03928 ? v/12.92 : Math.pow((v+.055)/1.055, 2.4));
+  return .2126*c[0] + .7152*c[1] + .0722*c[2];
+}
+const contrast = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x,y)+.05)/(Math.min(x,y)+.05); };
+const NEUTRALS = ['#121015', '#f3ecd8'];
+const hueOf = hex => { const [r, g, b] = [1,3,5].map(i => parseInt(hex.substr(i,2),16)/255), mx = Math.max(r,g,b), d = mx - Math.min(r,g,b);
+  if (!d) return 0; const h = mx === r ? (g - b) / d % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; return (h * 60 + 360) % 360; };
+const WHEEL = PAL.filter(c => !NEUTRALS.includes(c)).sort((a, b) => hueOf(a) - hueOf(b));
+const GREYS = ['#5c5852', '#a6a094'];
+const EXTRA = ['#00c2a8', '#ff5a36', '#ffd6e0', '#7a4dff', '#c7f000', '#ff2bd6', '#00e0ff', '#b5793a'];
+// the palette ladder, one notch at a time:
+//   black & white → greyscale → greyscale + 1 or 2 accents now and then → greyscale with 1 or 2 accents always
+//   → 2, 3, 4 … neighbouring hues (with black & cream) → every poster colour → anything goes
+const TIERS = [
+  { name:'black & white' },
+  { name:'greyscale', greys:true },
+  { name:'greyscale + 1 accent, sometimes', greys:true, accents:1 },
+  { name:'greyscale + 2 accents, sometimes', greys:true, accents:2 },
+  { name:'greyscale, always 1 accent', greys:true, accents:1, always:true },
+  { name:'greyscale, always 2 accents', greys:true, accents:2, always:true },
+  ...Array.from({ length:WHEEL.length - 1 }, (_, i) => ({ name:i + 2 === WHEEL.length ? 'every poster colour' : `${i + 2} neighbouring hues`, hues:i + 2 })),
+  { name:'anything goes', hues:WHEEL.length, extra:true },
+];
+const tierOf = v => TIERS[Math.min(TIERS.length - 1, Math.floor(v * TIERS.length))];
+
+function newTheme() {
+  const t = tierOf(S.variety), s0 = (rand() * WHEEL.length) | 0;
+  const hues = k => Array.from({ length:k }, (_, i) => WHEEL[(s0 + i) % WHEEL.length]);
+  V.tier = t;
+  V.accents = t.accents ? hues(t.accents) : [];
+  V.theme = [...new Set([...NEUTRALS, ...(t.greys ? GREYS : []), ...V.accents, ...(t.hues ? hues(t.hues) : []), ...(t.extra ? EXTRA : [])])];
+}
+function colourAgainst(bg, avoid = [], pool = V.colPool || V.theme || PAL) {
+  const ok = pool.filter(c => c !== bg && contrast(c, bg) > 1.9 && !avoid.includes(c));
+  return ok.length ? pick(ok) : (lum(bg) > .3 ? '#121015' : '#f3ecd8');
+}
+// background override from the Colour panel; Auto lets the palette choose
+const fixedBg = () => ({ black:'#121015', white:'#f3ecd8', grey:'#8a857b', custom:S.bgCustom }[S.bgMode] || null);
+// keepGround: the background and divider band hold, only the bar colours move
+function newPalette(keepGround = false) {
+  if (!V.theme || V.tier !== tierOf(S.variety) || rand() < .1 + S.variety * .9) newTheme();
+  const t = V.tier, pool = V.theme, mono = pool.filter(c => !V.accents.includes(c));
+  const bandPool = t.always ? mono : pool;
+  if (!keepGround) {
+    const bgs = (t.hues ? pool : mono).filter(c => c !== V.bg);   // greyscale tiers keep a black/white/grey ground
+    V.bg = fixedBg() || pick(t.hues && t.hues <= 4 && rand() < .75 ? bgs.filter(c => !NEUTRALS.includes(c)) : bgs) || pick(bgs) || pick(pool);
+    // the divider band can sit close to the background (pink lane / purple band), bars must pop off both
+    const bands = bandPool.filter(c => c !== V.bg && contrast(c, V.bg) > 1.2);
+    V.band = pick(bands.length ? bands : bandPool.filter(c => c !== V.bg)) || V.bg;
+  }
+  // accents: "always" puts them on every bar; "sometimes" keeps the bars grey and picks out a few strips
+  const useAccent = V.accents.length && t.always;
+  // with two accents, about half the palettes show both side by side; the rest lean on one
+  V.multi = useAccent && V.accents.length > 1 && rand() < .5;
+  V.colPool = useAccent ? V.accents : t.accents ? mono : pool;
+  V.sparse = null;
+  if (t.accents && !t.always) {   // about a third of the strips (at least one), cycling through the accents
+    let n = 0; V.sparse = Array.from({ length:5 }, () => rand() < .32 ? n++ % V.accents.length : -1);
+    if (!n) { V.sparse[(rand() * 3) | 0] = 0; n = 1; }
+    if (V.accents.length > 1 && n === 1) V.sparse[V.sparse.indexOf(-1)] = 1;
+  }
+  const bars = V.colPool.filter(c => c !== V.bg && c !== V.band && contrast(c, V.bg) > 1.6);
+  V.barCol = bars.length ? pick(bars) : useAccent ? V.accents[0] : colourAgainst(V.bg, [V.band]);
+  const cols = [];
+  for (let i = 0; i < 5; i++) cols.push(useAccent ? V.accents[i % V.accents.length] : colourAgainst(V.bg, i ? [cols[i-1], V.band] : [V.band]));
+  V.cols = cols;
+}
+// a "scheme" is one look from the film: how many soundtrack strips, how they are cut and magnified,
+// which side of the divider band they hang off, and whether low pitches sit left and high pitches right
+function newScheme() {
+  const sc = {
+    layout:pick(['mirror', 'mirror', 'spectrum', 'spectrum', 'split', 'unison']),
+    attach:pick(['behind', 'behind', 'left', 'right', 'both', 'free']),
+    bandW:pick([0, .16, .28, .4]),
+    crop:rand() < .4,
+    unified:rand() < .85 - .6 * S.variety,
+    zoom:pick([.12, .25, .45, .7, 1, 1, 1.4]),
+    flip:rand() < .5,
+    rim:rand() < .75,
+    radius:pick([0, .1, .22]),
+    divide:rand() < .25 ? pick([2, 3]) : 1,
+    square:rand() < .2,
+    rowSquare:rand() < .6,
+    unisonVoice:pick([0, 1, 4]),
+  };
+  if (sc.layout === 'split') sc.attach = 'both';
+  if (sc.attach === 'free') sc.bandW = 0;
+  if (!sc.bandW && (sc.attach === 'left' || sc.attach === 'right' || sc.attach === 'behind')) sc.attach = pick(['free', 'both']);
+  V.scheme = sc;
+}
+
+/* ------------------------------------------------------------------ visual state */
+const V = { bg:'#121015', cols:['#f6cf1d','#e3262f','#1aa3c8','#f3ecd8','#d81b7b'], nCols:1, lastColChange:0,
+  curMode:'optical', punch:0, flash:0, roll:0, splice:0, spliceY:0, title:1, sectionIdx:-1,
+  scratches:[], hairs:[], dcLines:[], weave:[0,0], flick:1 };
+
+/* ------------------------------------------------------------------ audio */
+const A = { ctx:null, buffer:null, src:null, t0:0, offset:0, playing:false, mic:null, micStream:null, name:'',
+  env:null, envRate:20, envMax:1, sections:[0], sectionModes:['synchromy'] };
+
+// full-spectrum analyser plus three filtered ones for the waveform tracks (also rebuilt offline for export)
+function analysisGraph(ctx, input) {
+  const an = ctx.createAnalyser(); an.fftSize = 8192; an.smoothingTimeConstant = .45; input.connect(an);
+  const band = (type, f, q, span) => {
+    const b = ctx.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q;
+    const a = ctx.createAnalyser(); a.fftSize = 4096; input.connect(b); b.connect(a);
+    return { a, data:new Float32Array(4096), peak:.02, span };
+  };
+  return { an, bands:[band('lowpass',220,.7,1400), band('bandpass',900,.8,560), band('highpass',3500,.7,240)] };
+}
+function initAudio() {
+  if (A.ctx) { A.ctx.resume(); return; }
+  const ctx = A.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  A.master = ctx.createGain(); A.out = ctx.createGain();
+  A.master.connect(A.out); A.out.connect(ctx.destination);
+  Object.assign(A, analysisGraph(ctx, A.master));
+  A.recDest = ctx.createMediaStreamDestination(); A.master.connect(A.recDest);
+  const n = A.an.frequencyBinCount;
+  A.db = new Float32Array(n); A.mag = new Float32Array(n); A.prevLog = new Float32Array(n);
+  A.time = new Float32Array(A.an.fftSize);
+}
+
+const cleanName = n => n.split('/').pop().replace(/\.[a-z0-9]+$/i,'').replace(/[_]+/g,' ').replace(/\s+\.\d+$/,'').trim();
+
+async function loadArrayBuffer(ab, name, autoplay = true) {
+  initAudio(); stopMic(); pause();
+  setStatus('decoding…');
+  const buf = await A.ctx.decodeAudioData(ab);
+  A.buffer = buf; A.name = cleanName(name); A.offset = 0;
+  analyseEnvelope(buf);
+  V.sectionIdx = -1; V.nCols = 1; newPalette(); newScheme();
+  setStatus('');
+  if (autoplay) play();
+  updateUI();
+}
+
+function analyseEnvelope(buf) {
+  const rate = A.envRate, hop = Math.floor(buf.sampleRate / rate), n = Math.floor(buf.length / hop);
+  const chans = []; for (let c = 0; c < buf.numberOfChannels; c++) chans.push(buf.getChannelData(c));
+  const raw = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0, cnt = 0; const o = i * hop;
+    for (let j = 0; j < hop; j += 4) for (const ch of chans) { const v = ch[o + j]; s += v * v; cnt++; }
+    raw[i] = Math.sqrt(s / cnt);
+  }
+  const smooth = (x, w) => { const y = new Float32Array(x.length); let acc = 0; const h = w >> 1;
+    for (let i = 0; i < x.length + h; i++) { if (i < x.length) acc += x[i]; if (i - w >= 0) acc -= x[i - w];
+      const k = i - h; if (k >= 0 && k < x.length) y[k] = acc / Math.min(w, i + 1); } return y; };
+  A.env = smooth(raw, rate * 2);
+  A.envMax = 1e-6; for (const v of A.env) A.envMax = Math.max(A.envMax, v);
+  // section boundaries: big changes in 4s-mean loudness, at least 12s apart
+  const w = rate * 4, nov = new Float32Array(n);
+  for (let i = w; i < n - w; i++) {
+    let a = 0, b = 0; for (let j = 1; j <= w; j++) { a += A.env[i - j]; b += A.env[i + j - 1]; }
+    nov[i] = Math.abs(b - a) / w / A.envMax;
+  }
+  const secs = [0];
+  for (let i = w; i < n - w; i++) {
+    if (nov[i] < .14) continue;
+    let isMax = true; for (let j = Math.max(0, i - w); j < Math.min(n, i + w); j++) if (nov[j] > nov[i]) { isMax = false; break; }
+    if (isMax && i / rate - secs[secs.length - 1] > 12) secs.push(i / rate);
+  }
+  A.sections = secs;
+  // choose a mode per section: quiet → optical, loudest → synchromy, the rest alternate
+  const means = secs.map((t, k) => { const a = Math.floor(t * rate), b = Math.floor((secs[k+1] ?? n / rate) * rate);
+    let s = 0; for (let i = a; i < b; i++) s += A.env[i]; return s / Math.max(1, b - a) / A.envMax; });
+  const loudest = means.indexOf(Math.max(...means));
+  let alt = 0;
+  let calm = 0;
+  const cycle = ['synchromy', 'rows', 'rings', 'synchromy', 'dullcare'];
+  A.sectionModes = means.map((m, k) => m < .32 ? (calm++ % 2 ? 'rings' : 'optical') : (k === loudest || m > .78) ? 'synchromy' : cycle[alt++ % cycle.length]);
+}
+
+function play() {
+  if (!A.buffer) return;
+  initAudio(); stopMic();
+  if (A.playing) return;
+  const s = A.ctx.createBufferSource(); s.buffer = A.buffer; s.connect(A.master);
+  s.start(0, A.offset); A.t0 = A.ctx.currentTime - A.offset; A.src = s; A.playing = true;
+  s.onended = () => { if (A.src === s) { A.playing = false; A.src = null; A.offset = 0; updateUI(); } };
+  updateUI();
+}
+function pause() {
+  if (!A.playing) return;
+  A.offset = curTime(); const s = A.src; A.src = null; s.stop(); A.playing = false; updateUI();
+}
+let EXPORT = null;
+const clock = () => EXPORT ? EXPORT.t : performance.now() / 1000;
+const curTime = () => EXPORT ? EXPORT.t : A.playing ? A.ctx.currentTime - A.t0 : A.offset;
+function seek(t) {
+  if (!A.buffer) return;
+  const was = A.playing; if (was) pause();
+  A.offset = clamp(t, 0, A.buffer.duration - .05);
+  if (was) play();
+  splice();
+}
+
+async function startMic() {
+  initAudio(); pause();
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:false, noiseSuppression:false, autoGainControl:false } });
+    A.micStream = stream; A.mic = A.ctx.createMediaStreamSource(stream); A.mic.connect(A.master);
+    A.out.gain.value = 0; A.name = 'live'; F.runPeak = .02;
+  } catch (e) { setStatus('mic unavailable'); }
+  updateUI();
+}
+function stopMic() {
+  if (!A.mic) return;
+  A.mic.disconnect(); A.micStream.getTracks().forEach(t => t.stop());
+  A.mic = null; A.out.gain.value = 1; updateUI();
+}
+
+/* ------------------------------------------------------------------ analysis */
+const F = { flux:0, fm:0, fv:1, lm:0, lv:1, lastOnset:0, lastCut:0, loud:0, rms:0, runPeak:.02 };
+const VOICES = [
+  { name:'melody',  lo:180,  hi:1100,  hps:3 },
+  { name:'bass',    lo:40,   hi:220,   hps:3 },
+  { name:'harmony', lo:500,  hi:2600,  hps:2 },
+  { name:'air',     lo:3000, hi:11000, hps:0 },
+  { name:'octave' },
+].map(v => ({ ...v, midi:60, cand:0, cnt:0, amp:0, peak:1e-5, bars:14, phase:0 }));
+
+const midiToHz = m => 440 * Math.pow(2, (m - 69) / 12);
+const barsFor = hz => clamp(.9 * Math.pow(hz, .55), 3, 120);
+
+function voicePitch(v, binHz, N) {
+  const k0 = Math.max(1, Math.ceil(v.lo / binHz)), k1 = Math.min(N - 2, Math.floor(v.hi / binHz));
+  const M = A.mag; let e = 0, best = -1, bk = k0, num = 0;
+  for (let k = k0; k <= k1; k++) {
+    const m = M[k]; e += m; num += m * k;
+    if (v.hps) {
+      let s = m;
+      for (let h = 2; h <= v.hps; h++) { const kk = k * h; s *= kk < N - 1 ? Math.max(M[kk], .5 * (M[kk-1] + M[kk+1])) + 1e-7 : 1e-7; }
+      if (s > best) { best = s; bk = k; }
+    }
+  }
+  e /= (k1 - k0 + 1);
+  let hz;
+  if (v.hps) { // parabolic refinement of the peak
+    const a = M[bk-1], b = M[bk], c = M[bk+1], d = (a - 2*b + c) ? .5 * (a - c) / (a - 2*b + c) : 0;
+    hz = (bk + clamp(d, -.5, .5)) * binHz;
+  } else hz = (num / (e * (k1 - k0 + 1) + 1e-12)) * binHz;
+  return { e, hz };
+}
+
+function analyse(now) {
+  const N = A.mag.length, binHz = A.an.context.sampleRate / A.an.fftSize;
+  A.an.getFloatFrequencyData(A.db);
+  const kMax = Math.min(N, Math.floor(8000 / binHz)), kLow = Math.floor(160 / binHz);
+  let flux = 0, low = 0;
+  for (let k = 0; k < N; k++) {
+    const db = A.db[k], m = db > -150 ? Math.pow(10, db / 20) : 0; A.mag[k] = m;
+    if (k < kMax) { const l = Math.log1p(m * 1000), d = l - A.prevLog[k]; if (d > 0) { flux += d; if (k < kLow) low += d; } A.prevLog[k] = l; }
+  }
+  A.an.getFloatTimeDomainData(A.time);
+  let ss = 0; for (let i = 0; i < A.time.length; i += 2) ss += A.time[i] * A.time[i]; F.rms = Math.sqrt(ss / (A.time.length / 2));
+
+  // loudness: song-relative when we have the whole file, running-peak relative for the mic
+  if (A.buffer && !A.mic) { const t = curTime(); F.loud = t < 0 || t > A.buffer.duration ? 0 : A.env[clamp(Math.floor(t * A.envRate), 0, A.env.length - 1)] / A.envMax; }
+  else { F.runPeak = Math.max(F.runPeak * .9997, F.rms); F.loud += (F.rms / F.runPeak - F.loud) * .05; }
+
+  // onsets (spectral flux with adaptive threshold) and "cuts" (strong low-end hits)
+  const fs = Math.sqrt(F.fv), ls = Math.sqrt(F.lv);
+  const thr = F.fm + 1.6 * fs + .5;
+  if (flux > thr && now - F.lastOnset > .11) { F.lastOnset = now; onOnset(clamp((flux - thr) / (thr + 1e-6) + .3, 0, 1)); }
+  const strongLow = low > F.lm + 2.6 * ls + .3;
+  if (F.loud > .2 && now - F.lastCut > 1.6 && (strongLow || (now - F.lastCut > 8 && flux > thr * 1.8))) { F.lastCut = now; onCut(); }
+  F.fm += (flux - F.fm) * .04; F.fv += ((flux - F.fm) ** 2 - F.fv) * .04;
+  F.lm += (low - F.lm) * .03;  F.lv += ((low - F.lm) ** 2 - F.lv) * .03;
+  F.flux = flux;
+
+  // voices → note tracking
+  for (let i = 0; i < 4; i++) {
+    const v = VOICES[i], { e, hz } = voicePitch(v, binHz, N);
+    v.peak = Math.max(v.peak * .9993, e);
+    const target = Math.pow(e / v.peak, .9) * (.22 + .78 * clamp(F.loud, 0, 1));
+    v.amp += (target - v.amp) * (target > v.amp ? .5 : .12);
+    if (v.amp > .06 && hz > 20) {
+      const m = Math.round(69 + 12 * Math.log2(hz / 440));
+      if (m === v.cand) v.cnt++; else { v.cand = m; v.cnt = 1; }
+      if (v.cnt >= (v.hps ? 3 : 6) && m !== v.midi) { v.midi = m; v.phase = rand(); }
+    }
+    v.bars = barsFor(midiToHz(v.midi));
+  }
+  const oc = VOICES[4], mel = VOICES[0];
+  if (oc.midi !== mel.midi + 12) { oc.midi = mel.midi + 12; oc.phase = rand(); }
+  oc.amp = mel.amp * .85; oc.bars = barsFor(midiToHz(oc.midi));
+}
+
+function decay() { for (const v of VOICES) v.amp *= .92; F.loud *= .97; }
+
+function targetCols() { return F.loud < .07 ? 1 : 1 + 2 * Math.round(clamp(Math.pow(F.loud, 1.15), 0, 1) * 4); }
+function stepCols(now) {
+  const t = targetCols();
+  if (t !== V.nCols && now - V.lastColChange > 2) { V.nCols += Math.sign(t - V.nCols) * 2; V.lastColChange = now; }
+}
+function onOnset(s) {
+  const now = clock();
+  V.punch = Math.max(V.punch, s);
+  if (V.colPool !== V.accents && rand() < .3 * S.variety * S.colourRate * 2) { const k = (rand() * 5) | 0; V.cols[k] = colourAgainst(V.bg, [V.cols[k]]); }
+  stepCols(now);
+  if (V.curMode === 'dullcare') for (let i = 0, n = Math.round((1 + s * 3) * S.scratch * 2); i < n; i++)
+    V.dcLines.push({ x:rand() * W, life:2 + ((rand() * 4) | 0), w:(1 + rand() * 3) * U, horiz:rand() < .15, y:rand() * H });
+}
+function onCut() {
+  const now = clock();
+  if (rand() < .1 + .9 * S.colourRate) newPalette(S.bgChange !== 'colours');
+  V.punch = 1; stepCols(now);
+  if (rand() < .35) newScheme();
+  if (V.curMode === 'dullcare') { paintBlob(); pg.globalAlpha = .5; pg.fillStyle = V.bg; pg.fillRect(0, 0, W, H); pg.globalAlpha = 1; }
+}
+function splice() { if (!S.splices) return; V.flash = 1; V.roll = (rand() < .5 ? -1 : 1) * (.12 + rand() * .2); V.splice = 2; V.spliceY = rand() * H; }
+
+/* ------------------------------------------------------------------ renderers */
+// with two accents in play they alternate strip by strip, so both are always on screen together
+// "sometimes" tiers: greys everywhere except a few strips picked out in the accent(s)
+function stripColour(vi, i) {
+  if (V.sparse) { const m = V.sparse[i % V.sparse.length]; if (m >= 0) return V.accents[m]; return V.scheme.unified ? V.barCol : V.cols[vi]; }
+  return V.multi ? V.accents[i % V.accents.length] : V.scheme.unified ? V.barCol : V.cols[vi];
+}
+const LOW_TO_HIGH = [1, 0, 4, 2, 3]; // bass, melody, octave, harmony, air
+
+// which voice drives strip i of n; side is -1/+1 for the two halves of a split strip
+function voiceFor(i, n, side) {
+  const sc = V.scheme;
+  if (sc.layout === 'unison') return sc.unisonVoice;
+  if (sc.layout === 'mirror') return Math.min(4, Math.round(Math.abs(i - (n - 1) / 2))); // centre outwards
+  let t = n > 1 ? i / (n - 1) : .5;
+  if (sc.flip) t = 1 - t;
+  let k = t * 4;
+  if (sc.layout === 'split') k += side * (sc.flip ? -1 : 1) * .8; // left half lower, right half higher
+  return LOW_TO_HIGH[clamp(Math.round(k), 0, 4)];
+}
+
+function drawBars(x, w, pitch, th, phase, colour, h = H) {
+  if (w < 1) return;
+  const sc = V.scheme, boil = S.boil * 3 * U;
+  if (sc.square) th = clamp(w / sc.divide, 2 * U, pitch * .85);
+  const r = Math.min(w / sc.divide, th) * sc.radius;
+  const gap = sc.divide > 1 ? Math.max(2 * U, w * .06) : 0, pw = (w - gap * (sc.divide - 1)) / sc.divide;
+  g.fillStyle = colour;
+  if (sc.rim) { g.strokeStyle = 'rgba(255,246,228,.55)'; g.lineWidth = 2.2 * U; }
+  for (let y = -phase * pitch; y < h; y += pitch) {
+    const jy = (rand() - .5) * boil;
+    for (let d = 0; d < sc.divide; d++) {
+      const jx = (rand() - .5) * boil, jw = (rand() - .5) * boil, px = x + d * (pw + gap) + jx;
+      g.beginPath();
+      if (r > .5 && g.roundRect) g.roundRect(px, y + jy, pw + jw, th, r); else g.rect(px, y + jy, pw + jw, th);
+      g.fill(); if (sc.rim) g.stroke();
+    }
+  }
+}
+
+// shared strip layout for the striped modes: strip centres, width, divider band and the space beside it
+function stripLayout(w) {
+  const sc = V.scheme, n = V.nCols, units = sc.crop ? n + 1 : n;
+  const unitW = sc.crop ? w / n : w / (n + .4), x0 = sc.crop ? 0 : unitW * .7;
+  const bw = sc.bandW * unitW;
+  const sides = sc.attach === 'left' ? [-1] : sc.attach === 'right' ? [1] : sc.attach === 'both' ? [-1, 1] : [0];
+  return { units, unitW, x0, bw, space:(unitW - bw) / 2, sides };
+}
+
+// w, h let Rows mode reuse this on a canvas turned 90°
+function drawSynchromy(w = W, h = H) {
+  const sc = V.scheme, L = stripLayout(w);
+  g.fillStyle = V.bg; g.fillRect(0, 0, w, h);
+  const duty = .42 + .28 * V.punch, boil = S.boil * 3 * U;
+  for (let i = 0; i < L.units; i++) {
+    const cx = L.x0 + i * L.unitW;
+    for (const side of L.sides) {
+      const vi = voiceFor(i, L.units, side), v = VOICES[vi];
+      const pitch = h / Math.max(1, v.bars * sc.zoom), th = Math.max(2 * U, pitch * duty);
+      const a = .06 + .94 * clamp(v.amp, 0, 1);
+      let x, bwid;
+      if (side === 0) {
+        const base = sc.attach === 'behind' ? L.bw : 0, max = sc.attach === 'behind' ? L.bw + L.space * 1.7 : L.unitW * .62;
+        bwid = base + (max - base) * a; x = cx - bwid / 2;
+      } else { bwid = L.space * .92 * a; x = side < 0 ? cx - L.bw / 2 - bwid : cx + L.bw / 2; }
+      drawBars(x, bwid, pitch, th, v.phase, stripColour(vi, i + (side > 0)), h);
+    }
+    if (L.bw > 0) { g.fillStyle = V.band; g.fillRect(cx - L.bw / 2 + (rand() - .5) * boil, 0, L.bw, h); }
+  }
+}
+
+// Rows: the same soundtrack cards turned on their side, blocks pushed towards squares
+function drawRows() {
+  const sc = V.scheme, sq = sc.square;
+  sc.square = sq || sc.rowSquare;
+  g.save(); g.translate(W, 0); g.rotate(Math.PI / 2);
+  drawSynchromy(H, W);
+  g.restore(); sc.square = sq;
+}
+
+// Rings: the soundtrack wrapped around the centre. Rings run low → high outwards (or inwards when flipped),
+// segment count follows pitch, radial depth follows loudness; split schemes put low voices on the left half
+function drawRings() {
+  const sc = V.scheme, t = clock(), boil = S.boil * 3 * U;
+  g.fillStyle = V.bg; g.fillRect(0, 0, W, H);
+  const cx = W / 2, cy = H / 2, R = Math.hypot(W, H) / 2 * (sc.crop ? 1.05 : .6);
+  const n = clamp((V.nCols + 1) >> 1, 1, 5), ringW = R / (n + .5), bw = sc.bandW * ringW, space = (ringW - bw) / 2;
+  const sides = sc.attach === 'left' ? [-1] : sc.attach === 'right' ? [1] : sc.attach === 'both' ? [-1, 1] : [0];
+  const halves = sc.layout === 'split' ? [-1, 1] : [0];
+  const duty = .42 + .28 * V.punch;
+  if (sc.rim) { g.strokeStyle = 'rgba(255,246,228,.55)'; g.lineWidth = 2.2 * U; }
+  for (let i = 0; i < n; i++) {
+    const rc = ringW * (i + 1), ox = cx + (rand() - .5) * boil, oy = cy + (rand() - .5) * boil;
+    for (const side of sides) for (const half of halves) {
+      let vi;
+      if (sc.layout === 'unison') vi = sc.unisonVoice;
+      else {
+        let k = (n > 1 ? i / (n - 1) : .5) * 4; if (sc.flip) k = 4 - k;
+        vi = LOW_TO_HIGH[clamp(Math.round(k + half * .8), 0, 4)];
+      }
+      const v = VOICES[vi], a = .06 + .94 * clamp(v.amp, 0, 1);
+      let r0, r1;
+      if (side === 0) { const ext = sc.attach === 'behind' ? bw / 2 + space * .9 * a : ringW * .46 * a; r0 = rc - ext; r1 = rc + ext; }
+      else if (side < 0) { r1 = rc - bw / 2; r0 = r1 - space * .92 * a; }
+      else { r0 = rc + bw / 2; r1 = r0 + space * .92 * a; }
+      r0 = Math.max(0, r0);
+      const segs = Math.max(2, Math.round(v.bars * sc.zoom * 1.5)), dA = Math.PI * 2 / segs;
+      let arc = dA * duty;
+      if (sc.square || sc.rowSquare) arc = Math.min(dA * .85, (r1 - r0) / Math.max(1, (r0 + r1) / 2));
+      const spin = v.phase * dA + t * .05 * (i % 2 ? 1 : -1);
+      g.fillStyle = stripColour(vi, i + (side > 0) + (half > 0));
+      for (let s = 0; s < segs; s++) {
+        const a0 = spin + s * dA, mid = a0 + arc / 2;
+        if (half && Math.sign(Math.cos(mid)) !== half) continue;   // left half: cos < 0
+        g.beginPath(); g.arc(ox, oy, r1, a0, a0 + arc); g.arc(ox, oy, r0, a0 + arc, a0, true); g.closePath();
+        g.fill(); if (sc.rim) g.stroke();
+      }
+    }
+    if (bw > 0) { g.fillStyle = V.band; g.beginPath(); g.arc(ox, oy, rc + bw / 2, 0, 6.2832); g.arc(ox, oy, Math.max(0, rc - bw / 2), 0, 6.2832, true); g.fill('evenodd'); }
+  }
+  // the hub pulses with the bass
+  g.fillStyle = V.multi ? V.accents[1] : sc.unified ? V.barCol : V.cols[1];
+  g.beginPath(); g.arc(cx, cy, ringW * .28 * (.5 + VOICES[1].amp), 0, 6.2832); g.fill();
+}
+
+function triggerStart(d, span) {
+  for (let i = 1; i < d.length - span - 1; i++) if (d[i - 1] < 0 && d[i] >= 0) return i;
+  return 0;
+}
+// trace a waveform down the frame; f(amplitude 0..1) returns the [left, right] edges of the clear area
+function wavePath(d, st, span, peak, f) {
+  const step = 3 * U, L = [], R = [];
+  for (let y = 0; y <= H + step; y += step) {
+    const fi = st + (y / H) * span, k = fi | 0, t = fi - k;
+    const [xl, xr] = f(Math.min(1, Math.abs(d[k] * (1 - t) + d[k + 1] * t) / peak));
+    L.push([xl, y]); R.push([xr, y]);
+  }
+  g.beginPath(); L.forEach(([x, y], j) => j ? g.lineTo(x, y) : g.moveTo(x, y));
+  for (let j = R.length - 1; j >= 0; j--) g.lineTo(R[j][0], R[j][1]);
+  g.closePath();
+}
+const VOICE_BAND = [1, 0, 1, 2, 1]; // melody, bass, harmony, air, octave → filtered analyser
+
+// Optical: the real waveform as variable-area track, laid out with the same schemes as Synchromy —
+// bilateral tracks centred on a strip, or unilateral tracks hanging off a divider band
+function drawOptical() {
+  const sc = V.scheme, L = stripLayout(W), boil = S.boil * 3 * U;
+  g.fillStyle = V.bg; g.fillRect(0, 0, W, H);
+  if (!A.bands) return;
+  for (const b of A.bands) {
+    b.a.getFloatTimeDomainData(b.data);
+    let m = 0; for (let i = 0; i < b.data.length; i += 2) m = Math.max(m, Math.abs(b.data[i]));
+    b.peak = Math.max(b.peak * .995, m, .002);
+  }
+  const loudK = .35 + .65 * clamp(F.loud, 0, 1);
+  if (sc.rim) { g.strokeStyle = 'rgba(255,246,228,.55)'; g.lineWidth = 2.2 * U; }
+  for (let i = 0; i < L.units; i++) {
+    const cx = L.x0 + i * L.unitW;
+    for (const side of L.sides) {
+      const vi = voiceFor(i, L.units, side), b = A.bands[VOICE_BAND[vi]];
+      const span = Math.round(b.span * clamp(sc.zoom * (vi === 4 ? .5 : 1), .2, 1.4));
+      const st = triggerStart(b.data, span), k = loudK * (.4 + .6 * clamp(VOICES[vi].amp * 1.5, 0, 1));
+      g.fillStyle = stripColour(vi, i + (side > 0));
+      if (side === 0) {
+        const base = sc.attach === 'behind' ? L.bw / 2 : 0, max = sc.attach === 'behind' ? L.bw / 2 + L.space * .9 : L.unitW * .45;
+        wavePath(b.data, st, span, b.peak, a => { const w = base + (max - base) * a * k; return [cx - w, cx + w]; });
+      } else {
+        const edge = cx + side * L.bw / 2, max = L.space * .92;
+        wavePath(b.data, st, span, b.peak, a => side < 0 ? [edge - max * a * k, edge] : [edge, edge + max * a * k]);
+      }
+      g.fill(); if (sc.rim) g.stroke();
+    }
+    if (L.bw > 0) { g.fillStyle = V.band; g.fillRect(cx - L.bw / 2 + (rand() - .5) * boil, 0, L.bw, H); }
+  }
+}
+
+function paintBlob(x = rand() * W, y = rand() * H, r = (60 + rand() * 160) * U * (.5 + F.loud)) {
+  const layers = 3, col = pick(V.cols);
+  for (let l = 0; l < layers; l++) {
+    pg.globalAlpha = .35 + .2 * l; pg.fillStyle = l === layers - 1 ? pick(V.cols) : col;
+    const rr = r * (1 - l * .28), n = 28, ph = rand() * 6;
+    pg.beginPath();
+    for (let i = 0; i <= n; i++) {
+      const a = i / n * Math.PI * 2, k = 1 + .22 * Math.sin(a * 3 + ph) + .12 * Math.sin(a * 7 + ph * 2) + (rand() - .5) * .12;
+      const px = x + Math.cos(a) * rr * k, py = y + Math.sin(a) * rr * k * .85;
+      i ? pg.lineTo(px, py) : pg.moveTo(px, py);
+    }
+    pg.fill();
+  }
+  for (let i = 0; i < 18; i++) { // splatter
+    const a = rand() * 6.283, d = r * (1 + rand() * 1.4), s = rand() * 6 * U;
+    pg.beginPath(); pg.arc(x + Math.cos(a) * d, y + Math.sin(a) * d, s, 0, 6.283); pg.fill();
+  }
+  pg.globalAlpha = 1;
+}
+function brushStroke(amp) {
+  const y0 = rand() * H, w = (8 + amp * 40) * U, col = pick(V.cols);
+  pg.fillStyle = col; pg.globalAlpha = .75;
+  let x = -20, y = y0; const dir = rand() < .5 ? 1 : -1, ph = rand() * 6;
+  if (dir < 0) x = W + 20;
+  for (let i = 0; i < 70; i++) {
+    x += dir * W / 60; y = y0 + Math.sin(i * .15 + ph) * 40 * U * amp;
+    pg.beginPath(); pg.ellipse(x, y, w * (.8 + rand() * .4), w * .35 * (.7 + rand() * .6), .1, 0, 6.283); pg.fill();
+  }
+  pg.globalAlpha = 1;
+}
+function drawDullCare() {
+  pg.globalAlpha = .08 + .1 * (1 - clamp(F.loud, 0, 1)); pg.fillStyle = V.bg; pg.fillRect(0, 0, W, H); pg.globalAlpha = 1;
+  const bass = VOICES[1].amp, mid = VOICES[2].amp, air = VOICES[3].amp;
+  if (mid > .25 && rand() < mid * .5) brushStroke(mid);
+  if (bass > .45 && rand() < .12) paintBlob();
+  g.drawImage(paint, 0, 0);
+  // the scheme's divider bands, brushed on by hand: ragged edges that boil every frame
+  const sc = V.scheme, L = stripLayout(W);
+  if (L.bw > 0) {
+    g.fillStyle = V.band; g.globalAlpha = .88;
+    const step = 18 * U, j = () => (rand() - .5) * (3 + S.boil * 8) * U;
+    for (let i = 0; i < L.units; i++) {
+      const cx = L.x0 + i * L.unitW, hw = L.bw * .4;
+      g.beginPath();
+      for (let y = 0; y <= H + step; y += step) y ? g.lineTo(cx - hw + j(), y) : g.moveTo(cx - hw + j(), y);
+      for (let y = Math.ceil(H / step) * step; y >= 0; y -= step) g.lineTo(cx + hw + j(), y);
+      g.fill();
+    }
+    g.globalAlpha = 1;
+  }
+  // speckles from the highs
+  for (let i = 0, n = (air * 60) | 0; i < n; i++) {
+    g.fillStyle = pick(V.cols); g.fillRect(rand() * W, rand() * H, (1 + rand() * 3) * U, (1 + rand() * 3) * U);
+  }
+  // scratched lines on onsets
+  g.strokeStyle = '#fffbea'; g.lineCap = 'round';
+  V.dcLines = V.dcLines.filter(l => l.life-- > 0);
+  for (const l of V.dcLines) {
+    g.lineWidth = l.w; g.beginPath();
+    if (l.horiz) { for (let x = 0; x <= W; x += 14 * U) { const y = l.y + (rand() - .5) * 6 * U; x ? g.lineTo(x, y) : g.moveTo(x, y); } }
+    else { l.x += (rand() - .5) * 10 * U; for (let y = 0; y <= H; y += 14 * U) { const x = l.x + (rand() - .5) * 6 * U; y ? g.lineTo(x, y) : g.moveTo(x, y); } }
+    g.stroke();
+  }
+}
+
+
+/* ------------------------------------------------------------------ film damage (drawn into the scene) */
+function filmDamage() {
+  const d = S.dust;
+  // dust specks
+  for (let i = 0, n = (rand() * d * 7) | 0; i < n; i++) {
+    g.fillStyle = rand() < .75 ? 'rgba(10,8,6,.85)' : 'rgba(255,250,235,.85)';
+    const s = (1 + rand() * rand() * 7) * U;
+    g.beginPath(); g.ellipse(rand() * W, rand() * H, s, s * (.4 + rand() * .6), rand() * 3, 0, 6.283); g.fill();
+  }
+  // fibres
+  if (rand() < d * .12) {
+    g.strokeStyle = rand() < .7 ? 'rgba(10,8,6,.8)' : 'rgba(255,250,235,.7)'; g.lineWidth = (.8 + rand()) * U;
+    const x = rand() * W, y = rand() * H, l = (10 + rand() * 40) * U;
+    g.beginPath(); g.moveTo(x, y); g.quadraticCurveTo(x + (rand() - .5) * l, y + (rand() - .5) * l, x + (rand() - .5) * l, y + (rand() - .5) * l); g.stroke();
+  }
+  // long vertical scratches that persist and wander
+  if (rand() < S.scratch * .05) V.scratches.push({ x:rand() * W, life:10 + rand() * 60, a:.25 + rand() * .45, w:(.6 + rand() * 1.4) * U, dark:rand() < .25, v:(rand() - .5) * 2 * U });
+  V.scratches = V.scratches.filter(s => s.life-- > 0);
+  for (const s of V.scratches) {
+    s.x += s.v + (rand() - .5) * 1.5 * U;
+    g.strokeStyle = s.dark ? `rgba(10,8,6,${s.a})` : `rgba(255,250,235,${s.a})`; g.lineWidth = s.w;
+    g.beginPath(); g.moveTo(s.x, 0); g.bezierCurveTo(s.x + 3 * U, H * .3, s.x - 3 * U, H * .7, s.x + (rand() - .5) * 2 * U, H);
+    if (rand() > .1) g.stroke(); // flickers in and out
+  }
+  // a hair caught in the gate
+  if (rand() < S.scratch * .006) V.hairs.push({ life:3 + rand() * 8, x:rand() < .5 ? rand() * W * .2 : W - rand() * W * .2, y:rand() * H, s:(40 + rand() * 120) * U, p:rand() * 6 });
+  V.hairs = V.hairs.filter(h => h.life-- > 0);
+  g.strokeStyle = 'rgba(10,8,6,.9)'; g.lineWidth = 1.4 * U;
+  for (const h of V.hairs) {
+    h.x += (rand() - .5) * 3 * U;
+    g.beginPath(); g.moveTo(h.x, h.y);
+    g.bezierCurveTo(h.x + Math.cos(h.p) * h.s, h.y + Math.sin(h.p) * h.s, h.x - Math.sin(h.p) * h.s, h.y + h.s, h.x + h.s * .3, h.y + h.s * 1.3); g.stroke();
+  }
+  // splice: tape edge and cement line across the frame
+  if (V.splice > 0) {
+    V.splice--;
+    g.fillStyle = 'rgba(255,250,230,.18)'; g.fillRect(0, V.spliceY - 30 * U, W, 60 * U);
+    g.fillStyle = 'rgba(10,8,6,.7)'; g.fillRect(0, V.spliceY - 2 * U, W, 4 * U);
+  }
+  if (S.edge) drawFilmEdge();
+  if (V.flash > 0) { g.fillStyle = `rgba(255,252,240,${.85 * V.flash})`; g.fillRect(0, 0, W, H); V.flash = 0; }
+}
+
+function drawFilmEdge() {
+  const ew = W * .065;
+  g.fillStyle = '#0b0907'; g.fillRect(0, 0, ew, H);
+  g.fillStyle = '#d9cfb4';
+  const ph = H / 4, hh = ew * .3;
+  for (let i = 0; i < 5; i++) { const y = i * ph + ph / 2 - hh / 2; g.beginPath(); g.roundRect ? g.roundRect(ew * .12, y, ew * .28, hh, ew * .05) : g.rect(ew * .12, y, ew * .28, hh); g.fill(); }
+  // variable-area soundtrack of the full mix
+  if (!A.time) return;
+  const cx = ew * .72, half = ew * .2, st = triggerStart(A.time, 2400);
+  let pk = .02; for (let i = st; i < st + 2400; i += 3) pk = Math.max(pk, Math.abs(A.time[i]));
+  g.fillStyle = '#f3ecd8'; g.beginPath();
+  const pts = []; for (let y = 0; y <= H; y += 3 * U) pts.push([y, Math.abs(A.time[st + ((y / H * 2400) | 0)]) / pk * half]);
+  pts.forEach(([y, w], j) => j ? g.lineTo(cx - w, y) : g.moveTo(cx - w, y));
+  for (let j = pts.length - 1; j >= 0; j--) g.lineTo(cx + pts[j][1], pts[j][0]);
+  g.fill();
+}
+
+/* ------------------------------------------------------------------ WebGL post: grain, flicker, weave, halation, vignette */
+const VS = `attribute vec2 p; varying vec2 v; void main(){ v = p * .5 + .5; v.y = 1. - v.y; gl_Position = vec4(p, 0., 1.); }`;
+const FS = `
+precision highp float;
+varying vec2 v;
+uniform sampler2D tex; uniform vec2 res, weave;
+uniform float seed, grain, gsize, flick, vign, chroma, hal, roll, sat, temp;
+float hash(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+void main(){
+  vec2 uv = v + weave;
+  uv.y = fract(uv.y + roll);
+  vec2 d = uv - .5; float k = chroma * .012;
+  vec3 c = vec3(texture2D(tex, uv + d * k).r, texture2D(tex, uv).g, texture2D(tex, uv - d * k).b);
+  if (hal > 0.) {
+    vec3 h = vec3(0.);
+    for (int i = 0; i < 8; i++) {
+      float a = float(i) * .785398; vec2 o = vec2(cos(a), sin(a) * res.x / res.y) * .006;
+      h += max(texture2D(tex, uv + o).rgb - .55, 0.) + .6 * max(texture2D(tex, uv + o * 2.4).rgb - .55, 0.);
+    }
+    c += h / 16. * hal * vec3(1., .45, .3) * 2.4;
+  }
+  c = mix(c, c * c * (3. - 2. * c), .3);           // print-stock S-curve
+  c = c * .93 + .035; c *= vec3(1., .985, .95);    // lifted blacks, warm base
+  float L = dot(c, vec3(.299, .587, .114));
+  c = clamp(mix(vec3(L), c, sat), 0., 1.);         // 0 = black & white, 1 = as painted, 2 = vivid
+  c *= vec3(1. + .16 * temp, 1. + .02 * temp, 1. - .2 * temp); // cool ↔ warm print
+  if (abs(roll) > .001) { float fy = v.y + weave.y + roll; float e = abs(fract(fy + .5) - .5); c *= smoothstep(.0, .03, e); }
+  vec2 gp = floor(gl_FragCoord.xy / gsize);
+  float n = (hash(gp + seed * vec2(17.3, 91.7)) + .7 * hash(floor(gp * .5) + seed * vec2(5.1, 3.3))) / 1.7 - .5;
+  float l = dot(c, vec3(.299, .587, .114));
+  c += n * grain * .34 * (.4 + 2.2 * l * (1. - l));
+  c += (vec3(hash(gp + seed + 1.3), hash(gp + seed + 2.7), hash(gp + seed + 4.1)) - .5) * grain * .05;
+  c *= flick;
+  vec2 q = (v - .5) * vec2(1.1, 1.25); c *= mix(1., clamp(1. - dot(q, q) * 1.7, 0., 1.), vign);
+  gl_FragColor = vec4(clamp(c, 0., 1.), 1.);
+}`;
+const GU = {};
+function initGL() {
+  if (!gl) return;
+  const sh = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o);
+    if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(o)); return o; };
+  const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(p); gl.useProgram(p);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(p, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+  for (const [k, v] of [[gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR]])
+    gl.texParameteri(gl.TEXTURE_2D, k, v);
+  for (const n of ['res','weave','seed','grain','gsize','flick','vign','chroma','hal','roll','sat','temp']) GU[n] = gl.getUniformLocation(p, n);
+}
+function post() {
+  // projector gate weave (random walk with spring) and lamp flicker
+  V.weave[0] = V.weave[0] * .85 + (rand() - .5) * .0016 * S.weave;
+  V.weave[1] = V.weave[1] * .85 + (rand() - .5) * .0024 * S.weave + (rand() < .01 * S.weave ? (rand() - .5) * .006 : 0);
+  V.flick = 1 + (rand() - .5) * .14 * S.flicker + Math.sin(clock() * 13) * .015 * S.flicker + V.punch * .05;
+  if (!gl) { view2d.drawImage(scene, 0, 0, view.width, view.height); return; }
+  gl.viewport(0, 0, view.width, view.height);
+  const filt = resScale() < .99 ? gl.NEAREST : gl.LINEAR;   // chunky resolutions keep hard pixel edges
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filt); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filt);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, scene);
+  gl.uniform2f(GU.res, view.width, view.height); gl.uniform2f(GU.weave, V.weave[0], V.weave[1]);
+  gl.uniform1f(GU.seed, rand() * 100); gl.uniform1f(GU.grain, S.grain); gl.uniform1f(GU.gsize, Math.max(1, view.width / 1500));
+  gl.uniform1f(GU.flick, V.flick); gl.uniform1f(GU.vign, S.vignette); gl.uniform1f(GU.chroma, S.chroma);
+  gl.uniform1f(GU.hal, S.halation); gl.uniform1f(GU.roll, V.roll);
+  gl.uniform1f(GU.sat, S.saturation * 2); gl.uniform1f(GU.temp, S.warmth * 2 - 1);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+/* ------------------------------------------------------------------ main loop */
+let lastFrame = 0;
+function updateSection() {
+  // section changes → splice, and in Auto, a change of technique
+  if (A.buffer && !A.mic) {
+    const t = curTime(); let idx = 0; while (idx + 1 < A.sections.length && A.sections[idx + 1] <= t) idx++;
+    if (idx !== V.sectionIdx) { if (V.sectionIdx >= 0 && (A.playing || EXPORT)) { splice(); newScheme(); if (S.bgChange === 'sections') newPalette(); } V.sectionIdx = idx; }
+    V.curMode = S.mode === 'auto' ? A.sectionModes[idx] : S.mode;
+  } else V.curMode = S.mode === 'auto' ? 'synchromy' : S.mode;
+  if (V.curMode !== V.lastMode) { if (V.curMode === 'dullcare') { pg.fillStyle = V.bg; pg.fillRect(0, 0, W, H); } V.lastMode = V.curMode; }
+}
+function renderFrame(live) {
+  ({ optical:drawOptical, dullcare:drawDullCare, rows:drawRows, rings:drawRings }[V.curMode] || drawSynchromy)();
+  filmDamage();
+  post();
+  V.punch *= .82; V.roll *= .62; if (Math.abs(V.roll) < .002) V.roll = 0;
+}
+function loop(ts) {
+  requestAnimationFrame(loop);
+  if (EXPORT) return;
+  const now = ts / 1000;
+  const live = A.ctx && (A.playing || A.mic);
+  if (live) analyse(now); else decay();
+  updateSection();
+  if (now - lastFrame < 1 / S.fps - .004) return;   // step at film frame rate
+  lastFrame = now;
+  renderFrame(live);
+  if (A.buffer && !seeking) { const t = curTime(), d = A.buffer.duration; $('#seek').value = (t / d * 1000) | 0; $('#time').textContent = `${fmt(t)} / ${fmt(d)}`; }
+}
+/* ------------------------------------------------------------------ MP4 export: frame-exact offline render */
+// The song is played through an OfflineAudioContext that pauses at every analysis tick, so each video frame
+// sees exactly the audio it will be paired with. Frames go to WebCodecs (H.264), the audio to AAC, both into an MP4.
+const SIZES = { '1080p':[1920, 1080], '720p':[1280, 720], 'square':[1080, 1080], 'vertical':[1080, 1920] };
+
+// bits per pixel per frame; the grain is fresh noise every frame, so it is what these mostly pay for
+const EXPORT_BPP = { master:.4, high:.2, small:.1 };
+async function pickCodecs(w, h, fps, sr, ch) {
+  const out = {}, bpp = EXPORT_BPP[S.expQ] || .4;
+  const bitrate = Math.round(Math.min(40e6 * bpp / .4, w * h * fps * bpp));
+  for (const codec of ['avc1.640033', 'avc1.64002A', 'avc1.640028', 'avc1.4D0033', 'avc1.42E033']) {
+    const cfg = { codec, width:w, height:h, bitrate, framerate:fps, avc:{ format:'avc' } };
+    try { if ((await VideoEncoder.isConfigSupported(cfg)).supported) { out.video = cfg; break; } } catch (e) {}
+  }
+  if (window.AudioEncoder) for (const [codec, mux] of [['mp4a.40.2', 'aac'], ['opus', 'opus']]) {
+    const cfg = { codec, sampleRate:sr, numberOfChannels:ch, bitrate:256000 };
+    try { if ((await AudioEncoder.isConfigSupported(cfg)).supported) { out.audio = cfg; out.audioMux = mux; break; } } catch (e) {}
+  }
+  return out;
+}
+
+function encodeAudio(buf, enc) {
+  const ch = buf.numberOfChannels, sr = buf.sampleRate, block = 4096;
+  for (let off = 0; off < buf.length; off += block) {
+    const n = Math.min(block, buf.length - off), data = new Float32Array(n * ch);
+    for (let c = 0; c < ch; c++) data.set(buf.getChannelData(c).subarray(off, off + n), c * n);
+    const ad = new AudioData({ format:'f32-planar', sampleRate:sr, numberOfFrames:n, numberOfChannels:ch, timestamp:Math.round(off / sr * 1e6), data });
+    enc.encode(ad); ad.close();
+  }
+}
+
+function resetAnalysis() {
+  Object.assign(F, { flux:0, fm:0, fv:1, lm:0, lv:1, lastOnset:-100, lastCut:-100, loud:0, rms:0 });
+  for (const v of VOICES) Object.assign(v, { amp:0, peak:1e-5, cnt:0 });
+  for (const b of A.bands) b.peak = .02;
+  A.prevLog.fill(0); V.lastColChange = -100;
+}
+
+const exportName = lengthKey => `${A.name || 'synchromy'}${lengthKey === 'clip' ? ' (clip)' : ''}.mp4`;
+// file: a FileSystemFileHandle to stream into (memory stays flat at any size); without one the video is built in memory
+async function exportMP4(sizeKey, lengthKey, file) {
+  if (!A.buffer || EXPORT) return;
+  if (!window.VideoEncoder || !window.Mp4Muxer) return setExportMsg('MP4 export needs a recent Chrome, Edge or Safari.');
+  initAudio(); pause(); stopMic();
+  const [w, h] = SIZES[sizeKey], fps = S.fps, sr = 48000, ch = Math.min(2, A.buffer.numberOfChannels);
+  const start = lengthKey === 'clip' ? A.offset : 0;
+  const dur = lengthKey === 'clip' ? Math.min(30, A.buffer.duration - start) : A.buffer.duration;
+  const codecs = await pickCodecs(w, h, fps, sr, ch);
+  if (!codecs.video) return setExportMsg('This browser cannot encode H.264 at that size.');
+
+  // silent padding before and after the song
+  const pad = +S.pad || 0, span = dur + 2 * pad;
+  const stream = file ? await file.createWritable() : null;
+  const target = stream ? new Mp4Muxer.FileSystemWritableFileStreamTarget(stream) : new Mp4Muxer.ArrayBufferTarget();
+  const muxer = new Mp4Muxer.Muxer({ target, fastStart:stream ? false : 'in-memory', firstTimestampBehavior:'offset',
+    video:{ codec:'avc', width:w, height:h, frameRate:fps },
+    audio:codecs.audio ? { codec:codecs.audioMux, numberOfChannels:ch, sampleRate:sr } : undefined });
+  let failed = null;
+  const ve = new VideoEncoder({ output:(c, m) => muxer.addVideoChunk(c, m), error:e => { failed = e; } });
+  ve.configure(codecs.video);
+
+  const oc = new OfflineAudioContext(ch, Math.ceil(span * sr), sr);
+  const src = oc.createBufferSource(); src.buffer = A.buffer;
+  const live = { an:A.an, bands:A.bands };
+  Object.assign(A, analysisGraph(oc, src));
+  src.connect(oc.destination); src.start(pad, start, dur);
+
+  EXPORT = { t:start - pad, cancel:false, t0:performance.now() };
+  let saved = false;
+  document.body.classList.add('exporting');
+  setCanvasSize(w, h, w, h);
+  resetAnalysis();
+  V.sectionIdx = -1; V.nCols = 1; newPalette(); newScheme();
+  pg.fillStyle = V.bg; pg.fillRect(0, 0, W, H);
+
+  const aRate = fps * Math.ceil(60 / fps), step = 1 / aRate, per = aRate / fps, total = Math.max(1, Math.floor(span * fps));
+  const frame = fi => {
+    renderFrame(true);
+    const vf = new VideoFrame(view, { timestamp:Math.round(fi * 1e6 / fps), duration:Math.round(1e6 / fps) });
+    ve.encode(vf, { keyFrame:fi % (fps * 2) === 0 }); vf.close();
+  };
+  try {
+    updateSection(); frame(0);
+    const rendered = await new Promise((resolve, reject) => {
+      let i = 1;
+      const tick = async () => {
+        try {
+          EXPORT.t = start - pad + i * step;
+          analyse(EXPORT.t); updateSection();
+          if (i % per === 0) {
+            const fi = i / per; frame(fi);
+            while (ve.encodeQueueSize > 4) await yieldNow();
+            if (fi % 6 === 0) { showProgress(fi / total); await yieldNow(); }
+          }
+          if (failed) return reject(failed);
+          if (EXPORT.cancel) return reject(new Error('cancelled'));
+          i++;
+          if (i * step < span) oc.suspend(i * step).then(tick);
+          oc.resume();
+        } catch (e) { reject(e); }
+      };
+      oc.suspend(step).then(tick);
+      oc.startRendering().then(resolve, reject);
+    });
+    setExportMsg('finishing…');
+    await ve.flush();
+    if (codecs.audio) {
+      const ae = new AudioEncoder({ output:(c, m) => muxer.addAudioChunk(c, m), error:e => { failed = e; } });
+      ae.configure(codecs.audio); encodeAudio(rendered, ae); await ae.flush(); ae.close();
+    }
+    if (failed) throw failed;
+    muxer.finalize();
+    if (stream) { await stream.close(); saved = true; setExportMsg(`saved ${file.name}`); }
+    else {
+      const a = document.createElement('a'), blob = new Blob([target.buffer], { type:'video/mp4' });
+      target.buffer = null;
+      a.href = URL.createObjectURL(blob); a.download = exportName(lengthKey); a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      setExportMsg(`saved ${a.download} · ${(blob.size / 1048576).toFixed(0)} MB`);
+    }
+  } catch (e) {
+    setExportMsg(e.message === 'cancelled' ? 'export cancelled' : 'export failed: ' + e.message);
+    console.error(e);
+  } finally {
+    try { ve.close(); } catch (e) {}
+    if (stream && !saved) try { await stream.abort(); } catch (e) {}
+    Object.assign(A, live);
+    EXPORT = null; document.body.classList.remove('exporting');
+    resetAnalysis(); resize(); lastFrame = 0; A.offset = start;
+  }
+}
+
+// yields to the event loop without timer throttling, so export keeps going in a background tab
+const yieldNow = () => new Promise(r => { const c = new MessageChannel(); c.port1.onmessage = () => r(); c.port2.postMessage(0); });
+function showProgress(p) {
+  const el = (performance.now() - EXPORT.t0) / 1000, eta = p > .01 ? el / p - el : 0;
+  $('#exp-bar').style.width = `${(p * 100).toFixed(1)}%`;
+  $('#exp-text').textContent = `rendering ${(p * 100).toFixed(0)}%${p > .02 ? ` · about ${fmt(eta)} left` : ''}`;
+}
+function setExportMsg(m) { $('#exp-text').textContent = m; $('#exp-msg').textContent = m; }
+
+/* ------------------------------------------------------------------ UI */
+const fmt = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+let statusMsg = '';
+function setStatus(m) { statusMsg = m; if (m) $('#time').textContent = m; }
+function updateUI() {
+  $('#play').textContent = A.playing ? 'Pause' : 'Play';
+  $('#mic').classList.toggle('on', !!A.mic);
+  $('#mode').value = S.mode;
+}
+function togglePlay() { if (EXPORT) return; initAudio(); if (A.mic) stopMic(); if (!A.buffer) return $('#file').click(); A.playing ? pause() : play(); }
+
+$('#load').onclick = () => { initAudio(); $('#file').click(); };
+$('#file').onchange = async e => { const f = e.target.files[0]; if (f) loadArrayBuffer(await f.arrayBuffer(), f.name); e.target.value = ''; };
+$('#play').onclick = togglePlay;
+view.onclick = togglePlay;
+$('#mode').onchange = e => { S.mode = e.target.value; saveSettings(); splice(); };
+$('#mic').onclick = () => A.mic ? stopMic() : startMic();
+$('#gear').onclick = () => { $('#settings').classList.toggle('open'); $('#gear').classList.toggle('on'); };
+$('#export').onclick = () => { $('#exportPanel').classList.toggle('open'); $('#export').classList.toggle('on'); };
+$('#exp-go').onclick = async () => {
+  if (!A.buffer || EXPORT) return;
+  const len = $('#exp-len').value; let file = null;
+  // ask where to save first, so the video can stream straight to disk while it renders
+  if (window.showSaveFilePicker) {
+    try { file = await showSaveFilePicker({ suggestedName:exportName(len), types:[{ description:'MP4 video', accept:{ 'video/mp4':['.mp4'] } }] }); }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  exportMP4($('#exp-size').value, len, file);
+};
+$('#exp-q').value = S.expQ; $('#exp-q').onchange = e => { S.expQ = e.target.value; saveSettings(); };
+$('#exp-pad').value = String(S.pad); $('#exp-pad').onchange = e => { S.pad = +e.target.value; saveSettings(); };
+$('#exp-cancel').onclick = () => { if (EXPORT) EXPORT.cancel = true; };
+$('#palette').onclick = () => { $('#colour').classList.toggle('open'); $('#palette').classList.toggle('on'); };
+$('#fs').onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.();
+let seeking = false;
+$('#seek').oninput = () => { seeking = true; };
+$('#seek').onchange = e => { seeking = false; if (A.buffer) seek(e.target.value / 1000 * A.buffer.duration); };
+
+// recording: canvas + audio → webm/mp4
+let rec = null, chunks = [];
+$('#rec').onclick = () => {
+  if (rec) { rec.stop(); return; }
+  initAudio();
+  const types = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'];
+  const type = types.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t));
+  if (!type) return setStatus('recording unsupported');
+  const ms = new MediaStream([...view.captureStream(S.fps).getVideoTracks(), ...A.recDest.stream.getAudioTracks()]);
+  rec = new MediaRecorder(ms, { mimeType:type, videoBitsPerSecond:16e6 }); chunks = [];
+  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  rec.onstop = () => {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(chunks, { type }));
+    a.download = `${A.name || 'synchromy'}.${type.includes('mp4') ? 'mp4' : 'webm'}`; a.click();
+    rec = null; $('#rec').classList.remove('on'); $('#rec').textContent = 'Rec';
+  };
+  rec.start(1000); $('#rec').classList.add('on'); $('#rec').textContent = 'Stop';
+};
+
+// film settings panel
+const CONTROLS = [
+  ['saturation','Film stock: B&W ↔ Saturated'], ['warmth','Cool ↔ Warm'],
+  ['grain','Grain'], ['flicker','Shutter flicker'], ['dust','Dust & specks'], ['scratch','Scratches & hairs'], ['weave','Gate weave'],
+  ['boil','Hand-drawn boil'], ['vignette','Vignette'], ['chroma','Colour fringe'], ['halation','Halation'],
+];
+function addSlider(parent, k, label, after) {
+  const l = document.createElement('label'); l.innerHTML = `<span>${label}</span><input type="range" min="0" max="1" step="0.01" value="${S[k]}">`;
+  l.querySelector('input').oninput = e => { S[k] = +e.target.value; saveSettings(); after && after(); }; parent.appendChild(l);
+  return l;
+}
+const panel = $('#settings');
+for (const [k, label] of CONTROLS) addSlider(panel, k, label);
+addSlider(panel, 'quality', 'Resolution: chunky pixels ↔ full', resize);
+
+// colour panel: which colours the film may use, and how often it reaches for new ones
+const cpanel = $('#colour');
+const tierName = v => tierOf(v).name;
+const palLabel = addSlider(cpanel, 'variety', '', () => { newTheme(); newPalette(); showSwatches(); });
+addSlider(cpanel, 'colourRate', 'Colour changes: rare ↔ every beat');
+{
+  const l = document.createElement('label');
+  l.innerHTML = `Ground colour changes<select><option value="sections">At new sections</option><option value="never">Never</option><option value="colours">With every colour change</option></select>`;
+  const s = l.querySelector('select'); s.value = S.bgChange; s.onchange = () => { S.bgChange = s.value; saveSettings(); }; cpanel.appendChild(l);
+}
+const swatchBox = document.createElement('label');
+swatchBox.innerHTML = `<span>Current colours</span><div class="swatches"></div>`;
+cpanel.appendChild(swatchBox);
+const bgBox = document.createElement('label');
+bgBox.innerHTML = `<span>Background</span><span class="bgrow"><select>
+  <option value="auto">Auto (from palette)</option><option value="black">Black</option><option value="white">White</option>
+  <option value="grey">Grey</option><option value="custom">Pick a colour…</option></select><input type="color"></span>`;
+const bgSel = bgBox.querySelector('select'), bgPick = bgBox.querySelector('input');
+bgSel.value = S.bgMode; bgPick.value = S.bgCustom; bgPick.hidden = S.bgMode !== 'custom';
+bgSel.onchange = () => { S.bgMode = bgSel.value; bgPick.hidden = S.bgMode !== 'custom'; saveSettings(); newPalette(); showSwatches(); };
+bgPick.oninput = () => { S.bgCustom = bgPick.value; saveSettings(); newPalette(); showSwatches(); };
+cpanel.appendChild(bgBox);
+const shuffle = document.createElement('button'); shuffle.textContent = 'Shuffle colours';
+shuffle.onclick = () => { newTheme(); newPalette(); showSwatches(); }; cpanel.appendChild(shuffle);
+function showSwatches() {
+  palLabel.querySelector('span').textContent = `Palette: ${tierName(S.variety)}`;
+  swatchBox.querySelector('.swatches').innerHTML = (V.theme || []).map(c =>
+    `<i style="background:${c}" class="${[V.bg, V.band, V.barCol].includes(c) ? 'used' : ''}"></i>`).join('');
+}
+setInterval(() => { if (cpanel.classList.contains('open')) showSwatches(); }, 500);
+{
+  const l = document.createElement('label');
+  l.innerHTML = `Frame rate<select><option value="12">12 · on twos</option><option value="24">24 · film</option><option value="60">60 · smooth</option></select>`;
+  const s = l.querySelector('select'); s.value = S.fps; s.onchange = () => { S.fps = +s.value; saveSettings(); }; panel.appendChild(l);
+  const c = document.createElement('label'); c.className = 'check';
+  c.innerHTML = `<input type="checkbox" ${S.edge ? 'checked' : ''}> Show film edge`;
+  c.querySelector('input').onchange = e => { S.edge = e.target.checked; saveSettings(); }; panel.appendChild(c);
+  const sp = document.createElement('label'); sp.className = 'check';
+  sp.innerHTML = `<input type="checkbox" ${S.splices ? 'checked' : ''}> Splice cuts (flash + frame roll)`;
+  sp.querySelector('input').onchange = e => { S.splices = e.target.checked; saveSettings(); }; panel.appendChild(sp);
+  const h = document.createElement('div'); h.className = 'hint';
+  h.textContent = 'space play · 1–6 modes · ← → seek · f fullscreen · h hide controls · drop a file anywhere'; panel.appendChild(h);
+}
+
+addEventListener('keydown', e => {
+  if (EXPORT) return;
+  if (e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  const modes = ['auto', 'synchromy', 'optical', 'dullcare', 'rows', 'rings'];
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if (e.key >= '1' && e.key <= '6') { S.mode = modes[+e.key - 1]; saveSettings(); updateUI(); splice(); }
+  else if (e.key === 'ArrowRight') seek(curTime() + 5);
+  else if (e.key === 'ArrowLeft') seek(curTime() - 5);
+  else if (e.key === 'f') $('#fs').click();
+  else if (e.key === 'h') document.body.classList.toggle('idle');
+});
+
+let idleTimer;
+addEventListener('pointermove', () => {
+  document.body.classList.remove('idle'); clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => { if (A.playing || A.mic) document.body.classList.add('idle'); }, 2500);
+});
+addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('dragging'); });
+addEventListener('dragleave', e => { if (!e.relatedTarget) document.body.classList.remove('dragging'); });
+addEventListener('drop', async e => {
+  e.preventDefault(); document.body.classList.remove('dragging'); initAudio();
+  const f = e.dataTransfer.files[0]; if (f) loadArrayBuffer(await f.arrayBuffer(), f.name);
+});
+addEventListener('resize', resize);
+
+newPalette(); newScheme(); resize(); initGL(); updateUI(); requestAnimationFrame(loop);
+
+// ?src=song.m4a preloads a file when served over http (still needs a click to start the sound)
+const qs = new URLSearchParams(location.search).get('src');
+if (qs) fetch(qs).then(r => r.arrayBuffer()).then(ab => loadArrayBuffer(ab, qs, false)).catch(() => setStatus('could not load ' + qs));
+window.viz = { A, V, S, F, VOICES, seek, play, pause, newScheme, newPalette, exportMP4 };
+</script>
+<script src="../../shared/source.js"></script>
+<script src="../../shared/hub.js"></script>
+</body>
+</html>
