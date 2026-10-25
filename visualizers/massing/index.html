@@ -131,7 +131,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 const S = {
   seed:1, growth:.7, actions:2, pitchSens:.5,
   shots:'4', view:'iso', punch:.5, margin:.12,
-  palette:'generated', shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.35, flash:true, look:'drawing',
+  palette:'generated', variety:.5, shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.35, flash:true, look:'drawing',
   // old drawing
   paper:.55, tooth:.6, age:.15, bleed:.12, wobble:.25, wash:.35,
   // film print (the Sculpture Machine's stock)
@@ -499,12 +499,13 @@ const FIXED = {
   axo:REF,
   blueprint:{ name:'Blueprint', bg:'#1f3f8f', wall:'#2d55b0', roof:'#3a68c8', slab:'#5d86d8', elem:'#9db8ee', window:'#16306e', line:'#e8eefc', accent:'#ffffff' },
   paper:{ name:'Warm paper', bg:'#efe6d2', wall:'#fbf8f1', roof:'#e3cfa5', slab:'#cfdbe0', elem:'#b08d5a', window:'#4a4440', line:'#4a4440', accent:'#e8553a' },
+  morphosis:{ name:'Black, program blocks', bg:'#0e0e10', wall:'#1c1c1f', roof:'#29292d', slab:'#45454b', elem:'#cfcac0', window:'#f6c94a', line:'#e6e1d6', accent:'#ffffff', struct:'#d8d3c8', scheme:'black' },
   night:{ name:'Night', bg:'#14161f', wall:'#2c3142', roof:'#3b4257', slab:'#45607a', elem:'#8fd3ff', window:'#ffd27a', line:'#c9d4f2', accent:'#ffffff' },
 };
 const hueGap = (a, b) => { const d = Math.abs(((a - b) % 360 + 360) % 360); return Math.min(d, 360 - d); };
 function genPalette(r, prev) {
   let h; do { h = r() * 360; } while (prev && prev.h != null && hueGap(h, prev.h) < 55);
-  const w = { pastel:4, paper:1.6, mono:1.6, riso:1.2, night:1.1 }; if (prev && prev.scheme) w[prev.scheme] = 0;   // never the same scheme twice running
+  const w = { pastel:4, paper:1.6, mono:1.6, riso:1.2, night:1.1, black:.4 + 3.2 * S.variety }; if (prev && prev.scheme) w[prev.scheme] = 0;   // never the same scheme twice running
   const scheme = pickW(r, w);
   const j = () => r() - .5;
   const P = { h, scheme, accent:'#ffffff' };
@@ -518,14 +519,32 @@ function genPalette(r, prev) {
     Object.assign(P, { bg:hsl(h, .5, .3), wall:hsl(h, .45, .44), roof:hsl(h, .45, .55), slab:hsl(h, .4, .66), elem:hsl(h, .45, .74), window:hsl(h, .55, .2), line:hsl(h, .3, .9) });
   } else if (scheme === 'riso') {
     Object.assign(P, { bg:hsl(45, .45, .9), wall:hsl(h, .85, .74), roof:hsl(h + 50, .9, .64), slab:hsl(h + 200, .7, .64), elem:hsl(h + 200, .6, .58), window:hsl(h + 200, .6, .45), line:hsl(h + 200, .6, .45), accent:hsl(h + 200, .9, .5) });
+  } else if (scheme === 'black') {   // after Morphosis's early drawings: a black sheet, fine light lines, colour only where a program is
+    Object.assign(P, { bg:hsl(h, .08, .055), wall:hsl(h, .05, .11), roof:hsl(h, .05, .16), slab:hsl(h, .04, .27), elem:hsl(40, .08, .78), window:hsl(45, .9, .62), line:hsl(40, .12, .86), struct:hsl(40, .06, .8) });
   } else {
     Object.assign(P, { bg:hsl(h, .35, .1), wall:hsl(h, .2, .24), roof:hsl(h, .2, .33), slab:hsl(h + 30, .4, .42), elem:hsl(h + 180, .6, .62), window:hsl(45, .9, .72), line:hsl(h + 180, .45, .78) });
   }
   // structure (folies, I-beams, galleries) takes a deeper tone of the sheet's own colours
-  P.struct = scheme === 'night' ? hsl(h + 180, .5, .7) : scheme === 'mono' ? hsl(h, .3, .82) : scheme === 'paper' ? hsl(h, .35, .55) : scheme === 'riso' ? hsl(h + 200, .55, .55) : hsl(h + 160, .22, .6);
+  if (!P.struct) P.struct = scheme === 'night' ? hsl(h + 180, .5, .7) : scheme === 'mono' ? hsl(h, .3, .82) : scheme === 'paper' ? hsl(h, .35, .55) : scheme === 'riso' ? hsl(h + 200, .55, .55) : hsl(h + 160, .22, .6);
   return P;
 }
+// program colours: a few flat blocks per building, from the poster set on dark and pastel sheets, from the sheet's own inks elsewhere
+const POSTER = ['#e3262f', '#f6cf1d', '#1d3e9e', '#f2701f', '#2aa84a', '#d81b7b', '#1aa3c8', '#6b2d90'];
+const RISO_INKS = ['#ff48b0', '#ffe800', '#0078bf', '#00a95c', '#ff6c2f', '#765ba7'];
+function programColours(r, P) {
+  const shuf = a => { a = [...a]; for (let k = a.length - 1; k > 0; k--) { const j = ri(r, k + 1); [a[k], a[j]] = [a[j], a[k]]; } return a; };
+  const h0 = r() * 360, sc = P.scheme;
+  if (sc === 'riso') return shuf(RISO_INKS).slice(0, 5);
+  if (sc === 'mono') return [0, 1, 2, 3, 4].map(k => hsl(P.h + (k % 2 ? 25 : -15), .5, .24 + k * .12));
+  if (sc === 'paper') return [0, 1, 2, 3, 4].map(k => hsl(h0 + k * 72, .6, .55));
+  if (sc === 'pastel') return [0, 1, 2, 3, 4].map(k => hsl(h0 + k * 72, .55, .66));
+  if (sc === 'night') return [0, 1, 2, 3, 4].map(k => hsl(h0 + k * 72, .75, .55));
+  return shuf(POSTER).slice(0, 5);
+}
+let PROG = null;
+const progOf = v => { const o = v && (v.parent || v); if (!o || !PROG || !PROG.n || o.progRoll == null) return 0; return o.progRoll < PROG.frac ? 1 + Math.floor(o.progPick * PROG.n) : 0; };
 function assignPalettes() {
+  const rp = rngFor(S.seed * 53, 53);
   const r = rngFor(S.seed * 31, 31); let prev = null;
   for (const cy of CYCLES) {
     cy.pal = S.palette !== 'generated' ? FIXED[S.palette] || REF : cy.idx === 0 ? { ...REF, h:150 } : genPalette(r, prev);
@@ -534,11 +553,15 @@ function assignPalettes() {
     // role colours, in the order the geometry stores them: wall, roof, slab, underside, element, window, accent
     if (!cy.pal.struct) cy.pal = { ...cy.pal, struct:new THREE.Color(cy.pal.wall).lerp(new THREE.Color(cy.pal.line), .45).getStyle() };
     cy.cols = [c('wall'), c('roof'), c('slab'), c('wall').multiplyScalar(.82), c('elem'), c('window'), c('accent'), c('struct')];
+    // colour variety: how many programs (0–5) and how many volumes belong to one
+    const n = Math.round(S.variety * 5), dark = new THREE.Color(cy.pal.bg).getHSL({}).l < .35;
+    cy.prog = { n, frac:n ? lerp(.3, .85, S.variety) : 0, cols:programColours(rp, cy.pal).map(hex => {
+      const w = new THREE.Color(hex); return { [ROLE.wall]:w, [ROLE.roof]:w.clone().lerp(new THREE.Color('#ffffff'), dark ? .14 : .24), [ROLE.under]:w.clone().multiplyScalar(.8) }; }) };
     // one surface type per building is "the hatched material"; now and then a second gets a light dot screen
-    const n = o => +pickW(r, o), roles = ['wallX', 'roof', 'slab', 'wallY'];
+    const np = o => +pickW(r, o), roles = ['wallX', 'roof', 'slab', 'wallY'];
     cy.pat = { wallX:0, wallY:0, roof:0, slab:0, under:0 };
     const main = pickW(r, { wallX:3, roof:2.5, slab:2, wallY:1 });
-    cy.pat[main] = main === 'slab' ? n({ 6:3, 3:1 }) : main === 'roof' ? n({ 4:2, 1:1.5, 3:.6 }) : n({ 1:2, 5:1.5, 2:1 });
+    cy.pat[main] = main === 'slab' ? np({ 6:3, 3:1 }) : main === 'roof' ? np({ 4:2, 1:1.5, 3:.6 }) : np({ 1:2, 5:1.5, 2:1 });
     if (r() < .35) { const second = pickR(r, roles.filter(k => k !== main)); cy.pat[second] = 4; }
   }
 }
@@ -777,7 +800,7 @@ function pickVocab(r, prev) {
 
 function genCycle(cy) {
   const an = AN, r = rngFor(S.seed * 1009 + cy.idx * 7919, 3), bl = an.beatLen, g = S.growth;
-  const vols = [], cuts = [], geo = [], els = [];
+  const vols = [], cuts = [], geo = [], els = [], pr = rngFor(S.seed * 7 + cy.idx, 77);
   const voc = cy.voc = pickVocab(r, cy.idx > 0 ? CYCLES[cy.idx - 1].voc : null);
   const kThr = lerp(.6, .12, g), sThr = lerp(.65, .15, g), hThr = lerp(.6, .12, g);
   const acts = clamp(Math.round(S.actions), 1, 4), vActs = 1 + Math.floor((acts - 1) / 2);   // volumes and cuts scale more gently than elements
@@ -813,7 +836,7 @@ function genCycle(cy) {
     }
   }
   function commitVol(c, t) {
-    const v = { id:vid++, t, ...c, rect:polyBB(c.poly), cuts:0, used:new Set() };
+    const v = { id:vid++, t, ...c, rect:polyBB(c.poly), cuts:0, used:new Set(), progRoll:pr(), progPick:pr() };
     v.top = (v.z0 + v.fl) * F; v.facades = facades(v);
     if (v.isRect && voc.pitched && !v.stacked && v.fl <= 3 && r() < .5) v.roof = { type:r() < .65 ? 'gable' : 'shed', pitch:20 + ri(r, 3) * 10 };
     const [x0, y0, x1, y1] = v.rect, rh = v.roof ? Math.max(x1 - x0, y1 - y0) * M * Math.tan(v.roof.pitch * D2R) : 0;
@@ -1068,7 +1091,7 @@ const STATS = { plan:'', geo:'' };
 const wasm = await Manifold3d(); wasm.setup();
 const { Manifold, CrossSection } = wasm;
 const SOURCES = new Map();   // manifold originalID → what made that face
-function tag(m, kind) { const o = m.asOriginal(); m.delete(); SOURCES.set(o.originalID(), kind); return o; }
+function tag(m, kind, v = null) { const o = m.asOriginal(); m.delete(); SOURCES.set(o.originalID(), { kind, v }); return o; }
 const section = poly => new CrossSection(ccw(poly).map(([x, y]) => [x * M, y * M]));
 const prism = (poly, z0, z1) => section(poly).extrude((z1 - z0) * F).translate([0, 0, z0 * F]);
 function roofPiece(v) {
@@ -1106,7 +1129,7 @@ function updateSolid(cy, t) {
   for (let i = SOL.n; i < n; i++) {
     const op = cy.geo[i];
     if (op.type === 'vol') {
-      const piece = tag(volPiece(op.v), 'vol');
+      const piece = tag(volPiece(op.v), 'vol', op.v);
       if (piece.isEmpty()) { piece.delete(); continue; }
       SOL.pieces.push({ m:piece, v:op.v, acc:null });
     } else {
@@ -1152,16 +1175,16 @@ const shadeK = (nx, ny, nz) => (S.shadow !== 'off' && nx * SUN.x + ny * SUN.y + 
 function meshInto(A, mesh, cols, xf, tint) {
   const np = mesh.numProp, vp = mesh.vertProperties, tv = mesh.triVerts, nTri = tv.length / 3, pos = new Float32Array(nTri * 9);
   for (let rr = 0; rr < mesh.runOriginalID.length; rr++) {
-    const kind = SOURCES.get(mesh.runOriginalID[rr]) || 'vol';
+    const src = SOURCES.get(mesh.runOriginalID[rr]) || { kind:'vol' }, kind = src.kind, prog = kind === 'vol' ? progOf(src.v) : 0;
     for (let t = mesh.runIndex[rr] / 3; t < mesh.runIndex[rr + 1] / 3; t++) {
       for (let k = 0; k < 3; k++) { const v = tv[t * 3 + k] * np; let p = [vp[v], vp[v + 1], vp[v + 2]]; if (xf) p = xf(p); pos.set(p, t * 9 + k * 3); }
       const o = t * 9, ux = pos[o + 3] - pos[o], uy = pos[o + 4] - pos[o + 1], uz = pos[o + 5] - pos[o + 2], vx = pos[o + 6] - pos[o], vy = pos[o + 7] - pos[o + 1], vz = pos[o + 8] - pos[o + 2];
       let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
-      const c = cols[roleOf(kind, nz)], sk = shadeK(nx, ny, nz);
+      const role = roleOf(kind, nz), pc = prog && PROG.cols[prog - 1], c = pc && pc[role] || cols[role], sk = shadeK(nx, ny, nz);
       const cr = lerp(cols[ROLE.accent].r, c.r, tint) * sk, cg = lerp(cols[ROLE.accent].g, c.g, tint) * sk, cb = lerp(cols[ROLE.accent].b, c.b, tint) * sk;
       for (let k = 0; k < 9; k++) A.pos.push(pos[o + k]);
       for (let k = 0; k < 3; k++) A.col.push(cr, cg, cb);
-      const pt = patOf(roleOf(kind, nz), nx, ny); A.pat.push(pt, pt, pt);
+      const pt = pc && pc[role] ? 0 : patOf(role, nx, ny); A.pat.push(pt, pt, pt);   // program blocks stay flat; the hatch is for the neutral material
     }
   }
   // feature edges only (dihedral > 15°), so the boolean's coplanar triangle seams never show
@@ -1370,7 +1393,7 @@ function updateSettled(cy, t) {
 function liveVolGeom(op) {
   let c = SOL.live.get(op);
   if (!c) {
-    const m = tag(volPiece(op.v), 'vol'), mesh = m.getMesh(); m.delete();
+    const m = tag(volPiece(op.v), 'vol', op.v), mesh = m.getMesh(); m.delete();
     c = { mesh }; SOL.live.set(op, c);
     if (SOL.live.size > 64) SOL.live.delete(SOL.live.keys().next().value);
   }
@@ -1669,7 +1692,7 @@ function renderAt(t, dt) {
   const cy = cycleAt(t);
   if (cy.idx !== lastCy || Math.abs(t - lastT) > .5) { CAM.snap = true; lastCy = cy.idx; }
   lastT = t;
-  PAT = S.hatch > 0 ? cy.pat : null;
+  PAT = S.hatch > 0 ? cy.pat : null; PROG = cy.prog;
   placeSun(cy);
   updateSolid(cy, t); updateSettled(cy, t); updateLive(cy, t);
   const detached = updateExploded(cy, t); EXP = detached ? 1 : 0;
@@ -1849,6 +1872,7 @@ const nop = () => {};
 addSelect('shots', 'Camera', [['2', 'New shot every 2 bars'], ['4', 'Every 4 bars'], ['8', 'Every 8 bars'], ['off', 'Fixed view']], () => { buildShots(); CAM.snap = true; });
 addSelect('view', 'Fixed view', Object.entries(VIEWS).map(([k, v]) => [k, v[0]]), () => { CAM.snap = true; });
 addSelect('palette', 'Colours', [['generated', 'New palette every cycle'], ...Object.entries(FIXED).map(([k, v]) => [k, v.name])], recolour);
+addSlider('variety', 'Colour variety', recolour);
 addSelect('shading', 'Shading', [['flat', 'Flat'], ['three', 'Three-tone']], () => { SOL.cyc = -1; SET.key = ''; });
 addSelect('hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashed'], ['off', 'Off']], nop);
 addSlider('growth', 'Growth', regen);
