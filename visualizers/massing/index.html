@@ -137,7 +137,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 /* ------------------------------------------------------------------ settings */
 const S = {
   seed:1, curve:.35, growth:.7, actions:2, unify:.85, form:'mixed', camStyle:'mixed', pitchSens:.5,
-  shots:'music', shotSens:.5, view:'iso', punch:0, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:0, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35,
+  shots:'music', shotSens:.5, view:'iso', punch:0, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:0, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35, silenceFade:.9,
   palette:'generated', variety:.5, shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.35, flash:false, look:'drawing',
   // old drawing
   paper:.55, tooth:.6, age:.15, bleed:.12, wobble:.25, wash:.35,
@@ -1111,6 +1111,7 @@ function genCycle(cy) {
   for (const s of SLOTS) {
     if (s.t < cy.t0 || s.t >= cy.end - bl) continue;   // the last beat stays quiet before the wipe
     const p = (s.t - cy.t0) / (cy.end - cy.t0), loose = smooth(.25, .85, p);
+    if (presenceAt(s.t) < .5) continue;   // silence: the site rests
     if (!vols.length) { if ((s.kick || 0) > kThr * .5 || (s.snare || 0) > sThr * .5 || s.down) placeVol(s, p, loose, 'first'); continue; }
     while (bi < BIG.length && BIG[bi].t < s.t - bl * .26) bi++;
     if (bi < BIG.length && Math.abs(BIG[bi].t - s.t) <= bl * .26) { if (p > .12 && s.t < cy.end - 2 * bl) explode(s); bi++; }
@@ -1241,7 +1242,7 @@ function rebuildAll() {
   const t0 = performance.now();
   SLOTS = buildSlots(AN); CYCLES = buildCycles(AN); CYC_T = CYCLES.map(c => c.t0);
   assignPalettes();
-  buildBigHits(); buildPunches();
+  buildPresence(); buildBigHits(); buildPunches();
   for (const cy of CYCLES) genCycle(cy);
   buildShots();
   SOL.cyc = -1; SOL.live.clear(); SOURCES.clear(); SET.key = '';
@@ -1681,6 +1682,15 @@ function newestPts(cy, t) {
   for (const e of cy.els) { if (e.t0 > t) break; if (e.t1 > t && e.kind !== 'axes' && e.t0 > bt) { bt = e.t0; best = bbCorners(e.bb); } }
   return best;
 }
+// presence: how much music is sounding. The envelope rises in 0.15 s and lets go over 1.6 s, then maps so that below
+// about 4% of the song's loud level counts as silence (0) and from about 14% it is fully present (1)
+function buildPresence() {
+  const n = AN.n, rate = AN.rate, out = new Float32Array(n), att = 1 - Math.exp(-1 / (rate * .15)), rel = 1 - Math.exp(-1 / (rate * 1.6));
+  let e = 0;
+  for (let i = 0; i < n; i++) { const x = AN.rms[i]; e += (x - e) * (x > e ? att : rel); out[i] = smooth(.04, .14, e); }
+  AN.presence = out;
+}
+const presenceAt = t => AN && AN.presence ? (t < 0 || t > AN.dur ? 0 : AN.presence[fr(AN, t)]) : 1;
 // the kick punch-in follows only the stronger kicks (top 30%, at least half a beat apart), not every one
 let PUNCH = Object.assign([], { ts:[] });
 function buildPunches() {
@@ -1873,7 +1883,7 @@ const POST_FS = `precision highp float;
 in vec2 vUv; out vec4 o;
 uniform sampler2D tex, dmg, paper; uniform vec2 res, weave, sheet;
 uniform float seed, grain, gsize, flick, vign, chroma, hal, roll, sat, temp, boil;
-uniform float pPaper, pAge, pBleed, pWobble, pWash, pTooth, dark;
+uniform float pPaper, pAge, pBleed, pWobble, pWash, pTooth, dark, fade; uniform vec3 bgS;
 float hash(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3. - 2. * f);
   return mix(mix(hash(i), hash(i + vec2(1., 0.)), f.x), mix(hash(i + vec2(0., 1.)), hash(i + 1.), f.x), f.y); }
@@ -1903,6 +1913,7 @@ void main(){
     c *= 1. - clamp(length(c - avg), 0., 1.) * pWash * .5;
   }
   c *= 1. + (fbm(q * 2.6 + sheet * 9.) - .5) * pWash * .24;   // an uneven, hand-laid wash
+  c = mix(bgS, c, fade);   // in silence the drawing sinks back into the sheet; the paper below still shows
   // the sheet: a fine fibrous tooth and a little yellowing
   float tooth = texture(paper, gl_FragCoord.xy / gsize / 173. + sheet * 3.).r * .5 + hash(floor(gl_FragCoord.xy / gsize)) * .5;
   float pt = mix(1., fib * mix(1., .9 + .1 * tooth, pTooth), pPaper), L = lum(c);
@@ -1937,7 +1948,7 @@ void main(){
 const postU = {
   tex:{ value:rt.texture }, dmg:{ value:dmgTex }, paper:{ value:paperTex }, res:{ value:new THREE.Vector2() }, weave:{ value:new THREE.Vector2() }, sheet:{ value:new THREE.Vector2() },
   seed:{ value:0 }, grain:{ value:0 }, gsize:{ value:1 }, flick:{ value:1 }, vign:{ value:0 }, chroma:{ value:0 }, hal:{ value:0 }, roll:{ value:0 }, sat:{ value:1 }, temp:{ value:0 }, boil:{ value:0 },
-  pPaper:{ value:0 }, pAge:{ value:0 }, pBleed:{ value:0 }, pWobble:{ value:0 }, pWash:{ value:0 }, pTooth:{ value:0 }, dark:{ value:0 },
+  fade:{ value:1 }, bgS:{ value:new THREE.Vector3() }, pPaper:{ value:0 }, pAge:{ value:0 }, pBleed:{ value:0 }, pWobble:{ value:0 }, pWash:{ value:0 }, pTooth:{ value:0 }, dark:{ value:0 },
 };
 const postMat = new THREE.RawShaderMaterial({ glslVersion:THREE.GLSL3, uniforms:postU, depthTest:false, depthWrite:false,
   vertexShader:`in vec3 position; out vec2 vUv; void main(){ vUv = position.xy * .5 + .5; gl_Position = vec4(position.xy, 0., 1.); }`, fragmentShader:POST_FS });
@@ -2012,6 +2023,8 @@ function drawPost(t, cy) {
   u.sheet.value.set(hash01(cy.idx + S.seed * 101, 3), hash01(cy.idx + S.seed * 101, 4));
   const bgL = new THREE.Color(cy.pal.bg).getHSL({}).l;
   u.dark.value = bgL < .35 ? 1 : 0;
+  u.fade.value = 1 - (1 - presenceAt(t)) * S.silenceFade;
+  { const h = cy.pal.bg.replace('#', ''); u.bgS.value.set(parseInt(h.slice(0, 2), 16) / 255, parseInt(h.slice(2, 4), 16) / 255, parseInt(h.slice(4, 6), 16) / 255); }
   u.pPaper.value = S.paper; u.pAge.value = S.age * (bgL < .35 ? .45 : 1); u.pBleed.value = S.bleed;
   u.pWobble.value = S.wobble; u.pWash.value = S.wash; u.pTooth.value = S.tooth;
   renderer.setRenderTarget(null);
@@ -2295,6 +2308,7 @@ lookSlider('overshoot', 'Line overshoot', rebuildLines);
 for (const [k, l] of [['grain', 'Film grain'], ['flicker', 'Flicker'], ['dust', 'Dust & specks'], ['scratch', 'Scratches & hairs'], ['weave', 'Gate weave'], ['vignette', 'Vignette'],
   ['chroma', 'Colour fringe'], ['halation', 'Halation'], ['saturation', 'B&W ↔ saturated'], ['warmth', 'Cool ↔ warm']]) lookSlider(k, l);
 addSelect(LP, 'fps', 'Frame rate (preview and export)', [['8', '8 · hand-cranked'], ['12', '12 · on twos'], ['24', '24 · film'], ['30', '30'], ['60', '60 · smooth']], () => { S.fps = +S.fps; });
+addSlider(LP, 'silenceFade', 'Fade in silence');
 addCheck(LP, 'splices', 'Splice on every shot');
 addCheck(LP, 'flash', 'Splice flash and roll on wipes');
 addHint(LP, 'space play · ← → seek · r new seed · b c k l e panels · f fullscreen');
