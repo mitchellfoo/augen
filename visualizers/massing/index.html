@@ -1146,7 +1146,7 @@ function genCycle(cy) {
 
   geo.sort((a, b) => a.settle - b.settle || a.t - b.t);
   els.sort((a, b) => a.t0 - b.t0);
-  cy.geo = geo; cy.geoSettle = geo.map(o => o.settle); cy.els = els; cy.vols = vols;
+  cy.geo = geo; cy.geoSettle = geo.map(o => o.settle); cy.els = els; cy.vols = vols; cy.hasEx = vols.some(v => v.ex) || els.some(e => e.ex);
   cy.ptsFinal = geo.filter(o => o.type === 'vol').flatMap(opPts);
   for (const e of els) if (e.kind !== 'axes') cy.ptsFinal.push(...bbCorners(e.bb));
   if (!cy.ptsFinal.length) cy.ptsFinal = bbCorners(cy.bbFinal);
@@ -1644,10 +1644,9 @@ function fitPts(pts, asp, k = null) {
   return { half:Math.max((y1 - y0) / 2, (x1 - x0) / 2 / asp), c:at((x0 + x1) / 2, (y0 + y1) / 2), x0, x1, y0, y1, at };
 }
 function placeCamera(cy, t, dt) {
-  let sh, az, el;
+  let sh, az, el, si = -1;
   const auto = S.shots !== 'off';
   {
-    let si = -1;
     if (auto) { si = Math.max(0, upperBound(SHOT_T, t) - 1); sh = SHOTS[si]; }
     else { const k = SHOT[S.view] ? S.view : 'iso', f = !!SHOT[k].flat; sh = { kind:k, t:cy.t0, az:f ? 0 : k === 'dim' ? 30 : 45, drift:f ? 0 : 2 }; si = CAM.shot; }
     const age = t - sh.t, K = SHOT[sh.kind], bar = AN.beatLen * 4, tk = lerp(0, 2.2, S.turnSpeed);
@@ -1671,10 +1670,10 @@ function placeCamera(cy, t, dt) {
   const dir = new THREE.Vector3(Math.cos(re) * Math.sin(ra), -Math.cos(re) * Math.cos(ra), Math.sin(re));
   camera.position.copy(CAM.c).addScaledVector(dir, R); camera.lookAt(CAM.c); camera.updateMatrixWorld();
   const asp = canvas.width / canvas.height, K = SHOT[sh.kind] || SHOT.iso;
-  const fin = cy.ptsFinal, nowP = visiblePts(cy, t), use = nowP.length ? nowP : fin;
+  const fin = cy.ptsFinal, use = framePtsFor(cy, sh, si, auto), shotEnd = shotEndOf(cy, sh, si, auto);
   setClip(null); CAM.noHidden = !!K.mode;
-  if (K.mode) return placeEye(cy, t, dt, K, sh, asp, use);
-  if (K.persp) return placePersp(cy, t, dt, K, sh, dir, use, fin, asp);
+  if (K.mode) return placeEye(cy, t, dt, K, sh, asp, use, shotEnd);
+  if (K.persp) return placePersp(cy, t, dt, K, sh, dir, use, fin, asp, shotEnd);
   VIEW = camera;
   const f0 = fitPts(K.fit === 'final' ? fin : K.fit === 'newest' ? sh.lockPts || (sh.lockPts = newestPts(cy, sh.t + .05) || use) : use, asp, K.shear);   // a close-up keeps the piece it opened on
   let half = f0.half * (K.m || 1), cen = f0.c;
@@ -1683,22 +1682,20 @@ function placeCamera(cy, t, dt) {
   if (K.fit === 'newest') half = Math.max(f0.half * 2.4, 9);
   if (K.fit === 'dolly') {   // a tight frame sliding along the building
     half = Math.max(f0.half * .45, 9);
-    const w = half * asp, f = clamp((t - sh.t) / (AN.beatLen * 16), 0, 1), dirn = sh.az % 180 > 90 ? 1 - f : f;
+    const w = half * asp, f = ease(clamp((t - sh.t) / Math.max(1, shotEnd - sh.t), 0, 1)), dirn = sh.az % 180 > 90 ? 1 - f : f;   // one slow slide over the whole shot
     const xa = f0.x0 + w * .8, xb = f0.x1 - w * .8;
     cen = f0.at(xa < xb ? lerp(xa, xb, dirn) : (f0.x0 + f0.x1) / 2, (f0.y0 + f0.y1) / 2);
   }
   if (S.follow > 0 && K.fit !== 'final' && K.fit !== 'newest') {   // glance at the newest piece
     const np = newestPts(cy, t); if (np) { const fn = fitPts(np, asp, K.shear); cen = cen.clone().lerp(fn.c, S.follow * .4); }
   }
-  half *= (1 + S.margin) * (1 + .18 * EXP) * lerp(.65, 1.5, S.dist);   // room for detached pieces, and the distance slider
+  half *= (1 + S.margin) * (cy.hasEx && S.explodeMode !== 'off' ? 1.15 : 1) * lerp(.65, 1.5, S.dist);   // a steady allowance for detached pieces, and the distance slider
   // punch-in scales with how wide the frame is: full strength on the whole building, next to nothing on a close-up
   const zf = clamp(half / (fullH * (1 + S.margin) * lerp(.65, 1.5, S.dist)), 0, 1);
   const target = cen;
-  if (CAM.snap) { CAM.c.copy(target); CAM.half = half; CAM.snap = false; }
-  else {   // within a shot the frame eases slowly and only ever widens, so it never breathes as pieces arrive
-    const k = 1 - Math.exp(-dt * (K.fit === 'dolly' ? 3 : 1.1));
-    CAM.c.lerp(target, k); CAM.half = lerp(CAM.half, Math.max(half, CAM.half), k);
-  }
+  // the frame is fixed for the shot (it is planned from the shot's end), so it is set directly; only Glide eases between shots
+  if (CAM.snap || S.cuts !== 'glide') { CAM.c.copy(target); CAM.half = half; CAM.snap = false; }
+  else { const k = 1 - Math.exp(-dt * 1.2); CAM.c.lerp(target, k); CAM.half = lerp(CAM.half, half, k); }
   const hp = CAM.half * (1 - .07 * S.punch * punchAt(t) * zf * zf);
   camera.position.copy(CAM.c).addScaledVector(dir, R); camera.lookAt(CAM.c);
   camera.left = -hp * asp; camera.right = hp * asp; camera.top = hp; camera.bottom = -hp;
@@ -1719,13 +1716,13 @@ const CLIP_MATS = [...Object.values(FILLS), visMat, hidMat, ghostMat, dashLineMa
 renderer.localClippingEnabled = true;
 function setClip(plane) { const arr = plane ? [plane] : null; for (const m of CLIP_MATS) if (m.clippingPlanes !== arr && (arr || m.clippingPlanes)) { m.clippingPlanes = arr; m.needsUpdate = true; } }
 // standing in the building: eye height beside it, a walk along it, or inside the biggest block
-function placeEye(cy, t, dt, K, sh, asp, use) {
-  const vs = cy.vols.filter(v => v.t <= t && !v.ex);
+function placeEye(cy, t, dt, K, sh, asp, use, shotEnd = cy.end) {
+  const tEnd = Math.max(sh.t, shotEnd - .05), vs = cy.vols.filter(v => v.t <= tEnd && !(v.ex && v.ex.t <= tEnd));   // the blocks standing at the shot's end
   if (vs.length < 2) return placePersp(cy, t, dt, SHOT.persp, sh, new THREE.Vector3(.5, -.6, .5).normalize(), use, cy.ptsFinal, asp);
   VIEW = pcam;
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, H = 0;
   for (const v of vs) { x0 = Math.min(x0, v.rect[0] * M); y0 = Math.min(y0, v.rect[1] * M); x1 = Math.max(x1, v.rect[2] * M); y1 = Math.max(y1, v.rect[3] * M); H = Math.max(H, v.top); }
-  const cx = (x0 + x1) / 2, cyy = (y0 + y1) / 2, alongX = x1 - x0 >= y1 - y0, age = t - sh.t, f = clamp(age / (AN.beatLen * 16), 0, 1), back = Math.floor(sh.az / 90) % 2 ? -1 : 1;
+  const cx = (x0 + x1) / 2, cyy = (y0 + y1) / 2, alongX = x1 - x0 >= y1 - y0, age = t - sh.t, f = ease(clamp(age / Math.max(1, shotEnd - sh.t), 0, 1)), back = Math.floor(sh.az / 90) % 2 ? -1 : 1;
   const free = (x, y) => !vs.some(v => v.z0 === 0 && inPoly(v.poly, x / M, y / M));
   let pos, look;
   if (K.mode === 'inside') {
@@ -1745,14 +1742,22 @@ function placeEye(cy, t, dt, K, sh, asp, use) {
     pos = [x, y, 1.7]; look = [cx, cyy, Math.min(H * .35, 12)];
   }
   const P = new THREE.Vector3(...pos), L = new THREE.Vector3(...look);
-  if (CAM.snap || !CAM.ep) { CAM.ep = P.clone(); CAM.el3 = L.clone(); CAM.snap = false; }
-  else { const k = 1 - Math.exp(-dt * 4); CAM.ep.lerp(P, k); CAM.el3.lerp(L, k); }
+  if (CAM.snap || !CAM.ep || S.cuts !== 'glide') { CAM.ep = P.clone(); CAM.el3 = L.clone(); CAM.snap = false; }
+  else { const k = 1 - Math.exp(-dt * 1.2); CAM.ep.lerp(P, k); CAM.el3.lerp(L, k); }
   pcam.fov = clamp(K.persp * lerp(.75, 1.25, S.fov), 30, 110); pcam.aspect = asp; pcam.near = .1; pcam.far = 3000;
   pcam.position.copy(CAM.ep); pcam.lookAt(CAM.el3); pcam.updateProjectionMatrix(); pcam.updateMatrixWorld();
   CAM.D = CAM.Dv = CAM.ep.distanceTo(CAM.el3);
 }
 // perspective shots: frame the building's bounding sphere, push in slowly over the shot
-function placePersp(cy, t, dt, K, sh, dir, use, fin, asp) {
+// framing is decided once per shot from what will be standing when the shot ends, so the camera never chases new pieces
+function shotEndOf(cy, sh, si, auto) { return auto ? Math.min(SHOT_T[si + 1] ?? cy.end, cy.end) : cy.end; }
+function framePtsFor(cy, sh, si, auto) {
+  const key = auto ? sh : CAM, tag = auto ? `${cy.idx}` : `${cy.idx}|${S.view}`;
+  if (key.fp && key.fpTag === tag) return key.fp;
+  const p = visiblePts(cy, Math.max(sh.t, shotEndOf(cy, sh, si, auto) - .05));
+  key.fp = p.length ? p : cy.ptsFinal; key.fpTag = tag; return key.fp;
+}
+function placePersp(cy, t, dt, K, sh, dir, use, fin, asp, shotEnd = cy.end) {
   VIEW = pcam;
   const b = bbNew(); for (const p of use) bbAdd(b, p);
   const c = bbCenter(b); if (K.low) c[2] = b.max[2] * .38;   // low shots aim a third of the way up, so tall blocks tower but stay in frame
@@ -1763,9 +1768,9 @@ function placePersp(cy, t, dt, K, sh, dir, use, fin, asp) {
   let D = rad / Math.sin(f / 2) * (1 + S.margin) * (K.low ? .8 : .95) * lerp(.6, 1.5, S.dist);
   if (S.follow > 0) { const np = newestPts(cy, t); if (np) { const nb = bbNew(); for (const q of np) bbAdd(nb, q); const nc = bbCenter(nb); for (let i = 0; i < 3; i++) c[i] = lerp(c[i], nc[i], S.follow * .35); } }
   const target = new THREE.Vector3(...c);
-  if (CAM.snap || !CAM.D) { CAM.c.copy(target); CAM.D = D; CAM.snap = false; }
-  else { const k = 1 - Math.exp(-dt * 1.1); CAM.c.lerp(target, k); CAM.D = lerp(CAM.D, Math.max(D, CAM.D), k); }   // calm, widen-only, like the axo shots
-  let Dv = CAM.D * lerp(1, .86, clamp((t - sh.t) / (AN.beatLen * 16), 0, 1)) * (1 + .18 * EXP), fov = fov0;   // a slow push-in over the shot
+  if (CAM.snap || !CAM.D || S.cuts !== 'glide') { CAM.c.copy(target); CAM.D = D; CAM.snap = false; }
+  else { const k = 1 - Math.exp(-dt * 1.2); CAM.c.lerp(target, k); CAM.D = lerp(CAM.D, D, k); }
+  let Dv = CAM.D * lerp(1, .88, ease(clamp((t - sh.t) / Math.max(1, shotEnd - sh.t), 0, 1))) * (cy.hasEx && S.explodeMode !== 'off' ? 1.12 : 1), fov = fov0;   // one slow push-in across the shot
   const pk = S.punch * punchAt(t) * zf * zf;
   if (S.dollyZoom) { fov = fov0 * (1 - .3 * pk); Dv *= Math.tan(fov0 * D2R / 2) / Math.tan(fov * D2R / 2); }   // vertigo: lens punches in, camera pulls back
   else Dv *= 1 - .05 * pk;
@@ -2281,7 +2286,18 @@ setStatus('');
 updateUI();
 requestAnimationFrame(frame);
 if (pendingLoad) massingLoad(...pendingLoad);
-window.MASSING = { get CAM() { return CAM; }, snapshot, get BIG() { return BIG; }, get SHOTS() { return SHOTS; }, S, get AN() { return AN; }, get CYCLES() { return CYCLES; }, seek, rebuildAll, scene, camera, DEMO };   // for poking at from the console
+// debug: step the camera frame by frame and record where it is, to measure motion within shots
+async function traceCam(t0, t1, fps = 24) {
+  const out = []; EXPORT = { still:true }; setSizes(640, 360, 1);
+  for (let t = t0; t < t1; t += 1 / fps) {
+    renderAt(t, 1 / fps);
+    const v = VIEW, half = v === camera ? camera.top : (CAM.Dv || CAM.D) * Math.tan(pcam.fov * D2R / 2);
+    const aim = v === camera ? CAM.c : (CAM.el3 && SHOT[(SHOTS[CAM.shot] || {}).kind || 'iso'].mode ? CAM.el3 : CAM.c);
+    out.push([t, CAM.shot, aim.x, aim.y, aim.z, half, cycleAt(t).idx, CAM.az, CAM.el, v.position.x, v.position.y, v.position.z]);
+  }
+  EXPORT = null; resize(); return out;
+}
+window.MASSING = { traceCam, get CAM() { return CAM; }, snapshot, get BIG() { return BIG; }, get SHOTS() { return SHOTS; }, S, get AN() { return AN; }, get CYCLES() { return CYCLES; }, seek, rebuildAll, scene, camera, DEMO };   // for poking at from the console
 </script>
 
 <script src="../../shared/source.js"></script>
