@@ -106,7 +106,7 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const pick = arr => arr[(rand() * arr.length) | 0];
 
 /* ------------------------------------------------------------------ settings */
-const S = { mode:'auto', saturation:.5, warmth:.5, variety:.6, colourRate:.6, bgMode:'auto', bgCustom:'#1d3e9e', fps:24, grain:.55, flicker:.45, dust:.5, scratch:.5, splices:true, weave:.4, boil:.5, vignette:.55, chroma:.35, halation:.35, edge:false, quality:1, bgChange:'sections', expQ:'high', pad:5 };
+const S = { mode:'auto', saturation:.5, warmth:.5, variety:.6, colourRate:.6, bgMode:'auto', bgCustom:'#1d3e9e', fps:24, grain:.55, flicker:.45, dust:.5, scratch:.5, splices:true, weave:.4, boil:.5, vignette:.55, chroma:.35, halation:.35, edge:false, quality:1, bgChange:'sections', expQ:'high', pad:5, cutSens:.5 };
 try { Object.assign(S, JSON.parse(localStorage.getItem('synchromy-settings') || '{}')); } catch (e) {}
 const saveSettings = () => { try { localStorage.setItem('synchromy-settings', JSON.stringify(S)); } catch (e) {} };
 
@@ -285,7 +285,7 @@ function analyseEnvelope(buf) {
       const k = i - h; if (k >= 0 && k < x.length) y[k] = acc / Math.min(w, i + 1); } return y; };
   A.env = smooth(raw, rate * 2);
   A.envMax = 1e-6; for (const v of A.env) A.envMax = Math.max(A.envMax, v);
-  // section boundaries: big changes in 4s-mean loudness, at least 12s apart
+  // section boundaries: big changes in 4s-mean loudness, 6–20 s apart at least (cut sensitivity)
   const w = rate * 4, nov = new Float32Array(n);
   for (let i = w; i < n - w; i++) {
     let a = 0, b = 0; for (let j = 1; j <= w; j++) { a += A.env[i - j]; b += A.env[i + j - 1]; }
@@ -293,9 +293,9 @@ function analyseEnvelope(buf) {
   }
   const secs = [0];
   for (let i = w; i < n - w; i++) {
-    if (nov[i] < .14) continue;
+    if (nov[i] < lerp(.22, .07, S.cutSens)) continue;
     let isMax = true; for (let j = Math.max(0, i - w); j < Math.min(n, i + w); j++) if (nov[j] > nov[i]) { isMax = false; break; }
-    if (isMax && i / rate - secs[secs.length - 1] > 12) secs.push(i / rate);
+    if (isMax && i / rate - secs[secs.length - 1] > lerp(20, 6, S.cutSens)) secs.push(i / rate);
   }
   A.sections = secs;
   // choose a mode per section: quiet → optical, loudest → synchromy, the rest alternate
@@ -400,8 +400,9 @@ function analyse(now) {
   const fs = Math.sqrt(F.fv), ls = Math.sqrt(F.lv);
   const thr = F.fm + 1.6 * fs + .5;
   if (flux > thr && now - F.lastOnset > .11) { F.lastOnset = now; onOnset(clamp((flux - thr) / (thr + 1e-6) + .3, 0, 1)); }
-  const strongLow = low > F.lm + 2.6 * ls + .3;
-  if (F.loud > .2 && now - F.lastCut > 1.6 && (strongLow || (now - F.lastCut > 8 && flux > thr * 1.8))) { F.lastCut = now; onCut(); }
+  // cut sensitivity: how hard a low hit must be, and how long since the last cut
+  const strongLow = low > F.lm + lerp(3.6, 1.8, S.cutSens) * ls + .3, gap = lerp(4, .8, S.cutSens);
+  if (F.loud > .2 && now - F.lastCut > gap && (strongLow || (now - F.lastCut > gap * 5 && flux > thr * 1.8))) { F.lastCut = now; onCut(); }
   F.fm += (flux - F.fm) * .04; F.fv += ((flux - F.fm) ** 2 - F.fv) * .04;
   F.lm += (low - F.lm) * .03;  F.lv += ((low - F.lm) ** 2 - F.lv) * .03;
   F.flux = flux;
@@ -1066,6 +1067,7 @@ const cpanel = $('#colour');
 const tierName = v => tierOf(v).name;
 const palLabel = addSlider(cpanel, 'variety', '', () => { newTheme(); newPalette(); showSwatches(); });
 addSlider(cpanel, 'colourRate', 'Colour changes: rare ↔ every beat');
+addSlider(cpanel, 'cutSens', 'Cut sensitivity: big changes only ↔ more cuts', () => { if (A.buffer) analyseEnvelope(A.buffer); });
 {
   const l = document.createElement('label');
   l.innerHTML = `Ground colour changes<select><option value="sections">At new sections</option><option value="never">Never</option><option value="colours">With every colour change</option></select>`;

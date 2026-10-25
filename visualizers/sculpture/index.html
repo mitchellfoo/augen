@@ -129,7 +129,7 @@ const pickR = (r, arr) => arr[(r() * arr.length) | 0];
 const S = {
   look:'auto',
   seed:1, carve:'pitch', shapes:'mixed', growth:.5, size:.5, embed:.35, melt:.12, symmetry:'none', orient:'aligned', stack:false, mass:.5, detail:128, pitchSens:.5,
-  turn:'stop', turnSpeed:.35, dist:.55, elev:.35, fov:.35, punch:.4, dolly:false, shots:'8', cuts:'splice', follow:.35,
+  turn:'stop', turnSpeed:.35, dist:.55, elev:.35, fov:.35, punch:.4, dolly:false, shots:'music', shotSens:.5, cuts:'splice', follow:.35,
   pad:5, expQ:'high', variety:.6, colourRate:.4, bgChange:'sections', palShuffle:0, cut:'accent', ink:'auto', inkW:.5, ground:'plinth', shadows:true,
   saturation:.5, warmth:.5, fps:24, grain:.55, flicker:.45, dust:.5, scratch:.5, splices:true, weave:.4, boil:.5, vignette:.55, chroma:.35, halation:.35, edge:false, quality:.85,
 };
@@ -859,11 +859,43 @@ function chooseShot(r, e) {
   let x = r() * s; for (const k in w) { x -= w[k]; if (x <= 0) return k; }
   return 'orbit';
 }
+// "follow the song" (as in the Massing Machine): every downbeat is scored by how much the music changes across it
+// (loudness, brightness, rhythmic density, harmony, a big kick); cuts land on the biggest changes, 1–3 bars apart at least
+// (sensitivity), and a steady stretch never runs past 8 bars without one
+function changeScores() {
+  if (AN._changes) return AN._changes;
+  const bar = AN.beatLen * 4, ons = AN.onsets.map(o => o.t), out = new Map(), big = KICKS.filter(k => k.s > .75).map(k => k.t);
+  const mean = (arr, a, b) => { const i0 = fr(AN, a), i1 = Math.max(i0 + 1, fr(AN, b)); let s = 0; for (let i = i0; i < i1; i++) s += arr[i]; return s / (i1 - i0); };
+  const count = (a, b) => upperBound(ons, b) - upperBound(ons, a);
+  for (const d of AN.downbeats) {
+    if (d < bar || d > AN.dur - bar) continue;
+    const r0 = mean(AN.rms, d - 2 * bar, d), r1 = mean(AN.rms, d, d + 2 * bar), c0 = mean(AN.cent, d - 2 * bar, d), c1 = mean(AN.cent, d, d + 2 * bar);
+    const o0 = count(d - 2 * bar, d), o1 = count(d, d + 2 * bar), bi = Math.max(0, upperBound(AN.beats, d + 1e-3) - 1);
+    const hit = big.some(t => Math.abs(t - d) < AN.beatLen * .3) ? .6 : 0;
+    out.set(d, Math.abs(r1 - r0) / Math.max(.05, (r0 + r1) / 2) + Math.abs(c1 - c0) * 3 + .6 * Math.abs(o1 - o0) / Math.max(2, (o0 + o1) / 2) + 1.2 * (AN.beatDist[bi] || 0) + hit);
+  }
+  const sorted = [...out.values()].sort((a, b) => a - b);
+  return AN._changes = { score:out, q:f => sorted[Math.min(sorted.length - 1, Math.floor(f * sorted.length))] ?? 0 };
+}
+function musicCuts(t0, end) {
+  const bar = AN.beatLen * 4, C = changeScores(), thr = C.q(lerp(.92, .3, S.shotSens)), gap = lerp(3, 1, S.shotSens) * bar - .1;
+  const cand = AN.downbeats.filter(d => d > t0 + bar - .1 && d < end - gap && C.score.has(d));
+  const picks = AN.sections.slice(1).filter(d => d > t0 && d < end);   // a new section is always a cut
+  for (const d of [...cand].sort((a, b) => C.score.get(b) - C.score.get(a))) {
+    if (C.score.get(d) < thr) break;
+    if (picks.every(p => Math.abs(p - d) >= gap) && d - t0 >= gap) picks.push(d);
+  }
+  const fill = (a, b) => { if (b - a <= 8 * bar + .1) return; const inside = cand.filter(d => d >= a + gap && d <= b - gap);
+    if (!inside.length) return; const best = inside.reduce((x, y) => C.score.get(y) > C.score.get(x) ? y : x); picks.push(best); fill(a, best); fill(best, b); };
+  const sorted = [t0, ...picks.sort((a, b) => a - b), end];
+  for (let i = 1; i < sorted.length; i++) fill(sorted[i - 1], sorted[i]);
+  return picks.sort((a, b) => a - b);
+}
 function buildCameraPlan() {
   const r = rngFor(S.seed, 41);
   SHOTS = [{ t:0, kind:'orbit', az:0 }];
-  const times = new Set(AN.sections.slice(1));
-  if (S.shots !== 'off') { const every = +S.shots; AN.downbeats.forEach((t, k) => { if (k > 0 && k % every === 0) times.add(t); }); }
+  const times = new Set(S.shots === 'music' ? musicCuts(0, AN.dur - 8 * AN.beatLen) : AN.sections.slice(1));
+  if (S.shots !== 'off' && S.shots !== 'music') { const every = +S.shots; AN.downbeats.forEach((t, k) => { if (k > 0 && k % every === 0) times.add(t); }); }
   let az = 0, prev = 0;
   for (const t of [...times].sort((a, b) => a - b)) {
     if (t - prev < 1.5) continue; prev = t;
@@ -1583,7 +1615,8 @@ addSlider(cp, 'elev', 'Low ↔ overhead');
 addSlider(cp, 'fov', 'Lens: long ↔ wide');
 addSlider(cp, 'punch', 'Kick punch-in');
 addSlider(cp, 'follow', 'Glance at new pieces');
-addSelect(cp, 'shots', 'Shots', [['off', 'One shot per section'], ['2', 'New shot every 2 bars'], ['4', 'Every 4 bars'], ['8', 'Every 8 bars'], ['16', 'Every 16 bars']], camera);
+addSelect(cp, 'shots', 'Shots', [['music', 'Follow the song (cut on its changes)'], ['off', 'One shot per section'], ['1', 'New shot every bar'], ['2', 'Every 2 bars'], ['4', 'Every 4 bars'], ['8', 'Every 8 bars'], ['16', 'Every 16 bars']], camera);
+addSlider(cp, 'shotSens', 'Shot sensitivity: big changes only ↔ more cuts', camera);
 addSelect(cp, 'cuts', 'Between shots', [['splice', 'Splice cut'], ['clean', 'Clean cut'], ['glide', 'Glide']], camera);
 addCheck(cp, 'dolly', 'Dolly-zoom on kicks');
 
@@ -1689,7 +1722,7 @@ else {
 // ?src=song.m4a preloads a file when served over http (still needs a click to start the sound)
 const qs = new URLSearchParams(location.search).get('src');
 if (qs) fetch(qs).then(r => r.arrayBuffer()).then(ab => loadArrayBuffer(ab, qs, false)).catch(() => setStatus('could not load ' + qs));
-window.sculpt = { A, S, SIM, BK, get AN() { return AN; }, get PRIMS() { return PRIMS; }, seek, play, pause, exportMP4, rebuildAll, render };
+window.sculpt = { A, S, SIM, BK, get AN() { return AN; }, get PRIMS() { return PRIMS; }, get SHOTS() { return SHOTS; }, buildCameraPlan, seek, play, pause, exportMP4, rebuildAll, render };
 </script>
 <script src="../../shared/source.js"></script>
 <script src="../../shared/hub.js"></script>
