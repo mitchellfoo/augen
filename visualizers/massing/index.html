@@ -1414,19 +1414,21 @@ const MARK_KINDS = new Set(['axes', 'dims']);
 // coplanar surfaces from different layers would z-fight; each layer's fill is pushed back by a different amount instead,
 // so the building always sits just behind settled elements, and those just behind whatever is being built
 const fillFor = units => { const m = fillMat.clone(); m.polygonOffsetUnits = units; m.onBeforeCompile = fillMat.onBeforeCompile; m.customProgramCacheKey = () => 'massing-fill'; return m; };
-function makeLayer(order, mat = fillMat) {
-  const L = { mesh:new THREE.Mesh(new THREE.BufferGeometry(), mat), vis:new LineSegments2(new LineSegmentsGeometry(), visMat),
-    hid:new LineSegments2(new LineSegmentsGeometry(), hidMat), ghost:new LineSegments2(new LineSegmentsGeometry(), ghostMat), dl:new LineSegments2(new LineSegmentsGeometry(), dashLineMat),
-    mark:new LineSegments2(new LineSegmentsGeometry(), markMat), lin:new LineSegments2(new LineSegmentsGeometry(), linMat) };
+function makeLayer(order, mat = fillMat, lm = null) {
+  const lmat = k => lm ? lm[k] : { vis:visMat, hid:hidMat, ghost:ghostMat, dl:dashLineMat, mark:markMat, lin:linMat }[k], seg = k => new LineSegments2(new LineSegmentsGeometry(), lmat(k));
+  const L = { mesh:new THREE.Mesh(new THREE.BufferGeometry(), mat), vis:seg('vis'), hid:seg('hid'), ghost:seg('ghost'), dl:seg('dl'), mark:seg('mark'), lin:seg('lin') };
   L.mesh.renderOrder = order; L.vis.renderOrder = 10 + order; L.hid.renderOrder = 20 + order; L.ghost.renderOrder = 30 + order; L.dl.renderOrder = 15 + order; L.mark.renderOrder = 12 + order; L.lin.renderOrder = 11 + order;
   for (const o of [L.mesh, L.vis, L.hid, L.ghost, L.dl, L.mark, L.lin]) { o.frustumCulled = false; o.visible = false; scene.add(o); }
   return L;
 }
-function setLines(obj, arr) {
+function setLines(obj, arr, alpha = null) {
   obj.geometry.dispose();
   obj.visible = obj.userData.has = arr.length > 0;
   if (!arr.length) { obj.geometry = new LineSegmentsGeometry(); return; }
   obj.geometry = new LineSegmentsGeometry().setPositions(new Float32Array(arr));
+  const n = arr.length / 6, a = new Float32Array(n).fill(1);
+  if (alpha) for (let i = 0; i < n; i++) if (alpha[i] != null) a[i] = alpha[i];
+  obj.geometry.setAttribute('instanceAlpha', new THREE.InstancedBufferAttribute(a, 1));
   if (obj.material.dashed) obj.computeLineDistances();
 }
 // drafting habit: visible edges run a little past their corners, like construction lines
@@ -1447,10 +1449,29 @@ function setLayer(L, A) {
   g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(A.col), 3));
   g.setAttribute('pat', new THREE.BufferAttribute(new Float32Array(A.pat.length ? A.pat : A.pos.length / 3), 1));
   L.mesh.geometry = g; L.mesh.visible = L.mesh.userData.has = A.pos.length > 0;
-  setLines(L.vis, overshoot(A.vis)); setLines(L.hid, A.hid); setLines(L.ghost, A.dash); setLines(L.dl, A.dl); setLines(L.mark, A.mark); setLines(L.lin, overshoot(A.lin));
+  setLines(L.vis, overshoot(A.vis), A.visA); setLines(L.hid, A.hid, A.hidA); setLines(L.ghost, A.dash, A.dashA); setLines(L.dl, A.dl, A.dlA); setLines(L.mark, A.mark, A.markA); setLines(L.lin, overshoot(A.lin), A.linA);
 }
 const FILLS = { solid:fillFor(24), set:fillFor(12), live:fillFor(2), ex:fillFor(12) };
-const LAYERS = { solid:makeLayer(0, FILLS.solid), set:makeLayer(1, FILLS.set), live:makeLayer(2, FILLS.live), ex:makeLayer(3, FILLS.ex) };
+// the construction layer's lines fade in: copies of the line materials that multiply in each segment's opacity
+function fadeable(base) {
+  const m = base.clone(); m.transparent = true; m.depthWrite = false; m.depthFunc = base.depthFunc; m.depthTest = base.depthTest;
+  m.onBeforeCompile = sh => {
+    sh.vertexShader = 'attribute float instanceAlpha;\nvarying float vSegAlpha;\n' + sh.vertexShader.replace('void main() {', 'void main() {\n\tvSegAlpha = instanceAlpha;');
+    sh.fragmentShader = 'varying float vSegAlpha;\n' + sh.fragmentShader.replace('gl_FragColor = vec4( diffuseColor.rgb, alpha );', 'gl_FragColor = vec4( diffuseColor.rgb, alpha * vSegAlpha );');
+  };
+  m.customProgramCacheKey = () => 'fade|' + (base.dashed ? 'd' : 's');
+  return m;
+}
+const LIVE_LINES = { vis:fadeable(visMat), hid:fadeable(hidMat), ghost:fadeable(ghostMat), dl:fadeable(dashLineMat), mark:fadeable(markMat), lin:fadeable(linMat) };
+const LIVE_BASE = { vis:visMat, hid:hidMat, ghost:ghostMat, dl:dashLineMat, mark:markMat, lin:linMat };
+function syncLiveLines() {
+  for (const k in LIVE_LINES) {
+    const m = LIVE_LINES[k], b = LIVE_BASE[k];
+    m.color.copy(b.color); m.linewidth = b.linewidth; m.resolution.copy(b.resolution); m.opacity = b.transparent ? b.opacity : 1;
+    if (b.dashed) { m.dashSize = b.dashSize; m.gapSize = b.gapSize; }
+  }
+}
+const LAYERS = { solid:makeLayer(0, FILLS.solid), set:makeLayer(1, FILLS.set), live:makeLayer(2, FILLS.live, LIVE_LINES), ex:makeLayer(3, FILLS.ex) };
 
 // optional hard shadows: a sun casts every fill onto a ground plane that shows only the shadow, solid or hatched
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -1569,13 +1590,19 @@ function ghostLoop(A, poly, z, zTop, k) {
     if (k > 0) A.dash.push(a[0], a[1], z, a[0], a[1], z + (zTop - z) * k);
   }
 }
+const LINE_KEYS = ['vis', 'hid', 'mark', 'lin', 'dl', 'dash'];
+const lineMark = A => LINE_KEYS.map(k => A[k].length);
+function lineFade(A, m, a) {   // every segment added since the mark gets opacity a
+  LINE_KEYS.forEach((k, j) => { const arr = A[k + 'A'] || (A[k + 'A'] = []); for (let i = m[j] / 6; i < A[k].length / 6; i++) arr[i] = a; });
+}
 function updateLive(cy, t) {
   const A = newAcc(), bl = AN.beatLen;
   for (const op of cy.geo) {
     if (op.t - op.lead > t) continue;
+    const m = lineMark(A), fadeIn = ease(clamp((t - (op.t - op.lead)) / (op.lead * .6), 0, 1));
     if (op.type === 'vol') {
       const v = op.v;
-      if (t < op.t) ghostLoop(A, v.shape || v.poly, v.z0 * F, v.top, clamp((t - (op.t - op.lead)) / op.lead, 0, 1));
+      if (t < op.t) { ghostLoop(A, v.shape || v.poly, v.z0 * F, v.top, clamp((t - (op.t - op.lead)) / op.lead, 0, 1)); lineFade(A, m, fadeIn); }
       else if (t < op.settle) {
         const g = clamp((t - op.t) / (op.settle - op.t), 0, 1), k = buildSlow() > 2 ? ease(g) : easeOutBack(g), base = v.z0 * F;
         // scaffold: a dashed cage at every floor of the finished block, in the construction ink, until it is built
@@ -1583,11 +1610,13 @@ function updateLive(cy, t) {
         for (let z = base; z <= v.top + .01; z += F) P.forEach((a, i) => { const b = P[(i + 1) % P.length]; A.dl.push(a[0], a[1], z, b[0], b[1], z); });
         for (const a of P) A.dl.push(a[0], a[1], base, a[0], a[1], v.top);
         meshInto(A, liveVolGeom(op).mesh, cy.cols, p => [p[0], p[1], base + (p[2] - base) * Math.max(.02, k)], clamp((t - op.t) / (op.settle - op.t), 0, 1));
+        lineFade(A, m, ease(clamp(g / .66, 0, 1)));   // its outline and scaffold fade in over the first two-thirds of the rise
       }
     } else if (t < op.t) {
       // the cutter shows as a dotted box for half a beat: the "about to cut" warning
       ghostLoop(A, op.spec.poly, op.bb.min[2], op.bb.max[2], 1);
       ghostLoop(A, op.spec.poly, op.bb.max[2], op.bb.max[2], 0);
+      lineFade(A, m, fadeIn);
     }
   }
   for (const e of cy.els) {
@@ -1595,7 +1624,9 @@ function updateLive(cy, t) {
     if (e.t0 + POP <= t || e.t1 <= t) continue;
     const k = easeOutBack(clamp((t - e.t0) / POP, 0, 1)), pop = popXf(e, Math.max(.02, k)), ex = elEx(e, t);
     const o = ex ? ex.off.map(q => q * exK(ex, t)) : null;
+    const m = lineMark(A);
     primsInto(A, e, cy.cols, o ? p => { const q = pop(p); return [q[0] + o[0], q[1] + o[1], q[2] + o[2]]; } : pop, clamp((t - e.t0) / FLASH, 0, 1));
+    lineFade(A, m, ease(clamp((t - e.t0) / POP, 0, 1)));   // an element's lines fade in while it pops in
   }
   setLayer(LAYERS.live, A);
 }
@@ -1712,7 +1743,7 @@ function placeCamera(cy, t, dt) {
   }
 }
 // clipping for the 2D cuts: every fill and line material clips against the same plane
-const CLIP_MATS = [...Object.values(FILLS), visMat, hidMat, ghostMat, dashLineMat, markMat, linMat];
+const CLIP_MATS = [...Object.values(FILLS), ...Object.values(LIVE_LINES), visMat, hidMat, ghostMat, dashLineMat, markMat, linMat];
 renderer.localClippingEnabled = true;
 function setClip(plane) { const arr = plane ? [plane] : null; for (const m of CLIP_MATS) if (m.clippingPlanes !== arr && (arr || m.clippingPlanes)) { m.clippingPlanes = arr; m.needsUpdate = true; } }
 // standing in the building: eye height beside it, a walk along it, or inside the biggest block
@@ -1959,9 +1990,11 @@ function drawPost(t, cy) {
 /* ------------------------------------------------------------------ frame loop */
 function setSizes(w, h, ratio) {
   renderer.setPixelRatio(ratio); renderer.setSize(w, h, false);
-  rt.setSize(canvas.width, canvas.height); dmgC.width = canvas.width; dmgC.height = canvas.height; CAM.snap = true;
+  rt.setSize(canvas.width, canvas.height); dmgC.width = canvas.width; dmgC.height = canvas.height;
+  dmgTex.dispose();   // the damage texture is allocated at a fixed size; a new canvas size needs a fresh one, or uploads overflow
+  CAM.snap = true;
 }
-function resize() { if (!EXPORT) setSizes(innerWidth, innerHeight, Math.min(devicePixelRatio || 1, 2)); }
+function resize() { if (!EXPORT && innerWidth > 1 && innerHeight > 1) setSizes(innerWidth, innerHeight, Math.min(devicePixelRatio || 1, 2)); }   // a hidden or minimised window reports no size
 addEventListener('resize', resize);
 let lastNow = performance.now(), lastCy = -1, lastT = 0;
 // one frame from the song time alone (plus the camera spring's step), shared by the preview and the MP4 export
@@ -1992,6 +2025,7 @@ function renderAt(t, dt) {
   groundMat.color.copy(ink); groundMat.opacity = S.shadow === 'hatched' ? .75 : .28;
   shadowU.uHatch.value = S.shadow === 'hatched' ? 1 : 0; shadowU.uSpS.value = lerp(4, 14, S.hatchSize) * dpr * .7; shadowU.uWS.value = Math.max(1, lw * .9);
   patU.uInk.value.copy(ink); patU.uAmt.value = S.hatch * .9; patU.uSp.value = lerp(4, 14, S.hatchSize) * dpr; patU.uW.value = Math.max(1.05, lw * .9);
+  syncLiveLines();
   applyVis(LAYERS.solid, true); applyVis(LAYERS.set, true); applyVis(LAYERS.live, true); applyVis(LAYERS.ex, detached);
   renderer.setRenderTarget(rt); renderer.render(scene, VIEW);
   drawPost(t, cy);
