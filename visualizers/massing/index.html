@@ -129,7 +129,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 
 /* ------------------------------------------------------------------ settings */
 const S = {
-  seed:1, growth:.7, actions:2, unify:.85, form:'mixed', pitchSens:.5,
+  seed:1, growth:.7, actions:2, unify:.85, form:'mixed', camStyle:'mixed', pitchSens:.5,
   shots:'4', view:'iso', punch:.5, margin:.12,
   palette:'generated', variety:.5, shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.35, flash:true, look:'drawing',
   // old drawing
@@ -806,7 +806,7 @@ function genCycle(cy) {
   const FM = {
     long:{ modes:{ extend:3, link:2.5, branch:.4, stack:.2, skew:1, tri:1 }, flAdd:-1, flMax:3, bounds:[-30, -6, 50, 6], towerMax:4, towerP:.15, towerGap:4, longer:true },
     cluster:{ modes:{ extend:.35, link:.15, branch:3, stack:1.6, skew:1.2, tri:1.2 }, flAdd:0, flMax:5, bounds:[-9, -10, 15, 10], towerMax:7, towerP:.4, towerGap:4 },
-    tall:{ modes:{ extend:.5, link:.2, branch:1.6, stack:3.5, skew:.6, tri:.5 }, flAdd:2, flMax:8, bounds:[-8, -8, 14, 8], towerMax:14, towerP:.8, towerGap:2, small:true, tall:true },
+    tall:{ modes:{ extend:.4, link:.1, branch:1.6, stack:4, skew:.6, tri:.5 }, flAdd:3, flMax:10, bounds:[-7, -7, 12, 7], towerMax:18, towerP:.9, towerGap:1.5, small:true, tall:true },
   }[form];
   const voc = cy.voc = pickVocab(r, cy.idx > 0 ? CYCLES[cy.idx - 1].voc : null);
   const kThr = lerp(.6, .12, g), sThr = lerp(.65, .15, g), hThr = lerp(.6, .12, g);
@@ -902,9 +902,11 @@ function genCycle(cy) {
     }
     return null;
   }
-  function growTower(s) {   // a held kick on a young flat block adds a floor
-    const v = vols[vols.length - 1];
-    if (!v || v.roof || !v.isRect || v.capped || v.top >= FM.towerMax * F || s.t - v.t > 6 * bl) return;
+  function growTower(s) {   // a held kick on a young flat block adds a floor; in the tall form any block can keep climbing
+    const ok = v => v && !v.roof && v.isRect && !v.capped && v.top < FM.towerMax * F && !v.ex;
+    let v = vols[vols.length - 1];
+    if (FM.tall) { const c = vols.filter(ok).sort((a, b) => b.top - a.top).slice(0, 3); v = c.length ? pickR(r, c) : null; }
+    if (!ok(v) || (!FM.tall && s.t - v.t > 6 * bl)) return;
     const piece = { id:vid++, t:s.t, poly:v.poly, z0:v.z0 + v.fl, fl:1, isRect:true, rect:v.rect, facades:v.facades, top:v.top + F, parent:v };
     piece.bb = { min:[v.rect[0] * M, v.rect[1] * M, v.top], max:[v.rect[2] * M, v.rect[3] * M, v.top + F] };
     geo.push({ type:'vol', t:s.t, settle:s.t + grow, v:piece, bb:piece.bb, lead:bl * .5 });
@@ -1106,7 +1108,13 @@ const SHOT = {
   iso:{ el:35.26, fit:'now' }, dim:{ el:22, fit:'now' }, high:{ el:58, fit:'now' }, worm:{ el:-26, fit:'now', m:1.05 },
   plan:{ el:89.5, fit:'now' }, elev:{ el:0, fit:'now', m:1.05 }, close:{ el:28, fit:'newest' }, dolly:{ el:30, fit:'dolly' },
   pullout:{ el:48, fit:'final', m:1.5 },
+  // perspective: a 3/4 view, a low wide-angle near street level, an aerial, and a long lens that flattens everything
+  persp:{ el:24, persp:40 }, low:{ el:4, persp:70, low:true }, aerial:{ el:52, persp:30 }, tele:{ el:26, persp:9 },
+  // flattened obliques: plan oblique (military axo: true plan, verticals sheared) and cavalier elevation
+  planobl:{ el:89.5, shear:[-.55, .55] }, cavalier:{ el:0, shear:[.5, .5], m:1.05 },
 };
+const SHOT_GROUP = { persp:'persp', low:'persp', aerial:'persp', tele:'persp', planobl:'flat', cavalier:'flat', plan:'flat', elev:'flat' };
+const STYLE_W = { mixed:{ axo:1, persp:1, flat:1 }, axo:{ axo:1, persp:0, flat:.3 }, persp:{ axo:.4, persp:3, flat:.3 }, flat:{ axo:.5, persp:.2, flat:3 } };
 function buildShots() {
   const r = rngFor(S.seed, 41), bar = AN.beatLen * 4, every = +S.shots || 0;
   SHOTS = [];
@@ -1119,10 +1127,14 @@ function buildShots() {
         if (d <= cy.t0 + .1 || d >= cy.end - 2 * bar) continue;
         if (++k % every) continue;
         const e = AN.rms[fr(AN, d)], p = (d - cy.t0) / (cy.end - cy.t0);
-        const kind = pickW(r, e > .6 ? { iso:2, high:2, close:3, worm:.8, dolly:2, dim:1 } : e < .3 ? { iso:2, plan:2, elev:2, dim:2, high:1 }
-          : { iso:2, dim:1.5, high:1.5, close:1.5 + p, worm:.4, plan:1, elev:1, dolly:1.5 });
-        const az = kind === 'elev' ? 90 * ri(r, 4) : kind === 'plan' ? 90 * ri(r, 4) : kind === 'dim' ? (r() < .5 ? 30 : 60) + 90 * ri(r, 4) : 45 + 90 * ri(r, 4);
-        SHOTS.push({ t:d, cy, kind, az, drift:kind === 'elev' || kind === 'plan' ? 0 : (r() < .5 ? -1 : 1) * (1.5 + r() * 4), ratchet:kind === 'iso' && r() < .35 });
+        const base = e > .6 ? { iso:2, high:2, close:3, worm:.8, dolly:2, dim:1, persp:1.6, low:1.6, aerial:.8, tele:.8, planobl:.8, cavalier:.6 }
+          : e < .3 ? { iso:2, plan:2, elev:2, dim:2, high:1, tele:1.6, aerial:1.2, planobl:1.6, cavalier:1.4, persp:.6 }
+          : { iso:2, dim:1.5, high:1.5, close:1.5 + p, worm:.4, plan:1, elev:1, dolly:1.5, persp:1.4, low:.7, aerial:1, tele:1.2, planobl:1.2, cavalier:1 };
+        const sw = STYLE_W[S.camStyle] || STYLE_W.mixed;
+        const kind = pickW(r, Object.fromEntries(Object.entries(base).map(([k, w]) => [k, w * sw[SHOT_GROUP[k] || 'axo']])));
+        const flat = ['elev', 'plan', 'cavalier', 'planobl'].includes(kind);
+        const az = flat ? 90 * ri(r, 4) : kind === 'dim' ? (r() < .5 ? 30 : 60) + 90 * ri(r, 4) : SHOT_GROUP[kind] === 'persp' ? 20 + r() * 50 + 90 * ri(r, 4) : 45 + 90 * ri(r, 4);
+        SHOTS.push({ t:d, cy, kind, az, drift:flat ? 0 : (r() < .5 ? -1 : 1) * (1.5 + r() * 4), ratchet:kind === 'iso' && r() < .35 });
       }
     }
     const tp = cy.end - 2 * bar;
@@ -1299,6 +1311,8 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias:true, preserveDrawi
 const scene = new THREE.Scene();
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, .1, 3000);
 camera.up.set(0, 0, 1);
+const pcam = new THREE.PerspectiveCamera(40, 1, .5, 4000); pcam.up.set(0, 0, 1);
+let VIEW = camera;   // whichever camera the current shot uses
 const fillMat = new THREE.MeshBasicMaterial({ vertexColors:true, side:THREE.DoubleSide, polygonOffset:true, polygonOffsetFactor:2, polygonOffsetUnits:2 });
 const visMat = new LineMaterial({ color:0x7a7a80, linewidth:1.5 }); visMat.depthWrite = false;
 const hidMat = new LineMaterial({ color:0x7a7a80, linewidth:1.2, dashed:true, dashSize:1, gapSize:1, transparent:true, opacity:.42 });
@@ -1519,11 +1533,13 @@ function punchAt(t) {
   for (; i >= 0; i--) { const age = t - KICKS[i].t; if (age > .5) break; p = Math.max(p, KICKS[i].s * (1 - Math.exp(-age * 40)) * Math.exp(-age * 8)); }
   return p;
 }
-function fitPts(pts, asp) {
-  const rx = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0), ry = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+// view-plane extents of a set of points; k shears by depth (for the oblique projections)
+function fitPts(pts, asp, k = null) {
+  const rx = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0), ry = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1), rz = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 2);
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (const p of pts) {
-    const x = p[0] * rx.x + p[1] * rx.y + p[2] * rx.z, y = p[0] * ry.x + p[1] * ry.y + p[2] * ry.z;
+    const z = k ? p[0] * rz.x + p[1] * rz.y + p[2] * rz.z : 0;
+    const x = p[0] * rx.x + p[1] * rx.y + p[2] * rx.z + (k ? k[0] * z : 0), y = p[0] * ry.x + p[1] * ry.y + p[2] * ry.z + (k ? k[1] * z : 0);
     x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
   }
   const at = (x, y) => rx.clone().multiplyScalar(x).addScaledVector(ry, y);
@@ -1546,9 +1562,11 @@ function placeCamera(cy, t, dt) {
   camera.position.copy(CAM.c).addScaledVector(dir, R); camera.lookAt(CAM.c); camera.updateMatrixWorld();
   const asp = canvas.width / canvas.height, K = SHOT[sh.kind] || SHOT.iso;
   const fin = cy.ptsFinal, nowP = visiblePts(cy, t), use = nowP.length ? nowP : fin;
-  const f0 = fitPts(K.fit === 'final' ? fin : K.fit === 'newest' ? newestPts(cy, t) || use : use, asp);
+  if (K.persp) return placePersp(cy, t, dt, K, sh, dir, use, fin, asp);
+  VIEW = camera;
+  const f0 = fitPts(K.fit === 'final' ? fin : K.fit === 'newest' ? newestPts(cy, t) || use : use, asp, K.shear);
   let half = f0.half * (K.m || 1), cen = f0.c;
-  half = Math.max(half, fitPts(fin, asp).half * .38);   // the first block of a cycle never fills the screen
+  half = Math.max(half, fitPts(fin, asp, K.shear).half * .38);   // the first block of a cycle never fills the screen
   if (K.fit === 'newest') half = Math.max(f0.half * 2.4, 9);
   if (K.fit === 'dolly') {   // a tight frame sliding along the building
     half = Math.max(f0.half * .45, 9);
@@ -1564,6 +1582,27 @@ function placeCamera(cy, t, dt) {
   camera.position.copy(CAM.c).addScaledVector(dir, R); camera.lookAt(CAM.c);
   camera.left = -CAM.half * asp; camera.right = CAM.half * asp; camera.top = CAM.half; camera.bottom = -CAM.half;
   camera.updateProjectionMatrix(); camera.updateMatrixWorld();
+  if (K.shear) {   // oblique: shear x and y by depth about the target, so verticals (or depth) project on a diagonal
+    const [kx, ky] = K.shear;
+    camera.projectionMatrix.multiply(new THREE.Matrix4().set(1, 0, kx, kx * R, 0, 1, ky, ky * R, 0, 0, 1, 0, 0, 0, 0, 1));
+    camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  }
+}
+// perspective shots: frame the building's bounding sphere, push in slowly over the shot
+function placePersp(cy, t, dt, K, sh, dir, use, fin, asp) {
+  VIEW = pcam;
+  const b = bbNew(); for (const p of use) bbAdd(b, p);
+  const c = bbCenter(b); if (K.low) c[2] = Math.min(c[2], 2.5);
+  let rad = 1; for (const p of use) rad = Math.max(rad, Math.hypot(p[0] - c[0], p[1] - c[1], p[2] - c[2]));
+  const vf = K.persp * D2R, hf = 2 * Math.atan(Math.tan(vf / 2) * asp), f = Math.min(vf, hf);
+  let D = rad / Math.sin(f / 2) * (1 + S.margin) * (K.low ? .62 : .95);
+  D *= lerp(1, .86, clamp((t - sh.t) / (AN.beatLen * 16), 0, 1)) * (1 - .05 * S.punch * punchAt(t)) * (1 + .18 * EXP);
+  const target = new THREE.Vector3(...c);
+  if (CAM.snap) { CAM.c.copy(target); CAM.D = D; CAM.snap = false; }
+  else { const k = 1 - Math.exp(-dt * 3); CAM.c.lerp(target, k); CAM.D = lerp(CAM.D || D, D, k); }
+  pcam.fov = K.persp; pcam.aspect = asp; pcam.near = Math.max(.3, CAM.D * .02); pcam.far = CAM.D * 6;
+  pcam.position.copy(CAM.c).addScaledVector(dir, CAM.D); pcam.lookAt(CAM.c);
+  pcam.updateProjectionMatrix(); pcam.updateMatrixWorld();
 }
 
 /* ------------------------------------------------------------------ the look: an old architectural drawing, then a film print
@@ -1763,7 +1802,7 @@ function renderAt(t, dt) {
   visMat.color.set(P.line); hidMat.color.set(P.line); ghostMat.color.set(P.accent === '#ffffff' ? P.line : P.accent);
   placeCamera(cy, t, dt);
   // pixels per CSS pixel of the preview: lines and dots keep their weight relative to the frame at any export size
-  const bw = canvas.width, bh = canvas.height, dpr = bh / (innerHeight > 100 ? innerHeight : 900), lw = lerp(.6, 2.6, S.lineW) * dpr, upp = (camera.top - camera.bottom) / bh;
+  const bw = canvas.width, bh = canvas.height, dpr = bh / (innerHeight > 100 ? innerHeight : 900), lw = lerp(.6, 2.6, S.lineW) * dpr, upp = VIEW === pcam ? 2 * (CAM.D || 50) * Math.tan(pcam.fov * D2R / 2) / bh : (camera.top - camera.bottom) / bh;
   for (const m of [visMat, hidMat, ghostMat]) m.resolution.set(bw, bh);
   visMat.linewidth = lw; hidMat.linewidth = lw * .75; ghostMat.linewidth = lw;
   hidMat.dashSize = (S.hidden === 'dashed' ? 6 : 1.6) * dpr * upp; hidMat.gapSize = (S.hidden === 'dashed' ? 4 : 3) * dpr * upp;
@@ -1776,7 +1815,7 @@ function renderAt(t, dt) {
   shadowU.uHatch.value = S.shadow === 'hatched' ? 1 : 0; shadowU.uSpS.value = lerp(4, 14, S.hatchSize) * dpr * .7; shadowU.uWS.value = Math.max(1, lw * .9);
   patU.uInk.value.copy(ink); patU.uAmt.value = S.hatch * .9; patU.uSp.value = lerp(4, 14, S.hatchSize) * dpr; patU.uW.value = Math.max(1.05, lw * .9);
   applyVis(LAYERS.solid, true); applyVis(LAYERS.set, true); applyVis(LAYERS.live, true); applyVis(LAYERS.ex, detached);
-  renderer.setRenderTarget(rt); renderer.render(scene, camera);
+  renderer.setRenderTarget(rt); renderer.render(scene, VIEW);
   drawPost(t, cy);
   return cy;
 }
@@ -1931,7 +1970,8 @@ let regenTimer = 0;
 const regen = () => { clearTimeout(regenTimer); regenTimer = setTimeout(() => rebuildAll(), 200); };
 const recolour = () => { assignPalettes(); SOL.cyc = -1; SET.key = ''; };
 const nop = () => {};
-addSelect('shots', 'Camera', [['2', 'New shot every 2 bars'], ['4', 'Every 4 bars'], ['8', 'Every 8 bars'], ['off', 'Fixed view']], () => { buildShots(); CAM.snap = true; });
+addSelect('shots', 'Camera', [['1', 'New shot every bar'], ['2', 'Every 2 bars'], ['4', 'Every 4 bars'], ['8', 'Every 8 bars'], ['off', 'Fixed view']], () => { buildShots(); CAM.snap = true; });
+addSelect('camStyle', 'Camera style', [['mixed', 'Mixed'], ['axo', 'Axo only'], ['persp', 'Mostly perspective'], ['flat', 'Flat & oblique']], () => { buildShots(); CAM.snap = true; });
 addSelect('view', 'Fixed view', Object.entries(VIEWS).map(([k, v]) => [k, v[0]]), () => { CAM.snap = true; });
 addSelect('palette', 'Colours', [['generated', 'New palette every cycle'], ...Object.entries(FIXED).map(([k, v]) => [k, v.name])], recolour);
 addSlider('variety', 'Colour variety', recolour);
@@ -2020,7 +2060,7 @@ setStatus('');
 updateUI();
 requestAnimationFrame(frame);
 if (pendingLoad) massingLoad(...pendingLoad);
-window.MASSING = { snapshot, get BIG() { return BIG; }, S, get AN() { return AN; }, get CYCLES() { return CYCLES; }, seek, rebuildAll, scene, camera, DEMO };   // for poking at from the console
+window.MASSING = { snapshot, get BIG() { return BIG; }, get SHOTS() { return SHOTS; }, S, get AN() { return AN; }, get CYCLES() { return CYCLES; }, seek, rebuildAll, scene, camera, DEMO };   // for poking at from the console
 </script>
 
 <script src="../../shared/source.js"></script>
