@@ -137,7 +137,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 /* ------------------------------------------------------------------ settings */
 const S = {
   seed:1, growth:.7, actions:2, unify:.85, form:'mixed', camStyle:'mixed', pitchSens:.5,
-  shots:'4', view:'iso', punch:.5, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:.25, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35,
+  shots:'4', view:'iso', punch:.35, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:.25, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35,
   palette:'generated', variety:.5, shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.35, flash:false, look:'drawing',
   // old drawing
   paper:.55, tooth:.6, age:.15, bleed:.12, wobble:.25, wash:.35,
@@ -1123,7 +1123,7 @@ const SHOT = {
   plan:{ el:89.5, fit:'now' }, elev:{ el:0, fit:'now', m:1.05 }, close:{ el:28, fit:'newest' }, dolly:{ el:30, fit:'dolly' },
   pullout:{ el:48, fit:'final', m:1.5 },
   // perspective: a 3/4 view, a low wide-angle near street level, an aerial, and a long lens that flattens everything
-  persp:{ el:24, persp:40 }, low:{ el:4, persp:70, low:true }, aerial:{ el:52, persp:30 }, tele:{ el:26, persp:9 },
+  persp:{ el:22, persp:56 }, low:{ el:4, persp:82, low:true }, aerial:{ el:48, persp:46 }, tele:{ el:26, persp:16 },
   // flattened obliques: plan oblique (military axo: true plan, verticals sheared) and cavalier elevation
   planobl:{ el:89.5, shear:[-.55, .55], flat:true }, cavalier:{ el:0, shear:[.5, .5], m:1.05, flat:true },
   // true 2D: a plan cut through the ground floor, and a section through the middle of the building
@@ -1133,14 +1133,15 @@ const SHOT = {
 };
 SHOT.plan.flat = SHOT.elev.flat = true;
 const SHOT_GROUP = { persp:'persp', low:'persp', aerial:'persp', tele:'persp', planobl:'flat', cavalier:'flat', plan:'flat', elev:'flat', plancut:'flat', section:'flat', eye:'eye', walk:'eye', inside:'eye' };
-const STYLE_W = { mixed:{ axo:1, persp:1, flat:1.2, eye:.9 }, axo:{ axo:1, persp:0, flat:.3, eye:0 }, persp:{ axo:.4, persp:3, flat:.3, eye:1.5 },
+const STYLE_W = { mixed:{ axo:1, persp:1.9, flat:1.2, eye:1.1 }, axo:{ axo:1, persp:0, flat:.3, eye:0 }, persp:{ axo:.4, persp:3, flat:.3, eye:1.5 },
   eye:{ axo:.2, persp:.7, flat:.2, eye:4 }, flat:{ axo:.4, persp:.15, flat:3.5, eye:0 } };
 function buildShots() {
   const r = rngFor(S.seed, 41), bar = AN.beatLen * 4, every = +S.shots || 0;
   SHOTS = [];
   for (const cy of CYCLES) {
     const az0 = 45 + 90 * ri(r, 4);
-    SHOTS.push({ t:cy.t0, cy, kind:'establish', az:az0, drift:(r() < .5 ? -1 : 1) * 2.5 });
+    const pw = (STYLE_W[S.camStyle] || STYLE_W.mixed).persp;
+    SHOTS.push({ t:cy.t0, cy, kind:r() < .3 * pw ? 'aerial' : 'establish', az:az0 - 20 + r() * 40, drift:(r() < .5 ? -1 : 1) * 2.5 });   // some buildings open in perspective
     if (every) {
       let k = 0;
       for (const d of AN.downbeats) {
@@ -1158,7 +1159,7 @@ function buildShots() {
       }
     }
     const tp = cy.end - 2 * bar;
-    if (cy.end - cy.t0 > 6 * bar) SHOTS.push({ t:tp, cy, kind:'pullout', az:45 + 90 * ri(r, 4), drift:6 });
+    if (cy.end - cy.t0 > 6 * bar) SHOTS.push({ t:tp, cy, kind:r() < .3 * pw ? 'aerial' : 'pullout', az:45 + 90 * ri(r, 4) - 20 + r() * 40, drift:6 });
   }
   SHOTS.sort((a, b) => a.t - b.t); SHOT_T = SHOTS.map(s => s.t);
 }
@@ -1168,7 +1169,7 @@ function rebuildAll() {
   const t0 = performance.now();
   SLOTS = buildSlots(AN); CYCLES = buildCycles(AN); CYC_T = CYCLES.map(c => c.t0);
   assignPalettes();
-  buildBigHits();
+  buildBigHits(); buildPunches();
   for (const cy of CYCLES) genCycle(cy);
   buildShots();
   SOL.cyc = -1; SOL.live.clear(); SET.key = '';
@@ -1560,9 +1561,16 @@ function newestPts(cy, t) {
   for (const e of cy.els) { if (e.t0 > t) break; if (e.t1 > t && e.kind !== 'axes' && e.t0 > bt) { bt = e.t0; best = bbCorners(e.bb); } }
   return best;
 }
+// the kick punch-in follows only the stronger kicks (top 30%, at least half a beat apart), not every one
+let PUNCH = Object.assign([], { ts:[] });
+function buildPunches() {
+  const ks = KICKS.map(k => k.s).sort((a, b) => a - b), q = ks[Math.floor(ks.length * .7)] ?? 1; let last = -1e9;
+  PUNCH = []; for (const k of KICKS) if (k.s >= q && k.t - last >= AN.beatLen * .5) { PUNCH.push(k); last = k.t; }
+  PUNCH.ts = PUNCH.map(k => k.t);
+}
 function punchAt(t) {
-  let i = upperBound(KICKS.ts || [], t) - 1, p = 0;
-  for (; i >= 0; i--) { const age = t - KICKS[i].t; if (age > .5) break; p = Math.max(p, KICKS[i].s * (1 - Math.exp(-age * 40)) * Math.exp(-age * 8)); }
+  let i = upperBound(PUNCH.ts, t) - 1, p = 0;
+  for (; i >= 0; i--) { const age = t - PUNCH[i].t; if (age > .5) break; p = Math.max(p, PUNCH[i].s * (1 - Math.exp(-age * 40)) * Math.exp(-age * 8)); }
   return p;
 }
 // view-plane extents of a set of points; k shears by depth (for the oblique projections)
@@ -1610,7 +1618,8 @@ function placeCamera(cy, t, dt) {
   VIEW = camera;
   const f0 = fitPts(K.fit === 'final' ? fin : K.fit === 'newest' ? newestPts(cy, t) || use : use, asp, K.shear);
   let half = f0.half * (K.m || 1), cen = f0.c;
-  half = Math.max(half, fitPts(fin, asp, K.shear).half * .38);   // the first block of a cycle never fills the screen
+  const fullH = fitPts(fin, asp, K.shear).half;
+  half = Math.max(half, fullH * .38);   // the first block of a cycle never fills the screen
   if (K.fit === 'newest') half = Math.max(f0.half * 2.4, 9);
   if (K.fit === 'dolly') {   // a tight frame sliding along the building
     half = Math.max(f0.half * .45, 9);
@@ -1622,7 +1631,9 @@ function placeCamera(cy, t, dt) {
     const np = newestPts(cy, t); if (np) { const fn = fitPts(np, asp, K.shear); cen = cen.clone().lerp(fn.c, S.follow * .4); }
   }
   half *= (1 + S.margin) * (1 + .18 * EXP) * lerp(.65, 1.5, S.dist);   // room for detached pieces, and the distance slider
-  half *= 1 - .07 * S.punch * punchAt(t);
+  // punch-in scales with how wide the frame is: full strength on the whole building, next to nothing on a close-up
+  const zf = clamp(half / (fullH * (1 + S.margin) * lerp(.65, 1.5, S.dist)), 0, 1);
+  half *= 1 - .07 * S.punch * punchAt(t) * zf * zf;
   const target = cen;
   if (CAM.snap) { CAM.c.copy(target); CAM.half = half; CAM.snap = false; }
   else { const k = 1 - Math.exp(-dt * 3); CAM.c.lerp(target, k); CAM.half = lerp(CAM.half, half, k); }
@@ -1681,13 +1692,15 @@ function placeEye(cy, t, dt, K, sh, asp, use) {
 function placePersp(cy, t, dt, K, sh, dir, use, fin, asp) {
   VIEW = pcam;
   const b = bbNew(); for (const p of use) bbAdd(b, p);
-  const c = bbCenter(b); if (K.low) c[2] = Math.min(c[2], 2.5);
+  const c = bbCenter(b); if (K.low) c[2] = b.max[2] * .38;   // low shots aim a third of the way up, so tall blocks tower but stay in frame
   let rad = 1; for (const p of use) rad = Math.max(rad, Math.hypot(p[0] - c[0], p[1] - c[1], p[2] - c[2]));
+  let radF = 1; for (const p of fin) radF = Math.max(radF, Math.hypot(p[0] - c[0], p[1] - c[1], p[2] - c[2]));
+  const zf = clamp(rad / radF, 0, 1);
   const fov0 = clamp(K.persp * lerp(.55, 1.5, S.fov), 4, 110), vf = fov0 * D2R, hf = 2 * Math.atan(Math.tan(vf / 2) * asp), f = Math.min(vf, hf);
-  let D = rad / Math.sin(f / 2) * (1 + S.margin) * (K.low ? .62 : .95) * lerp(.6, 1.5, S.dist);
+  let D = rad / Math.sin(f / 2) * (1 + S.margin) * (K.low ? .8 : .95) * lerp(.6, 1.5, S.dist);
   D *= lerp(1, .86, clamp((t - sh.t) / (AN.beatLen * 16), 0, 1)) * (1 + .18 * EXP);
   let fov = fov0;
-  const pk = S.punch * punchAt(t);
+  const pk = S.punch * punchAt(t) * zf * zf;
   if (S.dollyZoom) { fov = fov0 * (1 - .3 * pk); D *= Math.tan(fov0 * D2R / 2) / Math.tan(fov * D2R / 2); }   // vertigo: lens punches in, camera pulls back
   else D *= 1 - .05 * pk;
   if (S.follow > 0) { const np = newestPts(cy, t); if (np) { const nb = bbNew(); for (const q of np) bbAdd(nb, q); const nc = bbCenter(nb); for (let i = 0; i < 3; i++) c[i] = lerp(c[i], nc[i], S.follow * .35); } }
