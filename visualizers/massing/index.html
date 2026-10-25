@@ -781,16 +781,35 @@ function genCycle(cy) {
   const voc = cy.voc = pickVocab(r, cy.idx > 0 ? CYCLES[cy.idx - 1].voc : null);
   const kThr = lerp(.6, .12, g), sThr = lerp(.65, .15, g), hThr = lerp(.6, .12, g);
   const maxVol = Math.round(lerp(8, 20, g) * clamp((cy.end - cy.t0) / 30, .7, 1.5)), grow = clamp(bl * .75, .22, .6);
-  let lastVol = -1e9, lastCut = -1e9, lastHat = -1e9, lastNote = -1e9, lastSn = -1e9, lastStack = -1e9, lastLine = -1e9, lastStruct = -1e9, vid = 0;
+  let lastVol = -1e9, lastCut = -1e9, lastHat = -1e9, lastNote = -1e9, lastSn = -1e9, lastStack = -1e9, lastLine = -1e9, lastStruct = -1e9, vid = 0, runId = 0, bi = upperBound(BIG.ts, cy.t0 - 1);
   const inCut = p => cuts.some(c => c.t <= p[3] && c.test(p));
 
-  function addEl(t, kind, res, keep = false) {
+  function addEl(t, kind, res, keep = false, ch = null) {
     if (!res || !res.prims || !res.prims.length) return false;
     const bb = primsBB(res.prims), c = bbCenter(bb);
     if (!keep && inCut([...c, t])) return false;
     els.push({ t0:t, t1:Infinity, kind, prims:res.prims, bb, keep, visOnly:!!res.visOnly, grow:res.grow || 'all',
-      anchor:res.grow === 'z' ? [c[0], c[1], bb.min[2]] : c });
+      anchor:res.grow === 'z' ? [c[0], c[1], bb.min[2]] : c,
+      vid:ch ? ch.v.id : null, run:ch ? ch.run : null, ex:ch ? ch.v.ex || null : null });   // added to a detached volume: it rides along
     return true;
+  }
+  // a big hit detaches one piece for good: a volume with everything fixed to it, or one run of a series
+  function explode(s) {
+    const settled = vols.filter(v => !v.ex && s.t - v.t > bl * 2);
+    const runs = new Map();
+    for (const e of els) if (!e.ex && e.run != null && e.t0 < s.t && e.t1 === Infinity && !FIXED_KINDS.has(e.kind)) { if (!runs.has(e.run)) runs.set(e.run, []); runs.get(e.run).push(e); }
+    const groups = [...runs.values()].filter(g => g.length >= 2);
+    let cx = 0, cyy = 0; for (const v of vols) { cx += (v.rect[0] + v.rect[2]) / 2 * M; cyy += (v.rect[1] + v.rect[3]) / 2 * M; } cx /= vols.length; cyy /= vols.length;
+    const away = (c, z) => { const dx = c[0] - cx, dy = c[1] - cyy, l = Math.hypot(dx, dy) || 1, out = 4 + 5 * r();
+      return [dx / l * out + (r() - .5) * 3, dy / l * out + (r() - .5) * 3, 9 + 6 * r() + z * .5]; };
+    if (settled.length > 1 && (r() < .55 || !groups.length)) {
+      const v = settled.reduce((a, b) => (b.z0 > 0 ? 2 : 0) + b.fl + r() * 2.5 > (a.z0 > 0 ? 2 : 0) + a.fl + r() * 2.5 ? b : a);   // high pieces go first
+      v.ex = { t:s.t, off:away([(v.rect[0] + v.rect[2]) / 2 * M, (v.rect[1] + v.rect[3]) / 2 * M], v.z0 * F) };
+      for (const e of els) if (!e.ex && e.vid === v.id && e.t0 < s.t) e.ex = v.ex;
+    } else if (groups.length) {
+      const g = pickR(r, groups), c = bbCenter(g.reduce((b, e) => bbUnion(b, e.bb), bbNew())), ex = { t:s.t, off:away(c, c[2]) };
+      for (const e of g) e.ex = ex;
+    }
   }
   function commitVol(c, t) {
     const v = { id:vid++, t, ...c, rect:polyBB(c.poly), cuts:0, used:new Set() };
@@ -854,7 +873,7 @@ function genCycle(cy) {
   function growTower(s) {   // a held kick on a young flat block adds a floor
     const v = vols[vols.length - 1];
     if (!v || v.roof || !v.isRect || v.capped || v.top >= 7 * F || s.t - v.t > 6 * bl) return;
-    const piece = { id:vid++, t:s.t, poly:v.poly, z0:v.z0 + v.fl, fl:1, isRect:true, rect:v.rect, facades:v.facades, top:v.top + F };
+    const piece = { id:vid++, t:s.t, poly:v.poly, z0:v.z0 + v.fl, fl:1, isRect:true, rect:v.rect, facades:v.facades, top:v.top + F, parent:v };
     piece.bb = { min:[v.rect[0] * M, v.rect[1] * M, v.top], max:[v.rect[2] * M, v.rect[3] * M, v.top + F] };
     geo.push({ type:'vol', t:s.t, settle:s.t + grow, v:piece, bb:piece.bb, lead:bl * .5 });
     v.fl += 1; v.top += F; v.bb.max[2] = Math.max(v.bb.max[2], v.top); lastStack = s.t;
@@ -929,7 +948,7 @@ function genCycle(cy) {
     const pool = c.length ? c : vols.filter(v => G.ok(v));
     if (!pool.length) { ch.v = null; return; }
     ch.v = r() < .7 ? pool[pool.length - 1] : pickR(r, pool);
-    ch.v.used.add(ch.kind); ch.i = 0; ch.done = false; ch.used = null; ch.fol = null; ch.side = null;
+    ch.v.used.add(ch.kind); ch.run = runId++; ch.i = 0; ch.done = false; ch.used = null; ch.fol = null; ch.side = null;
     const fs = ch.v.facades.filter(f => f.L >= 2 * M);
     ch.f = fs.length ? fs.reduce((a, b) => (b.L * (.6 + r()) > a.L * (.6 + r()) ? b : a), fs[0]) : ch.v.facades[0];
     if (ch.kind === 'trusses') {
@@ -944,7 +963,7 @@ function genCycle(cy) {
       if (!ch.v) return false;
       const res = GEN[ch.kind].unit(ch, s);
       if (res === null) { ch.done = true; continue; }
-      ch.i++; addEl(s.t, ch.kind, res); return true;
+      ch.i++; addEl(s.t, ch.kind, res, false, ch); return true;
     }
     return false;
   }
@@ -953,6 +972,8 @@ function genCycle(cy) {
     if (s.t < cy.t0 || s.t >= cy.end - bl) continue;   // the last beat stays quiet before the wipe
     const p = (s.t - cy.t0) / (cy.end - cy.t0), loose = smooth(.25, .85, p);
     if (!vols.length) { if ((s.kick || 0) > kThr * .5 || (s.snare || 0) > sThr * .5 || s.down) placeVol(s, p, loose, 'first'); continue; }
+    while (bi < BIG.length && BIG[bi].t < s.t - bl * .26) bi++;
+    if (bi < BIG.length && Math.abs(BIG[bi].t - s.t) <= bl * .26) { if (p > .12 && s.t < cy.end - 2 * bl) explode(s); bi++; }
     if ((s.kick || 0) > kThr) {
       if (vols.length < maxVol && s.t - lastVol >= bl * (p < .45 ? (g > .6 ? 1 : 2) : 3)) placeVol(s, p, loose);
       else if (s.kick > .55 && s.t - lastStack >= 4 * bl && r() < .4) growTower(s);
@@ -1026,8 +1047,9 @@ function rebuildAll() {
   const t0 = performance.now();
   SLOTS = buildSlots(AN); CYCLES = buildCycles(AN); CYC_T = CYCLES.map(c => c.t0);
   assignPalettes();
+  buildBigHits();
   for (const cy of CYCLES) genCycle(cy);
-  buildShots(); buildBigHits();
+  buildShots();
   SOL.cyc = -1; SOL.live.clear(); SET.key = '';
   const ticks = $('#ticks'); ticks.innerHTML = '';
   for (const cy of CYCLES.slice(1)) { const i = document.createElement('i'); i.className = 'tick'; i.style.left = `${cy.t0 / AN.dur * 100}%`; ticks.appendChild(i); }
@@ -1066,27 +1088,24 @@ function cutterOf(spec) {
 }
 
 // the settled solid of the current cycle, grown op by op and rebuilt from scratch on a seek backwards or a new cycle
-const SOL = { cyc:-1, n:0, solid:null, live:new Map(), pieces:[] };   // pieces: each volume with the cuts that came after it, for the exploded view
+const SOL = { cyc:-1, n:0, key:'', live:new Map(), pieces:[] };   // pieces: each volume with the cuts that came after it, for the exploded view
+const exOn = ex => S.explodeMode !== 'off' && ex;
+const pieceEx = (pc, t) => { const v = pc.v, ex = exOn(v.ex || (v.parent && v.parent.ex)); return ex && ex.t <= t ? ex : null; };
+const elEx = (el, t) => { const ex = exOn(el.ex); return ex && ex.t <= t ? ex : null; };
 function updateSolid(cy, t) {
-  const n = upperBound(cy.geoSettle, t);
-  if (SOL.cyc === cy.idx && n === SOL.n) return false;
-  const t0 = performance.now();
+  const n = upperBound(cy.geoSettle, t), t0 = performance.now();
   if (SOL.cyc !== cy.idx || n < SOL.n) {
-    if (SOL.solid) SOL.solid.delete(); SOL.solid = null; SOL.n = 0; SOL.cyc = cy.idx; SOURCES.clear();
-    for (const pc of SOL.pieces) pc.m.delete(); SOL.pieces = [];
+    for (const pc of SOL.pieces) pc.m.delete(); SOL.pieces = []; SOL.n = 0; SOL.cyc = cy.idx; SOL.key = ''; SOURCES.clear();
   }
   for (let i = SOL.n; i < n; i++) {
     const op = cy.geo[i];
     if (op.type === 'vol') {
       const piece = tag(volPiece(op.v), 'vol');
       if (piece.isEmpty()) { piece.delete(); continue; }
-      SOL.pieces.push({ m:piece, acc:null });
-      if (!SOL.solid) SOL.solid = piece.translate([0, 0, 0]);
-      else { const u = SOL.solid.add(piece); SOL.solid.delete(); SOL.solid = u; }
-    } else if (SOL.solid) {
+      SOL.pieces.push({ m:piece, v:op.v, acc:null });
+    } else {
       const c = tag(cutterOf(op.spec), op.spec.slice ? 'slice' : 'cut');
       if (!c.isEmpty()) {
-        const u = SOL.solid.subtract(c); if (!u.isEmpty()) { SOL.solid.delete(); SOL.solid = u; } else u.delete();
         const cb = c.boundingBox();
         for (const pc of SOL.pieces) {
           const b = pc.m.boundingBox();
@@ -1098,8 +1117,13 @@ function updateSolid(cy, t) {
     }
   }
   SOL.n = n;
+  // each piece is its volume minus the cuts that came after it, so their union is the building; detached pieces are left out
+  const keep = SOL.pieces.filter(pc => !pieceEx(pc, t) && !pc.m.isEmpty());
+  const key = `${cy.idx}|${n}|${keep.length}|${S.explodeMode}`;
+  if (key === SOL.key) return false;
+  SOL.key = key;
   const A = newAcc();
-  if (SOL.solid) meshInto(A, SOL.solid.getMesh(), cy.cols, null, 1);
+  if (keep.length) { const u = Manifold.union(keep.map(pc => pc.m)); meshInto(A, u.getMesh(), cy.cols, null, 1); u.delete(); }
   setLayer(LAYERS.solid, A);
   STATS.geo = `boolean ${(performance.now() - t0).toFixed(1)} ms`;
   return true;
@@ -1291,54 +1315,49 @@ function buildBigHits() {
   for (const k of KICKS) if (k.s >= q && AN.rms[fr(AN, k.t)] > .4 && k.t - last >= 8 * bl) { BIG.push(k); last = k.t; }
   BIG.ts = BIG.map(k => k.t);
 }
-function explodeAt(t) {
-  if (S.explodeMode === 'off' || !AN) return 0;
-  if (S.explodeMode === 'always') return S.explode;
-  const bl = AN.beatLen; let p = 0;
-  for (let i = upperBound(BIG.ts, t) - 1; i >= 0; i--) {
-    const age = t - BIG[i].t; if (age > 6 * bl) break;
-    const a = age < .1 ? easeOutCubic(age / .1) : Math.exp(-(age - .1) * 1.3 / bl) * (1 + .12 * Math.sin((age - .1) * 14) * Math.exp(-(age - .1) * 3));
-    p = Math.max(p, a * (.6 + .4 * BIG[i].s));
-  }
-  return S.explode * p;
-}
-const FIXED_KINDS = new Set(['axes', 'dims', 'phantom', 'pilotis']);   // drawing marks stay on the ground
-function updateExploded(cy, t, e) {
-  const A = newAcc(), C = bbCenter(cy.bbFinal), G = 8 * e, H = .2 * e;
+const FIXED_KINDS = new Set(['axes', 'dims', 'phantom', 'pilotis']);   // drawing marks never detach
+const exK = (ex, t) => easeOutBack(clamp((t - ex.t) / .4, 0, 1)) * S.explode / .55;
+function updateExploded(cy, t) {
+  const A = newAcc(); let any = false;
   for (const pc of SOL.pieces) {
+    const ex = pieceEx(pc, t); if (!ex) continue;
     if (!pc.acc) {
       pc.acc = newAcc(); if (pc.m.isEmpty()) continue;
-      meshInto(pc.acc, pc.m.getMesh(), cy.cols, null, 1);
-      const b = pc.m.boundingBox(); pc.b = b; pc.c = [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2];
+      meshInto(pc.acc, pc.m.getMesh(), cy.cols, null, 1); pc.b = pc.m.boundingBox();
     }
     if (!pc.acc.pos.length) continue;
-    const o = [(pc.c[0] - C[0]) * H, (pc.c[1] - C[1]) * H, G * (pc.b.min[2] / F + .3)], P = pc.acc;
-    for (let k = 0; k < P.pos.length; k += 3) A.pos.push(P.pos[k] + o[0], P.pos[k + 1] + o[1], P.pos[k + 2] + o[2]);
+    any = true;
+    const k = exK(ex, t), o = ex.off.map(q => q * k), P = pc.acc;
+    for (let i = 0; i < P.pos.length; i += 3) A.pos.push(P.pos[i] + o[0], P.pos[i + 1] + o[1], P.pos[i + 2] + o[2]);
     for (const v of P.col) A.col.push(v); for (const v of P.pat) A.pat.push(v);
-    for (const [src, dst] of [[P.vis, A.vis], [P.hid, A.hid]]) for (let k = 0; k < src.length; k += 3) dst.push(src[k] + o[0], src[k + 1] + o[1], src[k + 2] + o[2]);
-    const { min, max } = pc.b;
-    for (const [x, y] of [[min[0], min[1]], [max[0], min[1]], [max[0], max[1]], [min[0], max[1]]]) A.dl.push(x, y, min[2], x + o[0], y + o[1], min[2] + o[2]);
+    for (const [src, dst] of [[P.vis, A.vis], [P.hid, A.hid]]) for (let i = 0; i < src.length; i += 3) dst.push(src[i] + o[0], src[i + 1] + o[1], src[i + 2] + o[2]);
+    // a dashed phantom where it stood, and alignment lines up to where it is now
+    const { min, max } = pc.b, C = [[min[0], min[1]], [max[0], min[1]], [max[0], max[1]], [min[0], max[1]]];
+    C.forEach(([x, y], j) => { const [x2, y2] = C[(j + 1) % 4]; A.dl.push(x, y, min[2], x2, y2, min[2], x, y, max[2], x2, y2, max[2], x, y, min[2], x, y, max[2]); A.dl.push(x, y, max[2], x + o[0], y + o[1], max[2] + o[2]); });
   }
   for (const el of cy.els) {
+    if (el.t0 > t) break;
     if (el.t0 + POP > t || el.t1 <= t) continue;
-    if (FIXED_KINDS.has(el.kind)) { primsInto(A, el, cy.cols, ID, 1); continue; }
-    const c = bbCenter(el.bb), o = [(c[0] - C[0]) * H * 1.4, (c[1] - C[1]) * H * 1.4, G * (el.bb.min[2] / F + .8)];
+    const ex = elEx(el, t); if (!ex) continue;
+    any = true;
+    const k = exK(ex, t), o = ex.off.map(q => q * k);
     primsInto(A, el, cy.cols, p => [p[0] + o[0], p[1] + o[1], p[2] + o[2]], 1);
   }
   setLayer(LAYERS.ex, A);
+  return any;
 }
 function applyVis(L, active) {
   L.mesh.visible = active && !!L.mesh.userData.has; L.vis.visible = active && !!L.vis.userData.has; L.ghost.visible = active && !!L.ghost.userData.has;
   L.dl.visible = active && !!L.dl.userData.has; L.hid.visible = active && S.hidden !== 'off' && !!L.hid.userData.has;
 }
 function updateSettled(cy, t) {
-  let n = 0, gone = 0;
-  for (const e of cy.els) { if (e.t0 + POP <= t) { n++; if (e.t1 <= t) gone++; } }
-  const key = `${cy.idx}|${n}|${gone}|${S.shading}|${S.palette}`;
+  let n = 0, gone = 0, det = 0;
+  for (const e of cy.els) { if (e.t0 + POP <= t) { n++; if (e.t1 <= t) gone++; else if (elEx(e, t)) det++; } }
+  const key = `${cy.idx}|${n}|${gone}|${det}|${S.shading}|${S.palette}|${S.explodeMode}`;
   if (key === SET.key) return;
   SET.key = key;
   const A = newAcc();
-  for (const e of cy.els) if (e.t0 + POP <= t && e.t1 > t) primsInto(A, e, cy.cols, ID, 1);
+  for (const e of cy.els) if (e.t0 + POP <= t && e.t1 > t && !elEx(e, t)) primsInto(A, e, cy.cols, ID, 1);
   setLayer(LAYERS.set, A);
 }
 // live: volumes extruding, elements popping in, and the dotted ghosts of what is about to arrive
@@ -1379,8 +1398,9 @@ function updateLive(cy, t) {
   for (const e of cy.els) {
     if (e.t0 > t) break;
     if (e.t0 + POP <= t || e.t1 <= t) continue;
-    const k = easeOutBack(clamp((t - e.t0) / POP, 0, 1));
-    primsInto(A, e, cy.cols, popXf(e, Math.max(.02, k)), clamp((t - e.t0) / FLASH, 0, 1));
+    const k = easeOutBack(clamp((t - e.t0) / POP, 0, 1)), pop = popXf(e, Math.max(.02, k)), ex = elEx(e, t);
+    const o = ex ? ex.off.map(q => q * exK(ex, t)) : null;
+    primsInto(A, e, cy.cols, o ? p => { const q = pop(p); return [q[0] + o[0], q[1] + o[1], q[2] + o[2]]; } : pop, clamp((t - e.t0) / FLASH, 0, 1));
   }
   setLayer(LAYERS.live, A);
 }
@@ -1445,7 +1465,7 @@ function placeCamera(cy, t, dt) {
     const xa = f0.x0 + w * .8, xb = f0.x1 - w * .8;
     cen = f0.at(xa < xb ? lerp(xa, xb, dirn) : (f0.x0 + f0.x1) / 2, (f0.y0 + f0.y1) / 2);
   }
-  half *= (1 + S.margin) * (1 + .35 * EXP);   // room for the pieces to fly apart
+  half *= (1 + S.margin) * (1 + .18 * EXP);   // room for detached pieces
   half *= 1 - .07 * S.punch * punchAt(t);
   const target = cen;
   if (CAM.snap) { CAM.c.copy(target); CAM.half = half; CAM.snap = false; }
@@ -1646,9 +1666,7 @@ function renderAt(t, dt) {
   PAT = S.hatch > 0 ? cy.pat : null;
   placeSun(cy);
   updateSolid(cy, t); updateSettled(cy, t); updateLive(cy, t);
-  EXP = explodeAt(t);
-  const exploded = EXP > .004;
-  if (exploded) updateExploded(cy, t, EXP);
+  const detached = updateExploded(cy, t); EXP = detached ? 1 : 0;
   const P = cy.pal;
   scene.background = new THREE.Color(P.bg); document.body.style.background = P.bg;
   visMat.color.set(P.line); hidMat.color.set(P.line); ghostMat.color.set(P.accent === '#ffffff' ? P.line : P.accent);
@@ -1666,7 +1684,7 @@ function renderAt(t, dt) {
   groundMat.color.copy(ink); groundMat.opacity = S.shadow === 'hatched' ? .75 : .28;
   shadowU.uHatch.value = S.shadow === 'hatched' ? 1 : 0; shadowU.uSpS.value = lerp(4, 14, S.hatchSize) * dpr * .7; shadowU.uWS.value = Math.max(1, lw * .9);
   patU.uInk.value.copy(ink); patU.uAmt.value = S.hatch * .9; patU.uSp.value = lerp(4, 14, S.hatchSize) * dpr; patU.uW.value = Math.max(1.05, lw * .9);
-  applyVis(LAYERS.solid, !exploded); applyVis(LAYERS.set, !exploded); applyVis(LAYERS.live, true); applyVis(LAYERS.ex, exploded);
+  applyVis(LAYERS.solid, true); applyVis(LAYERS.set, true); applyVis(LAYERS.live, true); applyVis(LAYERS.ex, detached);
   renderer.setRenderTarget(rt); renderer.render(scene, camera);
   drawPost(t, cy);
   return cy;
@@ -1831,8 +1849,8 @@ addSlider('growth', 'Growth', regen);
 addSlider('lineW', 'Line width', nop);
 addSlider('hatch', 'Hatching & dot screens', () => { SOL.cyc = -1; SET.key = ''; });
 addSlider('hatchSize', 'Hatch spacing', nop);
-addSelect('explodeMode', 'Exploded axo', [['beats', 'On big beats'], ['always', 'Always'], ['off', 'Off']], nop);
-addSlider('explode', 'Explode amount', nop);
+addSelect('explodeMode', 'Big beats detach pieces', [['beats', 'On'], ['off', 'Off']], nop);
+addSlider('explode', 'Detach distance', nop);
 addSelect('shadow', 'Hard shadows', [['off', 'Off'], ['solid', 'Solid'], ['hatched', 'Hatched']], () => { SOL.cyc = -1; SET.key = ''; });
 addSlider('sunAz', 'Sun direction', () => { SOL.cyc = -1; SET.key = ''; });
 addSlider('punch', 'Kick zoom', nop);
@@ -1907,7 +1925,7 @@ setStatus('');
 updateUI();
 requestAnimationFrame(frame);
 if (pendingLoad) massingLoad(...pendingLoad);
-window.MASSING = { snapshot, get BIG() { return BIG; }, explodeAt, S, get AN() { return AN; }, get CYCLES() { return CYCLES; }, seek, rebuildAll, scene, camera, DEMO };   // for poking at from the console
+window.MASSING = { snapshot, get BIG() { return BIG; }, S, get AN() { return AN; }, get CYCLES() { return CYCLES; }, seek, rebuildAll, scene, camera, DEMO };   // for poking at from the console
 </script>
 
 <script src="../../shared/source.js"></script>
