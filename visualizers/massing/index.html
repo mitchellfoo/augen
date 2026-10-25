@@ -131,7 +131,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 const S = {
   seed:1, growth:.7, pitchSens:.5,
   shots:'4', view:'iso', punch:.5, margin:.12,
-  palette:'generated', shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, hidden:'dotted', overshoot:.35, flash:true, look:'drawing',
+  palette:'generated', shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.35, flash:true, look:'drawing',
   // old drawing
   paper:.55, tooth:.6, age:.15, bleed:.12, wobble:.25, wash:.35,
   // film print (the Sculpture Machine's stock)
@@ -1027,7 +1027,7 @@ function rebuildAll() {
   SLOTS = buildSlots(AN); CYCLES = buildCycles(AN); CYC_T = CYCLES.map(c => c.t0);
   assignPalettes();
   for (const cy of CYCLES) genCycle(cy);
-  buildShots();
+  buildShots(); buildBigHits();
   SOL.cyc = -1; SOL.live.clear(); SET.key = '';
   const ticks = $('#ticks'); ticks.innerHTML = '';
   for (const cy of CYCLES.slice(1)) { const i = document.createElement('i'); i.className = 'tick'; i.style.left = `${cy.t0 / AN.dur * 100}%`; ticks.appendChild(i); }
@@ -1066,22 +1066,34 @@ function cutterOf(spec) {
 }
 
 // the settled solid of the current cycle, grown op by op and rebuilt from scratch on a seek backwards or a new cycle
-const SOL = { cyc:-1, n:0, solid:null, live:new Map() };
+const SOL = { cyc:-1, n:0, solid:null, live:new Map(), pieces:[] };   // pieces: each volume with the cuts that came after it, for the exploded view
 function updateSolid(cy, t) {
   const n = upperBound(cy.geoSettle, t);
   if (SOL.cyc === cy.idx && n === SOL.n) return false;
   const t0 = performance.now();
-  if (SOL.cyc !== cy.idx || n < SOL.n) { if (SOL.solid) SOL.solid.delete(); SOL.solid = null; SOL.n = 0; SOL.cyc = cy.idx; SOURCES.clear(); }
+  if (SOL.cyc !== cy.idx || n < SOL.n) {
+    if (SOL.solid) SOL.solid.delete(); SOL.solid = null; SOL.n = 0; SOL.cyc = cy.idx; SOURCES.clear();
+    for (const pc of SOL.pieces) pc.m.delete(); SOL.pieces = [];
+  }
   for (let i = SOL.n; i < n; i++) {
     const op = cy.geo[i];
     if (op.type === 'vol') {
       const piece = tag(volPiece(op.v), 'vol');
       if (piece.isEmpty()) { piece.delete(); continue; }
-      if (!SOL.solid) SOL.solid = piece;
-      else { const u = SOL.solid.add(piece); SOL.solid.delete(); piece.delete(); SOL.solid = u; }
+      SOL.pieces.push({ m:piece, acc:null });
+      if (!SOL.solid) SOL.solid = piece.translate([0, 0, 0]);
+      else { const u = SOL.solid.add(piece); SOL.solid.delete(); SOL.solid = u; }
     } else if (SOL.solid) {
       const c = tag(cutterOf(op.spec), op.spec.slice ? 'slice' : 'cut');
-      if (!c.isEmpty()) { const u = SOL.solid.subtract(c); if (!u.isEmpty()) { SOL.solid.delete(); SOL.solid = u; } else u.delete(); }
+      if (!c.isEmpty()) {
+        const u = SOL.solid.subtract(c); if (!u.isEmpty()) { SOL.solid.delete(); SOL.solid = u; } else u.delete();
+        const cb = c.boundingBox();
+        for (const pc of SOL.pieces) {
+          const b = pc.m.boundingBox();
+          if (b.min[0] > cb.max[0] || b.max[0] < cb.min[0] || b.min[1] > cb.max[1] || b.max[1] < cb.min[1] || b.min[2] > cb.max[2] || b.max[2] < cb.min[2]) continue;
+          const m2 = pc.m.subtract(c); pc.m.delete(); pc.m = m2; pc.acc = null;
+        }
+      }
       c.delete();
     }
   }
@@ -1232,10 +1244,10 @@ function setLayer(L, A) {
   g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(A.pos), 3));
   g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(A.col), 3));
   g.setAttribute('pat', new THREE.BufferAttribute(new Float32Array(A.pat.length ? A.pat : A.pos.length / 3), 1));
-  L.mesh.geometry = g; L.mesh.visible = A.pos.length > 0;
+  L.mesh.geometry = g; L.mesh.visible = L.mesh.userData.has = A.pos.length > 0;
   setLines(L.vis, overshoot(A.vis)); setLines(L.hid, A.hid); setLines(L.ghost, A.dash); setLines(L.dl, A.dl);
 }
-const LAYERS = { solid:makeLayer(0), set:makeLayer(1), live:makeLayer(2) };
+const LAYERS = { solid:makeLayer(0), set:makeLayer(1), live:makeLayer(2), ex:makeLayer(3) };
 
 // optional hard shadows: a sun casts every fill onto a ground plane that shows only the shadow, solid or hatched
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -1270,6 +1282,55 @@ function placeSun(cy) {
 // settled elements: rebuilt only when one finishes popping in or a cut removes one
 const POP = .22, FLASH = .35;
 const SET = { key:'' };
+/* exploded axo: on big hits the building comes apart into its volumes and elements, upper levels and roof-top pieces
+   lifting furthest, everything easing out from the centre, with dashed lines back to where each piece sits */
+let BIG = Object.assign([], { ts:[] }), EXP = 0;
+function buildBigHits() {
+  const ks = KICKS.map(k => k.s).sort((a, b) => a - b), q = ks[Math.floor(ks.length * .86)] ?? 1, bl = AN.beatLen;
+  BIG = []; let last = -1e9;
+  for (const k of KICKS) if (k.s >= q && AN.rms[fr(AN, k.t)] > .4 && k.t - last >= 8 * bl) { BIG.push(k); last = k.t; }
+  BIG.ts = BIG.map(k => k.t);
+}
+function explodeAt(t) {
+  if (S.explodeMode === 'off' || !AN) return 0;
+  if (S.explodeMode === 'always') return S.explode;
+  const bl = AN.beatLen; let p = 0;
+  for (let i = upperBound(BIG.ts, t) - 1; i >= 0; i--) {
+    const age = t - BIG[i].t; if (age > 6 * bl) break;
+    const a = age < .1 ? easeOutCubic(age / .1) : Math.exp(-(age - .1) * 1.3 / bl) * (1 + .12 * Math.sin((age - .1) * 14) * Math.exp(-(age - .1) * 3));
+    p = Math.max(p, a * (.6 + .4 * BIG[i].s));
+  }
+  return S.explode * p;
+}
+const FIXED_KINDS = new Set(['axes', 'dims', 'phantom', 'pilotis']);   // drawing marks stay on the ground
+function updateExploded(cy, t, e) {
+  const A = newAcc(), C = bbCenter(cy.bbFinal), G = 8 * e, H = .2 * e;
+  for (const pc of SOL.pieces) {
+    if (!pc.acc) {
+      pc.acc = newAcc(); if (pc.m.isEmpty()) continue;
+      meshInto(pc.acc, pc.m.getMesh(), cy.cols, null, 1);
+      const b = pc.m.boundingBox(); pc.b = b; pc.c = [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2];
+    }
+    if (!pc.acc.pos.length) continue;
+    const o = [(pc.c[0] - C[0]) * H, (pc.c[1] - C[1]) * H, G * (pc.b.min[2] / F + .3)], P = pc.acc;
+    for (let k = 0; k < P.pos.length; k += 3) A.pos.push(P.pos[k] + o[0], P.pos[k + 1] + o[1], P.pos[k + 2] + o[2]);
+    for (const v of P.col) A.col.push(v); for (const v of P.pat) A.pat.push(v);
+    for (const [src, dst] of [[P.vis, A.vis], [P.hid, A.hid]]) for (let k = 0; k < src.length; k += 3) dst.push(src[k] + o[0], src[k + 1] + o[1], src[k + 2] + o[2]);
+    const { min, max } = pc.b;
+    for (const [x, y] of [[min[0], min[1]], [max[0], min[1]], [max[0], max[1]], [min[0], max[1]]]) A.dl.push(x, y, min[2], x + o[0], y + o[1], min[2] + o[2]);
+  }
+  for (const el of cy.els) {
+    if (el.t0 + POP > t || el.t1 <= t) continue;
+    if (FIXED_KINDS.has(el.kind)) { primsInto(A, el, cy.cols, ID, 1); continue; }
+    const c = bbCenter(el.bb), o = [(c[0] - C[0]) * H * 1.4, (c[1] - C[1]) * H * 1.4, G * (el.bb.min[2] / F + .8)];
+    primsInto(A, el, cy.cols, p => [p[0] + o[0], p[1] + o[1], p[2] + o[2]], 1);
+  }
+  setLayer(LAYERS.ex, A);
+}
+function applyVis(L, active) {
+  L.mesh.visible = active && !!L.mesh.userData.has; L.vis.visible = active && !!L.vis.userData.has; L.ghost.visible = active && !!L.ghost.userData.has;
+  L.dl.visible = active && !!L.dl.userData.has; L.hid.visible = active && S.hidden !== 'off' && !!L.hid.userData.has;
+}
 function updateSettled(cy, t) {
   let n = 0, gone = 0;
   for (const e of cy.els) { if (e.t0 + POP <= t) { n++; if (e.t1 <= t) gone++; } }
@@ -1384,7 +1445,7 @@ function placeCamera(cy, t, dt) {
     const xa = f0.x0 + w * .8, xb = f0.x1 - w * .8;
     cen = f0.at(xa < xb ? lerp(xa, xb, dirn) : (f0.x0 + f0.x1) / 2, (f0.y0 + f0.y1) / 2);
   }
-  half *= 1 + S.margin;
+  half *= (1 + S.margin) * (1 + .35 * EXP);   // room for the pieces to fly apart
   half *= 1 - .07 * S.punch * punchAt(t);
   const target = cen;
   if (CAM.snap) { CAM.c.copy(target); CAM.half = half; CAM.snap = false; }
@@ -1585,6 +1646,9 @@ function renderAt(t, dt) {
   PAT = S.hatch > 0 ? cy.pat : null;
   placeSun(cy);
   updateSolid(cy, t); updateSettled(cy, t); updateLive(cy, t);
+  EXP = explodeAt(t);
+  const exploded = EXP > .004;
+  if (exploded) updateExploded(cy, t, EXP);
   const P = cy.pal;
   scene.background = new THREE.Color(P.bg); document.body.style.background = P.bg;
   visMat.color.set(P.line); hidMat.color.set(P.line); ghostMat.color.set(P.accent === '#ffffff' ? P.line : P.accent);
@@ -1602,7 +1666,7 @@ function renderAt(t, dt) {
   groundMat.color.copy(ink); groundMat.opacity = S.shadow === 'hatched' ? .75 : .28;
   shadowU.uHatch.value = S.shadow === 'hatched' ? 1 : 0; shadowU.uSpS.value = lerp(4, 14, S.hatchSize) * dpr * .7; shadowU.uWS.value = Math.max(1, lw * .9);
   patU.uInk.value.copy(ink); patU.uAmt.value = S.hatch * .9; patU.uSp.value = lerp(4, 14, S.hatchSize) * dpr; patU.uW.value = Math.max(1.05, lw * .9);
-  for (const L of Object.values(LAYERS)) L.hid.visible = S.hidden !== 'off' && !!L.hid.userData.has;
+  applyVis(LAYERS.solid, !exploded); applyVis(LAYERS.set, !exploded); applyVis(LAYERS.live, true); applyVis(LAYERS.ex, exploded);
   renderer.setRenderTarget(rt); renderer.render(scene, camera);
   drawPost(t, cy);
   return cy;
@@ -1767,6 +1831,8 @@ addSlider('growth', 'Growth', regen);
 addSlider('lineW', 'Line width', nop);
 addSlider('hatch', 'Hatching & dot screens', () => { SOL.cyc = -1; SET.key = ''; });
 addSlider('hatchSize', 'Hatch spacing', nop);
+addSelect('explodeMode', 'Exploded axo', [['beats', 'On big beats'], ['always', 'Always'], ['off', 'Off']], nop);
+addSlider('explode', 'Explode amount', nop);
 addSelect('shadow', 'Hard shadows', [['off', 'Off'], ['solid', 'Solid'], ['hatched', 'Hatched']], () => { SOL.cyc = -1; SET.key = ''; });
 addSlider('sunAz', 'Sun direction', () => { SOL.cyc = -1; SET.key = ''; });
 addSlider('punch', 'Kick zoom', nop);
@@ -1841,7 +1907,7 @@ setStatus('');
 updateUI();
 requestAnimationFrame(frame);
 if (pendingLoad) massingLoad(...pendingLoad);
-window.MASSING = { snapshot, S, get AN() { return AN; }, get CYCLES() { return CYCLES; }, seek, rebuildAll, scene, camera, DEMO };   // for poking at from the console
+window.MASSING = { snapshot, get BIG() { return BIG; }, explodeAt, S, get AN() { return AN; }, get CYCLES() { return CYCLES; }, seek, rebuildAll, scene, camera, DEMO };   // for poking at from the console
 </script>
 
 <script src="../../shared/source.js"></script>
