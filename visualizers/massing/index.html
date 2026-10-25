@@ -10,7 +10,11 @@
     font:13px/1.3 Futura,"Avenir Next","Helvetica Neue",Arial,sans-serif; }
   canvas#view { position:fixed; inset:0; width:100%; height:100%; display:block; cursor:grab; touch-action:none; }
   canvas#view.drag { cursor:grabbing; }
-  .ui { position:fixed; left:16px; right:16px; bottom:16px; display:flex; flex-direction:column; gap:8px; }
+  body.idle canvas#view { cursor:none; }
+  #grain { position:fixed; inset:-64px; pointer-events:none; mix-blend-mode:multiply; }
+  #flash { position:fixed; inset:0; pointer-events:none; background:#fff; opacity:0; }
+  .ui { position:fixed; left:16px; right:16px; bottom:16px; display:flex; flex-direction:column; gap:8px; transition:opacity .5s; }
+  body.idle .ui, body.idle #status { opacity:0; pointer-events:none; }
   .bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; background:var(--panel); backdrop-filter:blur(8px);
     -webkit-backdrop-filter:blur(8px); border:1px solid var(--line); border-radius:6px; padding:8px 10px; }
   button,select { font:inherit; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink);
@@ -19,19 +23,25 @@
   button:hover,select:hover { border-color:var(--ink); }
   button.on { background:var(--ink); color:#0c0a08; }
   button:disabled { opacity:.4; cursor:default; }
+  .seekwrap { position:relative; flex:1; min-width:120px; display:flex; align-items:center; }
+  #seek { width:100%; accent-color:var(--accent); margin:0; }
+  .tick { position:absolute; top:-3px; width:2px; height:6px; background:var(--ink); opacity:.55; pointer-events:none; transform:translateX(-1px); }
+  .time { font-variant-numeric:tabular-nums; opacity:.7; min-width:92px; text-align:right; font-size:12px; }
   .settings { display:none; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px 18px; max-height:52vh; overflow:auto; }
   .settings.open { display:grid; }
   .settings label { display:flex; flex-direction:column; gap:4px; font-size:10px; letter-spacing:.12em; text-transform:uppercase; opacity:.85; }
   .settings input[type=range] { accent-color:var(--accent); width:100%; }
   .settings label.check { flex-direction:row; align-items:center; gap:8px; }
-  .name { flex:1; min-width:120px; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .stats { font-size:11px; opacity:.6; font-variant-numeric:tabular-nums; }
-  #status { position:fixed; top:16px; left:16px; font-size:11px; letter-spacing:.08em; text-transform:uppercase; opacity:.75; }
+  .name { max-width:28ch; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .stats { font-size:11px; opacity:.6; font-variant-numeric:tabular-nums; grid-column:1 / -1; }
+  #status { position:fixed; top:16px; left:16px; font-size:11px; letter-spacing:.08em; text-transform:uppercase; opacity:.8; transition:opacity .5s; }
   @media (max-width:640px) { .hide-sm { display:none; } }
 </style>
 </head>
 <body>
 <canvas id="view"></canvas>
+<div id="grain"></div>
+<div id="flash"></div>
 <div id="status">building…</div>
 
 <div class="ui">
@@ -39,47 +49,21 @@
   <div class="bar">
     <button id="loadBtn">Load</button>
     <input type="file" id="file" accept="audio/*,video/*" hidden>
-    <button id="playBtn" disabled>Play</button>
-    <span class="name" id="name">No track · static model</span>
-    <span class="stats hide-sm" id="stats"></span>
-    <button id="viewBtn">View</button>
+    <button id="playBtn">Play</button>
+    <div class="seekwrap"><input type="range" id="seek" min="0" max="1000" value="0"><div id="ticks"></div></div>
+    <span class="time" id="time">0:00</span>
+    <span class="name hide-sm" id="name">Demo pattern</span>
+    <button id="viewBtn">Settings</button>
   </div>
 </div>
 
 <script>
-/* ------------------------------------------------------------------ audio (classic script, so hub.js finds loadArrayBuffer) */
-// Step 1 of the plan is a static drawing: the track only loads and plays. The building does not listen yet.
-const A = { ctx:null, buffer:null, src:null, t0:0, offset:0, playing:false, name:'' };
-function initAudio() { if (A.ctx) { A.ctx.resume(); return; } A.ctx = new (window.AudioContext || window.webkitAudioContext)(); }
-const cleanName = n => n.split('/').pop().replace(/\.[a-z0-9]+$/i,'').replace(/[_]+/g,' ').trim();
-async function loadArrayBuffer(ab, name, autoplay = true) {
-  initAudio(); pause();
-  let buf;
-  try { buf = await A.ctx.decodeAudioData(ab); } catch (e) { document.getElementById('name').textContent = 'Could not decode that file'; return; }
-  A.buffer = buf; A.name = cleanName(name); A.offset = 0;
-  document.getElementById('name').textContent = A.name + ' · static model';
-  document.getElementById('playBtn').disabled = false;
-  if (autoplay) play();
+// hub.js runs before the module below, so this hands a track over whenever the module is ready for it
+let pendingLoad = null;
+function loadArrayBuffer(ab, name, autoplay = true) {
+  if (window.massingLoad) return window.massingLoad(ab, name, autoplay);
+  pendingLoad = [ab, name, autoplay];
 }
-function play() {
-  if (!A.buffer || A.playing) return;
-  initAudio();
-  const s = A.ctx.createBufferSource(); s.buffer = A.buffer; s.connect(A.ctx.destination);
-  s.start(0, A.offset); A.t0 = A.ctx.currentTime - A.offset; A.src = s; A.playing = true;
-  s.onended = () => { if (A.src === s) { A.playing = false; A.src = null; A.offset = 0; playBtn.textContent = 'Play'; } };
-  playBtn.textContent = 'Pause';
-}
-function pause() {
-  if (!A.playing) return;
-  A.offset = A.ctx.currentTime - A.t0; const s = A.src; A.src = null; A.playing = false; s.stop();
-  playBtn.textContent = 'Play';
-}
-const playBtn = document.getElementById('playBtn');
-playBtn.onclick = () => A.playing ? pause() : play();
-document.getElementById('loadBtn').onclick = () => document.getElementById('file').click();
-document.getElementById('file').addEventListener('change', async e => { const f = e.target.files[0]; if (f) loadArrayBuffer(await f.arrayBuffer(), f.name); });
-addEventListener('dragover', e => e.preventDefault());
-addEventListener('drop', async e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) loadArrayBuffer(await f.arrayBuffer(), f.name); });
 </script>
 
 <script type="importmap">{ "imports": { "three": "./vendor/three/three.module.js" } }</script>
@@ -91,238 +75,1162 @@ import { LineMaterial } from './vendor/three/lines/LineMaterial.js';
 import Manifold3d from './vendor/manifold/manifold.js';
 
 const $ = s => document.querySelector(s);
-const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => t * t * (3 - 2 * t);
+const easeOutBack = a => { const c1 = 1.70158, c3 = c1 + 1, x = a - 1; return 1 + c3 * x * x * x + c1 * x * x; };
+const easeOutCubic = a => 1 - Math.pow(1 - a, 3);
+const smooth = (a, b, x) => ease(clamp((x - a) / (b - a), 0, 1));
+const TAU = Math.PI * 2, D2R = Math.PI / 180;
+const upperBound = (arr, x) => { let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] <= x) lo = m + 1; else hi = m; } return lo; };
+const yieldNow = () => new Promise(r => { const c = new MessageChannel(); c.port1.onmessage = () => r(); c.port2.postMessage(0); });
+
+/* ------------------------------------------------------------------ seeded randomness (same as the Sculpture Machine)
+   Every choice comes from (seed, stream) and nothing reads the clock while building, so the same song and seed
+   always grow the same buildings, and scrubbing back and forth replays them exactly. */
+function hashInt(a, b) {
+  let h = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul((b | 0) + 0x632be5ab, 0xc2b2ae35);
+  h ^= h >>> 16; h = Math.imul(h, 0x7feb352d); h ^= h >>> 15; h = Math.imul(h, 0x846ca68b); h ^= h >>> 16; return h >>> 0;
+}
+function rngFor(seed, stream) {
+  let a = hashInt(seed | 0, stream | 0);
+  return () => { a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+const ri = (r, n) => Math.floor(r() * n);
+const pickR = (r, arr) => arr[ri(r, arr.length)];
+const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); let x = r() * s; for (const k in w) { x -= Math.max(0, w[k]); if (x <= 0 && w[k] > 0) return k; } return Object.keys(w).find(k => w[k] > 0); };
 
 /* ------------------------------------------------------------------ settings */
-const S = { view:'iso', turn:'off', palette:'axo', shading:'flat', lineW:.3, hidden:'dotted', plinth:false, margin:.15 };
+const S = {
+  seed:1, growth:.55, pitchSens:.5,
+  shots:'4', view:'iso', punch:.5, margin:.12,
+  palette:'generated', shading:'flat', lineW:.3, hidden:'dotted', grain:.35, flash:true,
+};
 try { Object.assign(S, JSON.parse(localStorage.getItem('massing-settings') || '{}')); } catch (e) {}
 const saveSettings = () => { try { localStorage.setItem('massing-settings', JSON.stringify(S)); } catch (e) {} };
 
-/* ------------------------------------------------------------------ palettes: one colour per surface role */
-// sampled from the reference axos; generated palettes per cycle come later
-const PALETTES = {
-  axo:       { name:'Presentation axo', bg:'#43966f', wall:'#e2b2d2', roof:'#d4b990', slab:'#a3c1d8', line:'#7a7a80' },
-  massing:   { name:'Massing only',     bg:'#43966f', wall:'#e2b2d2', roof:'#e2b2d2', slab:'#e2b2d2', line:'#7a7a80' },
-  blueprint: { name:'Blueprint',        bg:'#1f3f8f', wall:'#2d55b0', roof:'#3a68c8', slab:'#5d86d8', line:'#e8eefc' },
-  paper:     { name:'Warm paper',       bg:'#efe6d2', wall:'#f7f1e3', roof:'#e3cfa5', slab:'#cfdbe0', line:'#4a4440' },
-  riso:      { name:'Riso',             bg:'#f3ecd8', wall:'#ff8fb1', roof:'#f6cf1d', slab:'#1aa3c8', line:'#1d3e9e' },
-};
+/* ------------------------------------------------------------------ audio */
+const A = { ctx:null, buffer:null, src:null, t0:0, offset:0, playing:false, name:'' };
+function initAudio() { if (A.ctx) { A.ctx.resume(); return; } A.ctx = new (window.AudioContext || window.webkitAudioContext)(); }
+const cleanName = n => n.split('/').pop().replace(/\.[a-z0-9]+$/i, '').replace(/[_]+/g, ' ').trim();
+const setStatus = s => { $('#status').textContent = s; };
 
-/* ------------------------------------------------------------------ the model: a hardcoded building in grid units */
-// Plan units are modules (3 m), heights are floors (3.5 m). Later the song writes this model; for now it is fixed.
+async function massingLoad(ab, name, autoplay = true) {
+  initAudio(); pause();
+  setStatus('decoding…');
+  let buf;
+  try { buf = await A.ctx.decodeAudioData(ab); } catch (e) { setStatus('could not decode that file'); return; }
+  const an = await analyseTrack(buf, p => setStatus(`listening… ${(p * 100) | 0}%`));
+  A.buffer = buf; A.name = cleanName(name); A.offset = 0; AN = an;
+  $('#name').textContent = A.name;
+  rebuildAll();
+  setStatus('');
+  if (autoplay) play();
+}
+window.massingLoad = massingLoad;
+function play() {
+  if (!A.buffer) return;
+  initAudio();
+  if (A.playing) return;
+  const s = A.ctx.createBufferSource(); s.buffer = A.buffer; s.connect(A.ctx.destination);
+  s.start(0, A.offset); A.t0 = A.ctx.currentTime - A.offset; A.src = s; A.playing = true;
+  s.onended = () => { if (A.src === s) { A.playing = false; A.src = null; A.offset = 0; updateUI(); } };
+  updateUI();
+}
+function pause() {
+  if (!A.playing) return;
+  A.offset = curTime(); const s = A.src; A.src = null; s.stop(); A.playing = false; updateUI();
+}
+// with no track loaded the demo pattern loops on its own clock
+const DEMO = { start:performance.now() / 1000, paused:false, at:0 };
+function curTime() {
+  if (A.buffer) return A.playing ? A.ctx.currentTime - A.t0 : A.offset;
+  if (!DEMO.paused) DEMO.at = (performance.now() / 1000 - DEMO.start) % AN.dur;
+  return DEMO.at;
+}
+function seek(t) {
+  t = clamp(t, 0, AN.dur - .05);
+  if (!A.buffer) { DEMO.at = t; DEMO.start = performance.now() / 1000 - t; return; }
+  const was = A.playing; if (was) pause();
+  A.offset = t; if (was) play();
+}
+function updateUI() { $('#playBtn').textContent = (A.buffer ? A.playing : !DEMO.paused) ? 'Pause' : 'Play'; }
+
+/* ------------------------------------------------------------------ offline analysis, copied from the Sculpture Machine */
+function fft(re, im, inv) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit;
+    if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (inv ? 2 : -2) * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang), h = len >> 1;
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < h; k++) {
+        const a = i + k, b = a + h, xr = re[b] * cr - im[b] * ci, xi = re[b] * ci + im[b] * cr;
+        re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+        const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+      }
+    }
+  }
+}
+function pct(arr, p) {
+  const step = Math.max(1, Math.floor(arr.length / 4000)), s = [];
+  for (let i = 0; i < arr.length; i += step) s.push(arr[i]);
+  s.sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(p * (s.length - 1)))] || 0;
+}
+
+async function analyseTrack(buf, progress) {
+  const sr = buf.sampleRate, len = buf.length, nc = buf.numberOfChannels, RATE = 60;
+  const mono = new Float32Array(len);
+  for (let c = 0; c < nc; c++) { const d = buf.getChannelData(c); for (let i = 0; i < len; i++) mono[i] += d[i] / nc; }
+  const hop = sr / RATE, n = Math.max(8, Math.floor(len / hop)), N = 2048, half = N / 2, binHz = sr / N;
+  const win = new Float32Array(N); for (let i = 0; i < N; i++) win[i] = .5 - .5 * Math.cos(TAU * i / (N - 1));
+  const re = new Float64Array(N), im = new Float64Array(N), prevLog = new Float32Array(half);
+  const EDGES = [30, 80, 160, 320, 640, 1280, 2560, 5120, 12000];
+  const bandOf = new Int8Array(half).fill(-1), pcOf = new Int8Array(half).fill(-1);
+  for (let k = 1; k < half; k++) {
+    const f = k * binHz;
+    for (let b = 0; b < 8; b++) if (f >= EDGES[b] && f < EDGES[b + 1]) bandOf[k] = b;
+    if (f >= 80 && f <= 4000) pcOf[k] = ((Math.round(12 * Math.log2(f / 440)) + 69) % 12 + 12) % 12;
+  }
+  const bandE = Array.from({ length:8 }, () => new Float32Array(n)), bandF = Array.from({ length:8 }, () => new Float32Array(n));
+  const rms = new Float32Array(n), cent = new Float32Array(n), flat = new Float32Array(n), chroma = new Float32Array(n * 12);
+  const kF0 = Math.ceil(100 / binHz), kF1 = Math.min(half - 1, Math.floor(8000 / binHz)), kCnt = kF1 - kF0 + 1;
+  for (let i = 0; i < n; i++) {
+    const c0 = Math.round(i * hop) - half; let ss = 0;
+    for (let j = 0; j < N; j++) { const s = mono[c0 + j] || 0; ss += s * s; re[j] = s * win[j]; im[j] = 0; }
+    rms[i] = Math.sqrt(ss / N);
+    fft(re, im, false);
+    let cs = 0, cw = 0, lg = 0, am = 0;
+    for (let k = 1; k < half; k++) {
+      const m = Math.sqrt(re[k] * re[k] + im[k] * im[k]) * 4 / N;
+      const l = Math.log1p(m * 100), dl = l - prevLog[k]; prevLog[k] = l;
+      const b = bandOf[k]; if (b >= 0) { bandE[b][i] += m * m; if (dl > 0) bandF[b][i] += dl; }
+      cs += m * k; cw += m;
+      if (k >= kF0 && k <= kF1) { lg += Math.log(m + 1e-9); am += m; }
+      const pc = pcOf[k]; if (pc >= 0) chroma[i * 12 + pc] += m * m;
+    }
+    cent[i] = cw > 1e-9 ? cs / cw * binHz : 0;
+    flat[i] = am > 1e-9 ? Math.exp(lg / kCnt) / (am / kCnt) : 0;
+    if (i % 300 === 0) { progress(i / n * .65); await yieldNow(); }
+  }
+  for (let b = 0; b < 8; b++) {
+    const e = bandE[b]; for (let i = 0; i < n; i++) e[i] = Math.sqrt(e[i]);
+    const p = pct(e, .98) || 1e-9; for (let i = 0; i < n; i++) e[i] = Math.min(1, e[i] / p);
+    const f = bandF[b], q = pct(f, .95) || 1e-9; for (let i = 0; i < n; i++) f[i] /= q;
+  }
+  const rp = pct(rms, .99) || 1e-9, rmsN = rms.map(v => Math.min(1, v / rp));
+  for (let i = 0; i < n; i++) cent[i] = clamp(Math.log2(Math.max(cent[i], 100) / 100) / Math.log2(80), 0, 1);
+
+  // onsets per band: peaks of spectral flux over an adaptive threshold, at least 50 ms apart
+  const onsets = [];
+  for (let b = 0; b < 8; b++) {
+    const f = bandF[b], pre = new Float64Array(n + 1);
+    for (let i = 0; i < n; i++) pre[i + 1] = pre[i] + f[i];
+    let last = -1e9;
+    for (let i = 3; i < n - 3; i++) {
+      const v = f[i];
+      if (v < f[i-1] || v < f[i+1] || v < f[i-2] || v < f[i+2] || v < f[i-3] || v < f[i+3]) continue;
+      const a = Math.max(0, i - 12), z = Math.min(n, i + 13), mean = (pre[z] - pre[a]) / (z - a);
+      if (v < mean * 1.5 + .25 || i - last < 3) continue;
+      last = i; onsets.push({ t:i / RATE, band:b, s:clamp((v - mean) / 1.5, 0, 1) });
+    }
+  }
+  onsets.sort((a, b) => a.t - b.t);
+  progress(.68); await yieldNow();
+  const pitch = await pitchTrack(mono, sr, p => progress(.68 + p * .24));
+
+  // tempo and beats (autocorrelation, then Ellis-style dynamic programming)
+  const { beats, P } = trackBeats(bandF, n, RATE);
+  const lowAt = t => { const i = clamp(Math.round(t * RATE), 0, n - 1); return bandF[0][i] + bandF[1][i]; };
+  let phase = 0, pb = -1;
+  for (let p = 0; p < 4; p++) { let s = 0; for (let k = p; k < beats.length; k += 4) s += lowAt(beats[k]); if (s > pb) { pb = s; phase = p; } }
+  const downbeats = beats.filter((_, k) => ((k - phase) % 4 + 4) % 4 === 0);
+  const beatLen = P / RATE;
+
+  // chroma per beat → harmonic changes
+  const beatPc = new Int8Array(beats.length), beatDist = new Float32Array(beats.length);
+  let prev = null;
+  for (let k = 0; k < beats.length; k++) {
+    const f0 = clamp(Math.round(beats[k] * RATE), 0, n - 1), f1 = clamp(Math.round((beats[k + 1] ?? beats[k] + beatLen) * RATE), f0 + 1, n);
+    const v = new Float32Array(12);
+    for (let f = f0; f < f1; f++) for (let c = 0; c < 12; c++) v[c] += chroma[f * 12 + c];
+    let nn = 0, am = 0; for (let c = 0; c < 12; c++) { nn += v[c] * v[c]; if (v[c] > v[am]) am = c; }
+    nn = Math.sqrt(nn) || 1; for (let c = 0; c < 12; c++) v[c] /= nn;
+    beatPc[k] = am;
+    if (prev) { let d = 0; for (let c = 0; c < 12; c++) d += v[c] * prev[c]; beatDist[k] = 1 - d; }
+    prev = v;
+  }
+
+  // sections: big changes in 4 s mean loudness, at least 12 s apart, snapped to the nearest downbeat
+  const sw = RATE * 2, env = new Float32Array(n); { let acc = 0;
+    for (let i = 0; i < n + sw; i++) { if (i < n) acc += rms[i]; if (i - sw * 2 >= 0) acc -= rms[i - sw * 2]; const k = i - sw; if (k >= 0 && k < n) env[k] = acc; } }
+  let emax = 1e-9; for (const v of env) emax = Math.max(emax, v); for (let i = 0; i < n; i++) env[i] /= emax;
+  const w = RATE * 4, epre = new Float64Array(n + 1); for (let i = 0; i < n; i++) epre[i + 1] = epre[i] + env[i];
+  const nov = new Float32Array(n);
+  for (let i = w; i < n - w; i++) nov[i] = Math.abs((epre[i + w] - epre[i]) - (epre[i] - epre[i - w])) / w;
+  const sections = [0];
+  for (let i = w; i < n - w; i++) {
+    if (nov[i] < .14) continue;
+    let isMax = true; for (let j = i - w; j < i + w; j++) if (nov[j] > nov[i]) { isMax = false; break; }
+    if (!isMax || i / RATE - sections[sections.length - 1] <= 12) continue;
+    let t = i / RATE; const d = downbeats[clamp(upperBound(downbeats, t) - 1, 0, downbeats.length - 1)];
+    if (d !== undefined && Math.abs(d - t) < 1.6) t = d;
+    if (t - sections[sections.length - 1] > 8) sections.push(t);
+  }
+  // a look per section: quiet → lines or halftone, loudest → cut paper, the rest take turns
+  const means = sections.map((t, k) => { const a = Math.floor(t * RATE), b = Math.floor((sections[k + 1] ?? n / RATE) * RATE);
+    let s = 0; for (let i = a; i < b; i++) s += env[i]; return s / Math.max(1, b - a); });
+  const loudest = means.indexOf(Math.max(...means)), cycle = ['toon', 'cutpaper', 'clay', 'scratch', 'toon', 'halftone'];
+  let alt = 0, calm = 0;
+  const sectionLooks = means.map((m, k) => m < .32 ? (calm++ % 2 ? 'halftone' : 'lines') : (k === loudest || m > .78) ? 'cutpaper' : cycle[alt++ % cycle.length]);
+  progress(1);
+  return { rate:RATE, n, dur:len / sr, rms:rmsN, cent, flat, bandE, onsets, pitch, beats, downbeats, bpm:60 * RATE / P, beatLen,
+    sections, sectionLooks, beatPc, beatDist };
+}
+
+// McLeod pitch method on a half-rate mono copy, 30 times a second
+async function pitchTrack(mono, sr, progress) {
+  const sr2 = sr / 2, len2 = mono.length >> 1, x = new Float32Array(len2);
+  for (let i = 0; i < len2; i++) x[i] = .5 * (mono[2 * i] + mono[2 * i + 1]);
+  const PRATE = 30, hop = sr2 / PRATE, W = 2048, NF = 4096, n = Math.max(1, Math.floor(len2 / hop));
+  const minLag = Math.floor(sr2 / 1400), maxLag = Math.min(W / 2, Math.ceil(sr2 / 55));
+  const re = new Float64Array(NF), im = new Float64Array(NF), sq = new Float64Array(W + 1), nsdf = new Float32Array(maxLag + 2);
+  const hz = new Float32Array(n), clar = new Float32Array(n), amp = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const c0 = Math.round(i * hop) - W / 2;
+    re.fill(0); im.fill(0);
+    for (let j = 0; j < W; j++) { const s = x[c0 + j] || 0; re[j] = s; sq[j + 1] = sq[j] + s * s; }
+    amp[i] = Math.sqrt(sq[W] / W);
+    if (sq[W] > 1e-6) {
+      fft(re, im, false);
+      for (let k = 0; k < NF; k++) { re[k] = re[k] * re[k] + im[k] * im[k]; im[k] = 0; }
+      fft(re, im, true);
+      for (let tau = 0; tau <= maxLag + 1; tau++) { const m = sq[W - tau] + (sq[W] - sq[tau]); nsdf[tau] = m > 0 ? 2 * re[tau] / NF / m : 0; }
+      let tau = 1; while (tau < maxLag && nsdf[tau] > 0) tau++;
+      const peaks = [];
+      while (tau < maxLag) {
+        while (tau < maxLag && nsdf[tau] <= 0) tau++;
+        let pt = -1, pv = -1;
+        while (tau < maxLag && nsdf[tau] > 0) { if (nsdf[tau] > pv) { pv = nsdf[tau]; pt = tau; } tau++; }
+        if (pt > 0) peaks.push(pt);
+      }
+      let gmax = 0; for (const p of peaks) gmax = Math.max(gmax, nsdf[p]);
+      let best = -1; for (const p of peaks) if (p >= minLag && nsdf[p] >= .9 * gmax) { best = p; break; }
+      if (best > 0) {
+        const a = nsdf[best - 1], b = nsdf[best], c = nsdf[best + 1], den = a - 2 * b + c;
+        const d = den ? clamp(.5 * (a - c) / den, -.5, .5) : 0;
+        hz[i] = sr2 / (best + d); clar[i] = b - .25 * (a - c) * d;
+      }
+    }
+    if (i % 200 === 0) { progress(i / n); await yieldNow(); }
+  }
+  return { hz, clar, amp, rate:PRATE };
+}
+
+function trackBeats(bandF, n, RATE) {
+  const fw = [1.3, 1.3, 1, 1, .8, .7, .6, .5], raw = new Float32Array(n);
+  for (let b = 0; b < 8; b++) for (let i = 0; i < n; i++) raw[i] += fw[b] * bandF[b][i];
+  const pre = new Float64Array(n + 1); for (let i = 0; i < n; i++) pre[i + 1] = pre[i] + raw[i];
+  const e = new Float32Array(n); let s2 = 0;
+  for (let i = 0; i < n; i++) { const a = Math.max(0, i - 30), z = Math.min(n, i + 31); e[i] = Math.max(0, raw[i] - (pre[z] - pre[a]) / (z - a)); s2 += e[i] * e[i]; }
+  const sd = Math.sqrt(s2 / n) || 1; for (let i = 0; i < n; i++) e[i] /= sd;
+  let best = 30, bv = -1; const ac = new Float32Array(80);
+  for (let L = 18; L <= 75; L++) {
+    let s = 0; for (let i = L; i < n; i++) s += e[i] * e[i - L];
+    s = s / Math.max(1, n - L) * Math.exp(-.5 * Math.pow(Math.log2(L / 30) / .9, 2)); ac[L] = s;
+    if (s > bv) { bv = s; best = L; }
+  }
+  let P = best;
+  if (best > 18 && best < 75) { const a = ac[best - 1], b = ac[best], c = ac[best + 1], den = a - 2 * b + c; if (den) P += clamp(.5 * (a - c) / den, -.5, .5); }
+  const score = new Float32Array(n), back = new Int32Array(n).fill(-1), lo = Math.round(2 * P), hi = Math.max(1, Math.round(P / 2));
+  for (let i = 0; i < n; i++) {
+    let bs = -Infinity, bj = -1;
+    for (let j = Math.max(0, i - lo); j <= i - hi; j++) { const v = score[j] - 100 * Math.pow(Math.log((i - j) / P), 2); if (v > bs) { bs = v; bj = j; } }
+    if (bj >= 0 && bs > 0) { score[i] = e[i] + bs; back[i] = bj; } else score[i] = e[i];
+  }
+  let end = n - 1, es = -Infinity;
+  for (let i = Math.max(0, n - Math.round(2 * P)); i < n; i++) if (score[i] > es) { es = score[i]; end = i; }
+  let fr = []; for (let i = end; i >= 0; i = back[i]) fr.push(i); fr.reverse();
+  if (fr.length < 4) { fr = []; for (let f = 0; f < n; f += P) fr.push(f); }
+  // fill gaps and run the grid out to both ends of the song
+  const filled = [];
+  for (let f = fr[0] - P; f >= 0; f -= P) filled.unshift(f);
+  for (let k = 0; k < fr.length; k++) {
+    if (k) { const gap = fr[k] - fr[k - 1], m = Math.round(gap / P); if (m > 1) for (let j = 1; j < m; j++) filled.push(fr[k - 1] + gap * j / m); }
+    filled.push(fr[k]);
+  }
+  for (let f = fr[fr.length - 1] + P; f < n; f += P) filled.push(f);
+  return { beats:filled.map(f => f / RATE), P };
+}
+
+// pitched notes: a note starts when a clear pitch holds for 100 ms, and lasts while it stays
+function buildNotes(an) {
+  if (an.fakeNotes) return an.fakeNotes;
+  const { hz, clar, amp, rate } = an.pitch, n = hz.length;
+  const thr = lerp(.9, .62, S.pitchSens), floor = pct(amp, .9) * .12, ref = pct(amp, .95) || 1e-9;
+  const notes = []; let cur = null, cand = -1, cnt = 0, cs = 0;
+  const close = () => { if (cur) { cur.dur = (cur.last + 1) / rate - cur.t; cur.amp = clamp(cur.as / Math.max(1, cur.k) / ref, 0, 1); notes.push(cur); cur = null; } };
+  for (let i = 0; i < n; i++) {
+    if (clar[i] >= thr && amp[i] > floor && hz[i] >= 55 && hz[i] <= 1400) {
+      const m = Math.round(69 + 12 * Math.log2(hz[i] / 440));
+      if (m === cand) cnt++; else { cand = m; cnt = 1; cs = i; }
+      if (cur && cur.midi !== m && i - cur.last > 2) close();
+      if (cnt >= 3 && (!cur || cur.midi !== m)) { close(); cur = { t:cs / rate, midi:m, last:i, as:0, k:0 }; }
+      if (cur && cur.midi === m) { cur.last = i; cur.as += amp[i]; cur.k++; }
+    } else { cand = -1; cnt = 0; if (cur && i - cur.last > 2) close(); }
+  }
+  close();
+  return notes;
+}
+
+// before a song is loaded: a made-up 120 bpm pattern in four 8-bar sections, so the machine has something to build
+function fakeAnalysis() {
+  const RATE = 60, bl = .5, dur = 64, n = dur * RATE;
+  const rms = new Float32Array(n), cent = new Float32Array(n), flat = new Float32Array(n).fill(.2);
+  const sec = t => Math.floor(t / 16);
+  for (let i = 0; i < n; i++) { const t = i / RATE; rms[i] = [.45, .7, .35, .85][sec(t)] + .08 * Math.sin(t * 3); cent[i] = .5 + .25 * Math.sin(t * .7); }
+  const bandE = Array.from({ length:8 }, () => new Float32Array(n).fill(.5));
+  const beats = [], onsets = [], notes = [], beatPc = [], beatDist = [];
+  const mel = [60, 64, 67, 72, 71, 67, 64, 62, 57, 60, 65, 69];
+  for (let k = 0, t = 0; t < dur; k++, t += bl) {
+    const s = sec(t);
+    beats.push(t); beatPc.push(mel[k % 12] % 12); beatDist.push(k % 8 === 0 ? .5 : .05);
+    if (k % (s === 2 ? 4 : 2) === 0) onsets.push({ t, band:0, s:.9 });
+    if (k % 4 === 1 || k % 4 === 3) onsets.push({ t, band:3, s:.8 });
+    if (s !== 2) onsets.push({ t:t + bl / 2, band:6, s:.7 }, { t, band:7, s:.5 });
+    if (k % 2 === 0) notes.push({ t:t + bl / 4, dur:bl * (s === 2 ? 3 : .8), midi:mel[(k / 2) % 12] + (k % 8 < 4 ? 0 : 12), amp:.6 });
+  }
+  onsets.sort((a, b) => a.t - b.t);
+  return { demo:true, rate:RATE, n, dur, rms, cent, flat, bandE, onsets, fakeNotes:notes, beats, downbeats:beats.filter((_, k) => k % 4 === 0),
+    bpm:120, beatLen:bl, sections:[0, 16, 32, 48], beatPc, beatDist };
+}
+const fr = (an, t) => clamp(Math.round(t * an.rate), 0, an.n - 1);
+
+/* ------------------------------------------------------------------ the song on a grid: every 8th note, with what hit on it */
+let AN = null, SLOTS = [], CYCLES = [], SHOTS = [], SHOT_T = [], KICKS = [];
+function buildSlots(an) {
+  const B = an.beats, slots = [];
+  for (let k = 0; k < B.length; k++) {
+    const nb = B[k + 1] ?? B[k] + an.beatLen;
+    slots.push({ t:B[k], beat:k, half:0 }, { t:(B[k] + nb) / 2, beat:k, half:1 });
+  }
+  const ts = slots.map(s => s.t);
+  const near = t => {
+    const i = upperBound(ts, t), a = slots[i - 1], b = slots[i];
+    const c = !a ? b : !b ? a : t - a.t < b.t - t ? a : b;
+    return c && Math.abs(c.t - t) < an.beatLen * .26 ? c : null;
+  };
+  for (const o of an.onsets) {
+    const key = o.band <= 1 ? 'kick' : o.band <= 4 ? 'snare' : o.band >= 6 ? 'hat' : null;
+    const s = key && near(o.t); if (s) s[key] = Math.max(s[key] || 0, o.s);
+  }
+  for (const nt of buildNotes(an)) { const s = near(nt.t); if (s && !s.note) s.note = nt; }
+  const db = an.downbeats;
+  for (const s of slots) {
+    const f = fr(an, s.t); s.rms = an.rms[f]; s.cent = an.cent[f];
+    s.bar = Math.max(0, upperBound(db, s.t + 1e-4) - 1); s.down = !s.half && Math.abs((db[s.bar] ?? -1) - s.t) < 1e-3;
+  }
+  KICKS = an.onsets.filter(o => o.band <= 1 && o.s > .25).map(o => ({ t:o.t, s:o.s })); KICKS.ts = KICKS.map(k => k.t);
+  return slots;
+}
+
+/* ------------------------------------------------------------------ cycles: one building each, wiped at big changes */
+function buildCycles(an) {
+  // 8 to 24 bars, but held to 14–64 s so a slow or half-time song still changes building often enough
+  const bar = an.beatLen * 4, minLen = clamp(8 * bar, 14, 26), maxLen = clamp(24 * bar, 36, 48);
+  const snap = t => { const d = an.downbeats, i = upperBound(d, t); const a = d[i - 1], b = d[i]; return a == null ? (b ?? t) : b == null ? a : t - a < b - t ? a : b; };
+  const starts = [0];
+  for (const t of an.sections.slice(1)) if (t - starts[starts.length - 1] >= minLen && an.dur - t >= minLen * .6) starts.push(snap(t));
+  const out = [];
+  for (let i = 0; i < starts.length; i++) {
+    const a = starts[i], b = starts[i + 1] ?? an.dur;
+    out.push(a);
+    for (let s = a; b - s > maxLen;) { s = snap(s + maxLen / 2); if (b - s < minLen) break; out.push(s); }
+  }
+  return out.map((t0, i) => ({ idx:i, t0, end:out[i + 1] ?? an.dur }));
+}
+let CYC_T = [];
+const cycleAt = t => CYCLES[clamp(upperBound(CYC_T, t) - 1, 0, CYCLES.length - 1)];
+
+/* ------------------------------------------------------------------ palettes: a new one generated for every cycle */
+const hsl = (h, s, l) => {
+  h = ((h % 360) + 360) % 360; s = clamp(s, 0, 1); l = clamp(l, 0, 1);
+  const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l), f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  return '#' + [f(0), f(8), f(4)].map(x => Math.round(x * 255).toString(16).padStart(2, '0')).join('');
+};
+const REF = { name:'Presentation axo', bg:'#43966f', wall:'#e2b2d2', roof:'#d4b990', slab:'#a3c1d8', elem:'#c9bcc4', window:'#8d6f86', line:'#7a7a80', accent:'#ffffff' };
+const FIXED = {
+  axo:REF,
+  blueprint:{ name:'Blueprint', bg:'#1f3f8f', wall:'#2d55b0', roof:'#3a68c8', slab:'#5d86d8', elem:'#9db8ee', window:'#16306e', line:'#e8eefc', accent:'#ffffff' },
+  paper:{ name:'Warm paper', bg:'#efe6d2', wall:'#fbf8f1', roof:'#e3cfa5', slab:'#cfdbe0', elem:'#b08d5a', window:'#4a4440', line:'#4a4440', accent:'#e8553a' },
+  night:{ name:'Night', bg:'#14161f', wall:'#2c3142', roof:'#3b4257', slab:'#45607a', elem:'#8fd3ff', window:'#ffd27a', line:'#c9d4f2', accent:'#ffffff' },
+};
+const hueGap = (a, b) => { const d = Math.abs(((a - b) % 360 + 360) % 360); return Math.min(d, 360 - d); };
+function genPalette(r, prev) {
+  let h; do { h = r() * 360; } while (prev && prev.h != null && hueGap(h, prev.h) < 55);
+  const w = { pastel:4, paper:1.6, mono:1.6, riso:1.2, night:1.1 }; if (prev && prev.scheme) w[prev.scheme] = 0;   // never the same scheme twice running
+  const scheme = pickW(r, w);
+  const j = () => r() - .5;
+  const P = { h, scheme, accent:'#ffffff' };
+  if (scheme === 'pastel') {
+    const hw = h + 140 + r() * 80, hr = 25 + r() * 30;
+    Object.assign(P, { bg:hsl(h, .38 + .2 * r(), .38 + .1 * r()), wall:hsl(hw, .45 + .2 * r(), .8), roof:hsl(hr, .45, .72), slab:hsl(200 + j() * 30, .4, .76),
+      elem:hsl(hw, .18, .68), window:hsl(hw, .25, .42), line:hsl(h, .08, .44) });
+  } else if (scheme === 'paper') {
+    Object.assign(P, { bg:hsl(38 + j() * 10, .35, .9), wall:'#fbf8f1', roof:hsl(h, .55, .7), slab:hsl(h + 180, .35, .8), elem:hsl(h, .45, .45), window:hsl(20, .12, .26), line:hsl(20, .12, .22), accent:hsl(h, .9, .55) });
+  } else if (scheme === 'mono') {
+    Object.assign(P, { bg:hsl(h, .5, .3), wall:hsl(h, .45, .44), roof:hsl(h, .45, .55), slab:hsl(h, .4, .66), elem:hsl(h, .45, .74), window:hsl(h, .55, .2), line:hsl(h, .3, .9) });
+  } else if (scheme === 'riso') {
+    Object.assign(P, { bg:hsl(45, .45, .9), wall:hsl(h, .85, .74), roof:hsl(h + 50, .9, .64), slab:hsl(h + 200, .7, .64), elem:hsl(h + 200, .7, .42), window:hsl(h + 200, .75, .32), line:hsl(h + 200, .75, .32), accent:hsl(h + 200, .9, .5) });
+  } else {
+    Object.assign(P, { bg:hsl(h, .35, .1), wall:hsl(h, .2, .24), roof:hsl(h, .2, .33), slab:hsl(h + 30, .4, .42), elem:hsl(h + 180, .6, .62), window:hsl(45, .9, .72), line:hsl(h + 180, .45, .78) });
+  }
+  return P;
+}
+function assignPalettes() {
+  const r = rngFor(S.seed * 31, 31); let prev = null;
+  for (const cy of CYCLES) {
+    cy.pal = S.palette !== 'generated' ? FIXED[S.palette] || REF : cy.idx === 0 ? { ...REF, h:150 } : genPalette(r, prev);
+    prev = cy.pal;
+    const c = k => new THREE.Color(cy.pal[k]);
+    // role colours, in the order the geometry stores them: wall, roof, slab, underside, element, window, accent
+    cy.cols = [c('wall'), c('roof'), c('slab'), c('wall').multiplyScalar(.82), c('elem'), c('window'), c('accent')];
+  }
+}
+
+/* ------------------------------------------------------------------ the grammar: the song designs one building per cycle
+   Plan units are modules (3 m), heights are floors (3.5 m). Kicks lay out volumes along a spine, snares cut them,
+   hats add the cycle's series feature, notes punch windows or grow trusses. Everything is precomputed from the
+   whole song, so the model at any time t is just "every op of this cycle with t0 <= t". */
 const M = 3, F = 3.5;
 const rect = (x, y, w, d) => [[x, y], [x + w, y], [x + w, y + d], [x, y + d]];
-const MODEL = {
-  volumes: [
-    { id:'head',   poly:rect(0, -6, 2, 8),    floors:2 },
-    { id:'stair',  poly:rect(1, 2, 1, 1),     floors:3 },
-    { id:'link',   poly:rect(2, 0, 12, 1),    floors:1 },
-    { id:'pav',    poly:rect(4.5, -2.5, 2, 2.5), floors:1, roof:{ type:'gable', ridge:'y', pitch:30 } },
-    { id:'wedge',  poly:[[8, 1], [11, 1], [13.31, -3], [10.31, -3]], floors:1 },   // a wing skewed 30° off the spine
-    { id:'end',    poly:rect(14, -1, 5, 2.5), floors:2 },
-  ],
-  // ground pads (pale blue slabs), like the terrace at the end of reference image 2
-  pads: [ { poly:rect(19, -1, 2, 2.5) } ],
-  cuts: [
-    { kind:'notch',    poly:rect(18, -1, 1.01, 1.01), z0:1, z1:2.01 },        // top-floor corner off the end block
-    { kind:'undercut', poly:rect(-0.01, -6.01, 2.02, 2.01), z0:-.01, z1:1 },  // ground floor removed under the head: a cantilever
-    { kind:'slice',    at:[17, 0, 2], tilt:22, az:0 },                        // a tilted plane shaves the end block into a wedge
-  ],
-};
+const polyBB = poly => { let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; for (const [x, y] of poly) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); } return [x0, y0, x1, y1]; };
+const ccw = poly => { let a = 0; for (let i = 0; i < poly.length; i++) { const [x0, y0] = poly[i], [x1, y1] = poly[(i + 1) % poly.length]; a += x0 * y1 - x1 * y0; } return a < 0 ? [...poly].reverse() : poly; };
+const inPoly = (poly, x, y) => { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; };
+const bbNew = () => ({ min:[Infinity, Infinity, Infinity], max:[-Infinity, -Infinity, -Infinity] });
+const bbAdd = (b, p) => { for (let k = 0; k < 3; k++) { b.min[k] = Math.min(b.min[k], p[k]); b.max[k] = Math.max(b.max[k], p[k]); } return b; };
+const bbUnion = (b, o) => { bbAdd(b, o.min); bbAdd(b, o.max); return b; };
+const bbCenter = b => [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2];
+const bbOk = b => isFinite(b.min[0]);
 
-/* ------------------------------------------------------------------ geometry: manifold union(volumes) − cuts, every face tagged by source */
+// a volume's facades in metres: start point, direction, outward normal, length
+function facades(v) {
+  const P = ccw(v.poly).map(([x, y]) => [x * M, y * M]);
+  return P.map((a, i) => { const b = P[(i + 1) % P.length], dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
+    return { a, b, L, u:[dx / L, dy / L], n:[dy / L, -dx / L], i }; }).filter(f => f.L > .5);
+}
+
+/* element primitives: plan-oriented boxes, window quads and line segments, all in metres */
+const ROLE = { wall:0, roof:1, slab:2, under:3, elem:4, window:5, accent:6 };
+const box = (o, u, lu, ln, z0, z1, role = ROLE.elem) => ({ k:'box', o, u, lu, ln, z0, z1, role });   // o: a plan corner; extends lu along u and ln to its left
+const boxC = (cx, cy, sx, sy, z0, z1, role) => box([cx - sx / 2, cy - sy / 2], [1, 0], sx, sy, z0, z1, role);
+const seg = (a, b) => ({ k:'seg', a, b });
+const P3 = (f, s, off, z) => [f.a[0] + f.u[0] * s + f.n[0] * off, f.a[1] + f.u[1] * s + f.n[1] * off, z];
+function boxCorners(b) {
+  const n = [-b.u[1], b.u[0]], c = [];
+  for (const z of [b.z0, b.z1]) for (const [a, l] of [[0, 0], [b.lu, 0], [b.lu, b.ln], [0, b.ln]]) c.push([b.o[0] + b.u[0] * a + n[0] * l, b.o[1] + b.u[1] * a + n[1] * l, z]);
+  return c;
+}
+function primsBB(prims) {
+  const b = bbNew();
+  for (const p of prims) {
+    if (p.k === 'box') boxCorners(p).forEach(c => bbAdd(b, c));
+    else if (p.k === 'quad') p.p.forEach(c => bbAdd(b, c));
+    else { bbAdd(b, p.a); bbAdd(b, p.b); }
+  }
+  return b;
+}
+
+/* the feature library: each kind adds one unit per hit to its current target, and returns null once that target is full */
+const GEN = {
+  joists:{ hat:true, ok:v => v.isRect && !v.roof && !v.capped, unit(ch) {   // rafters across a flat roof, tails past the eaves
+    const v = ch.v, [x0, y0, x1, y1] = v.rect, alongX = x1 - x0 >= y1 - y0, L = alongX ? x1 - x0 : y1 - y0;
+    if (ch.i > L * 2) return null;
+    const a = ((alongX ? x0 : y0) + ch.i * .5) * M, mid = ((alongX ? y0 + y1 : x0 + x1) / 2) * M, span = (alongX ? y1 - y0 : x1 - x0) * M + 1.1;
+    return { prims:[alongX ? boxC(a, mid, .2, span, v.top, v.top + .32) : boxC(mid, a, span, .2, v.top, v.top + .32)] };
+  } },
+  fins:{ hat:true, ok:v => v.facades.some(f => f.L >= 2 * M), unit(ch) {   // brise-soleil: thin vertical plates along a facade
+    const v = ch.v, f = ch.f, s = (ch.i + 1) * .5 * M;
+    if (s > f.L - .3 * M) return null;
+    return { prims:[box(P3(f, s - .06, .85, 0), f.u, .12, .85, v.z0 * F, v.top)], grow:'z' };
+  } },
+  stairs:{ hat:true, ok:v => v.z0 === 0 && v.fl >= 2 && v.facades.some(f => f.L >= 3 * M), unit(ch) {   // an external stair, two steps a hit
+    const v = ch.v, f = ch.f, rise = .45, run = .55, prims = [];
+    for (const j of [ch.i * 2, ch.i * 2 + 1]) {
+      if (j * rise >= v.top - .1 || (j + 1) * run > f.L) break;
+      prims.push(box(P3(f, j * run, 1.3, 0), f.u, run, 1.3, 0, Math.min(v.top, (j + 1) * rise)));
+    }
+    return prims.length ? { prims, grow:'z' } : null;
+  } },
+  spaceframe:{ hat:true, line:true, ok:v => v.isRect && !v.roof && !v.capped && v.rect[2] - v.rect[0] >= 2 && v.rect[3] - v.rect[1] >= 2, unit(ch) {
+    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), g = 1.5, nx = Math.floor((x1 - x0) / g), ny = Math.floor((y1 - y0) / g);
+    const i = ch.i; if (i > nx) return null;
+    const zt = v.top + 2.2, zb = v.top + 1.2, T = (a, b) => [x0 + a * g, y0 + b * g, zt], Bn = (a, b) => [x0 + (a + .5) * g, y0 + (b + .5) * g, zb], prims = [];
+    prims.push(seg(T(i, 0), T(i, ny)));
+    if (i > 0) for (let j = 0; j <= ny; j++) prims.push(seg(T(i - 1, j), T(i, j)));
+    if (i > 0) for (let j = 0; j < ny; j++) {
+      const b = Bn(i - 1, j);
+      prims.push(seg(b, T(i - 1, j)), seg(b, T(i, j)), seg(b, T(i - 1, j + 1)), seg(b, T(i, j + 1)));
+      if (j > 0) prims.push(seg(Bn(i - 1, j - 1), b));
+      if (i > 1) prims.push(seg(Bn(i - 2, j), b));
+    }
+    if (i === 0 || i === nx) prims.push(seg([...T(i, 0).slice(0, 2), v.top], T(i, 0)), seg([...T(i, ny).slice(0, 2), v.top], T(i, ny)));
+    return { prims };
+  } },
+  railings:{ hat:true, line:true, ok:v => !v.roof && v.top >= F, unit(ch) {   // guard rails walking round a roof edge
+    const v = ch.v, fs = v.facades, per = fs.reduce((s, f) => s + f.L, 0), s0 = ch.i * 2;
+    if (s0 >= per) return null;
+    const at = s => { for (const f of fs) { if (s <= f.L) return P3(f, s, 0, v.top); s -= f.L; } return P3(fs[0], 0, 0, v.top); };
+    const up = p => [p[0], p[1], p[2] + 1.1], prims = [];
+    for (const s of [s0, s0 + 1]) if (s < per) prims.push(seg(at(s), up(at(s))));
+    let acc = 0; const pts = [s0];
+    for (const f of fs) { acc += f.L; if (acc > s0 && acc < s0 + 2 && acc < per) pts.push(acc); }
+    pts.push(Math.min(s0 + 2, per));
+    for (let k = 1; k < pts.length; k++) prims.push(seg(up(at(pts[k - 1])), up(at(pts[k]))));
+    return { prims, grow:'z' };
+  } },
+  frames:{ snare:true, line:true, ok:v => true, unit(ch) {   // portal frames marching along the long axis and past the end, drawn as double lines like I-sections
+    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), alongX = x1 - x0 >= y1 - y0;
+    const n = Math.round((alongX ? x1 - x0 : y1 - y0) / M) + 3; if (ch.i > n) return null;
+    const a = (alongX ? x0 : y0) - M + ch.i * M, H = v.top + 1.6, lo = (alongX ? y0 : x0) - .8, hi = (alongX ? y1 : x1) + .8, prims = [];
+    const P = (q, w, z) => alongX ? [q, w, z] : [w, q, z];
+    for (const q of [a, a + .35]) prims.push(seg(P(q, lo, 0), P(q, lo, H)), seg(P(q, hi, 0), P(q, hi, H)), seg(P(q, lo, H), P(q, hi, H)));
+    prims.push(seg(P(a, lo, H), P(a + .35, lo, H)), seg(P(a, hi, H), P(a + .35, hi, H)));
+    return { prims, grow:'z' };
+  } },
+  columns:{ snare:true, ok:v => v.z0 === 0 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // a colonnade standing off a facade, with a beam on top
+    const v = ch.v, f = ch.f, n = Math.floor(f.L / M); if (ch.i > n) return null;
+    const s = clamp(ch.i * M, .3, f.L - .3), h = Math.min(v.top, 2 * F), prims = [box(P3(f, s - .18, 1.75, 0), f.u, .36, .36, 0, h)];
+    if (ch.i > 0) { const sp = clamp((ch.i - 1) * M, .3, f.L - .3); prims.push(box(P3(f, sp - .18, 1.75, 0), f.u, s - sp + .36, .36, h - .35, h)); }
+    return { prims, grow:'z' };
+  } },
+  pergola:{ snare:true, line:true, ok:v => v.z0 === 0 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // open bays of posts, beams and slats against a facade
+    const f = ch.f, s = ch.i * M, D = 2 * M, h = 3; if (s + M > f.L + .01) return null;
+    const p = (q, o, z) => P3(f, q, o, z), prims = [];
+    prims.push(seg(p(s, D, 0), p(s, D, h)), seg(p(s + M, D, 0), p(s + M, D, h)), seg(p(s, D, h), p(s + M, D, h)), seg(p(s, 0, h), p(s, D, h)), seg(p(s + M, 0, h), p(s + M, D, h)));
+    for (const q of [s + M / 3, s + 2 * M / 3]) prims.push(seg(p(q, 0, h + .15), p(q, D + .3, h + .15)));
+    return { prims, grow:'z' };
+  } },
+  trusses:{ note:true, line:true, ok:v => v.top >= F && v.isRect, unit(ch) {   // a Warren truss cantilevering off the end of the spine, a bay per note
+    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), i = ch.i; if (i >= 6) return null;
+    const dir = ch.dir || 1, xs = (dir > 0 ? x1 : x0) + dir * i * 1.6, xe = xs + dir * 1.6, zt = v.top - .05, zb = zt - 1.5, ym = (y0 + y1) / 2, prims = [];
+    for (const y of [ym - 1, ym + 1]) {
+      prims.push(seg([xs, y, zt], [xe, y, zt]), seg([xs, y, zb], [xe, y, zb]), seg([xe, y, zt], [xe, y, zb]));
+      prims.push(i % 2 ? seg([xs, y, zt], [xe, y, zb]) : seg([xs, y, zb], [xe, y, zt]));
+    }
+    prims.push(seg([xe, ym - 1, zt], [xe, ym + 1, zt]), seg([xe, ym - 1, zb], [xe, ym + 1, zb]));
+    return { prims };
+  } },
+  windows:{ note:true, ok:v => v.facades.some(f => f.L >= M), unit(ch, s) {   // pitch class picks the facade, octave the floor; held notes draw ribbons
+    const v = ch.v, nt = s.note, fs = v.facades.filter(f => f.L >= M); if (!fs.length) return null;
+    const pc = ((nt.midi % 12) + 12) % 12, f = fs[pc % fs.length];
+    const k = clamp(Math.floor(nt.midi / 12) - 4, 0, v.fl - 1), slots = Math.floor(f.L / (.5 * M)) - 1; if (slots < 1) return null;
+    const span = nt.dur > AN.beatLen * 1.3 ? clamp(Math.round(nt.dur / AN.beatLen) * 2, 2, slots) : 1;
+    const used = ch.used || (ch.used = new Set());
+    for (let tries = 0; tries < slots; tries++) {
+      const j0 = (pc * 5 + ch.i * 3 + tries) % slots; if (j0 + span > slots) continue;
+      let free = true; for (let j = j0; j < j0 + span; j++) if (used.has(`${f.i}:${k}:${j}`)) free = false;
+      if (!free) continue;
+      for (let j = j0; j < j0 + span; j++) used.add(`${f.i}:${k}:${j}`);
+      const sa = (j0 + .5) * .5 * M + .2, sb = (j0 + span + .5) * .5 * M - .2, z = (v.z0 + k) * F + 1, h = Math.min(1.5, v.top - z - .3);
+      if (h < .5) return { prims:[] };
+      return { prims:[{ k:'quad', p:[P3(f, sa, .04, z), P3(f, sb, .04, z), P3(f, sb, .04, z + h), P3(f, sa, .04, z + h)], role:ROLE.window }], visOnly:true };
+    }
+    return null;
+  } },
+};
+const LINE_KINDS = Object.keys(GEN).filter(k => GEN[k].line);
+
+function pickVocab(r, prev) {
+  const w = (o, k) => { if (prev && prev[k] in o) o[prev[k]] *= .15; return o; };   // the next building rarely repeats the last one's features
+  const V = {
+    hat:pickW(r, w({ joists:3, fins:2, stairs:1.5, spaceframe:2, railings:1.5 }, 'hat')),
+    snare:pickW(r, w({ frames:3, columns:2, pergola:1.5 }, 'snare')),
+    note:pickW(r, { windows:3, trusses:1.2 }),
+    pitched:r() < .5, axes:r() < .55,
+  };
+  // line-only elements are part of the look: every cycle gets at least one, usually two
+  const lines = [V.hat, V.snare, V.note].filter(k => GEN[k].line).length + (V.axes ? 1 : 0);
+  if (lines === 0) V.snare = 'frames';
+  if (lines <= 1 && r() < .5) V.hat = pickR(r, ['spaceframe', 'railings']);
+  return V;
+}
+
+function genCycle(cy) {
+  const an = AN, r = rngFor(S.seed * 1009 + cy.idx * 7919, 3), bl = an.beatLen, g = S.growth;
+  const vols = [], cuts = [], geo = [], els = [];
+  const voc = cy.voc = pickVocab(r, cy.idx > 0 ? CYCLES[cy.idx - 1].voc : null);
+  const kThr = lerp(.6, .12, g), sThr = lerp(.65, .15, g), hThr = lerp(.6, .12, g);
+  const maxVol = Math.round(lerp(6, 16, g) * clamp((cy.end - cy.t0) / 30, .7, 1.5)), grow = clamp(bl * .75, .22, .6);
+  let lastVol = -1e9, lastCut = -1e9, lastHat = -1e9, lastNote = -1e9, lastSn = -1e9, lastStack = -1e9, vid = 0;
+  const inCut = p => cuts.some(c => c.t <= p[3] && c.test(p));
+
+  function addEl(t, kind, res, keep = false) {
+    if (!res || !res.prims || !res.prims.length) return false;
+    const bb = primsBB(res.prims), c = bbCenter(bb);
+    if (!keep && inCut([...c, t])) return false;
+    els.push({ t0:t, t1:Infinity, kind, prims:res.prims, bb, keep, visOnly:!!res.visOnly, grow:res.grow || 'all',
+      anchor:res.grow === 'z' ? [c[0], c[1], bb.min[2]] : c });
+    return true;
+  }
+  function commitVol(c, t) {
+    const v = { id:vid++, t, ...c, rect:polyBB(c.poly), cuts:0, used:new Set() };
+    v.top = (v.z0 + v.fl) * F; v.facades = facades(v);
+    if (v.isRect && voc.pitched && !v.stacked && v.fl <= 3 && r() < .5) v.roof = { type:r() < .65 ? 'gable' : 'shed', pitch:20 + ri(r, 3) * 10 };
+    const [x0, y0, x1, y1] = v.rect, rh = v.roof ? Math.max(x1 - x0, y1 - y0) * M * Math.tan(v.roof.pitch * D2R) : 0;
+    v.bb = { min:[x0 * M, y0 * M, v.z0 * F], max:[x1 * M, y1 * M, v.top + rh] };
+    vols.push(v); geo.push({ type:'vol', t, settle:t + grow, v, bb:v.bb, lead:bl });
+    for (const o of vols) if (o !== v && v.z0 === o.z0 + o.fl && v.rect[0] >= o.rect[0] && v.rect[2] <= o.rect[2] && v.rect[1] >= o.rect[1] && v.rect[3] <= o.rect[3]) o.capped = true;
+    lastVol = t;
+    return v;
+  }
+  const ground = () => vols.filter(v => v.z0 === 0);
+  function candidate(mode, w, d, fl, loose) {
+    const G = ground();
+    if (!vols.length || mode === 'first') return { poly:rect(0, -Math.floor(d / 2), w, d), z0:0, fl, isRect:true };
+    if (mode === 'extend' || mode === 'link') {
+      const side = r() < .62 ? 1 : -1, ext = G.reduce((a, b) => (side > 0 ? b.rect[2] > a.rect[2] : b.rect[0] < a.rect[0]) ? b : a, G[0]);
+      if (mode === 'link') { d = 1; fl = 1; w = 2 + ri(r, 4); }
+      const [ex0, ey0, ex1, ey1] = ext.rect, y0 = Math.round(ey0 - d + 1 + ri(r, Math.max(1, ey1 - ey0 + d - 1)));
+      return { poly:rect(side > 0 ? ex1 : ex0 - w, y0, w, d), z0:0, fl, isRect:true };
+    }
+    if (mode === 'branch' || mode === 'skew' || mode === 'tri') {
+      const v = pickR(r, G), [vx0, vy0, vx1, vy1] = v.rect, side = r() < .5 ? 1 : -1, yb = side > 0 ? vy1 : vy0;
+      const x0 = Math.round(vx0 - w + 1 + ri(r, Math.max(1, vx1 - vx0 + w - 1)));
+      if (mode === 'branch') return { poly:rect(x0, side > 0 ? yb : yb - d, w, d), z0:0, fl, isRect:true };
+      if (mode === 'skew') {
+        const ang = (1 + ri(r, loose > .6 ? 3 : 2)) * 15 * (r() < .5 ? -1 : 1), off = d * Math.tan(ang * D2R);
+        return { poly:[[x0, yb], [x0 + w, yb], [x0 + w + off, yb + side * d], [x0 + off, yb + side * d]], z0:0, fl, isRect:false };
+      }
+      return { poly:[[x0, yb], [x0 + w, yb], [x0 + (r() < .5 ? 0 : w), yb + side * Math.max(2, d)]], z0:0, fl, isRect:false };
+    }
+    // stack: a smaller block on a flat roof
+    const hosts = vols.filter(v => v.isRect && !v.roof && !v.capped && v.rect[2] - v.rect[0] >= 2 && v.rect[3] - v.rect[1] >= 2 && v.top < 6 * F);
+    if (!hosts.length) return null;
+    const v = pickR(r, hosts), [vx0, vy0, vx1, vy1] = v.rect, sw = 1 + ri(r, vx1 - vx0 - 1), sd = 1 + ri(r, vy1 - vy0 - 1);
+    return { poly:rect(vx0 + ri(r, vx1 - vx0 - sw + 1), vy0 + ri(r, vy1 - vy0 - sd + 1), sw, sd), z0:v.z0 + v.fl, fl:1 + ri(r, 2), isRect:true, stacked:true };
+  }
+  function fits(c) {
+    const [x0, y0, x1, y1] = polyBB(c.poly);
+    if (y0 < -12 || y1 > 12 || x0 < -18 || x1 > 34) return false;
+    const area = (x1 - x0) * (y1 - y0);
+    for (const v of vols) {
+      if (v.z0 !== c.z0) continue;
+      const ox = Math.min(x1, v.rect[2]) - Math.max(x0, v.rect[0]), oy = Math.min(y1, v.rect[3]) - Math.max(y0, v.rect[1]);
+      if (ox > 0 && oy > 0 && ox * oy > area * .5) return false;
+    }
+    return true;
+  }
+  function placeVol(s, p, loose, mode) {
+    const w = 2 + Math.round((s.kick || .5) * 3 * r() + r() * 1.5), d = 1 + ri(r, 3);
+    const fl = clamp(1 + Math.round((s.rms ?? .5) * 3 + r() * 1.2 - .6), 1, 5);
+    mode = mode || pickW(r, { extend:lerp(5, 1.5, p), link:lerp(2, .5, p), branch:1 + 2 * p, stack:.3 + 1.6 * p, skew:3 * loose, tri:2 * loose });
+    for (let k = 0; k < 6; k++) {
+      const c = candidate(mode, w, d, fl, loose);
+      if (c && fits(c)) return commitVol(c, s.t);
+      mode = k < 2 ? 'branch' : k < 4 ? 'extend' : 'stack';
+    }
+    return null;
+  }
+  function growTower(s) {   // a held kick on a young flat block adds a floor
+    const v = vols[vols.length - 1];
+    if (!v || v.roof || !v.isRect || v.capped || v.top >= 7 * F || s.t - v.t > 6 * bl) return;
+    const piece = { id:vid++, t:s.t, poly:v.poly, z0:v.z0 + v.fl, fl:1, isRect:true, rect:v.rect, facades:v.facades, top:v.top + F };
+    piece.bb = { min:[v.rect[0] * M, v.rect[1] * M, v.top], max:[v.rect[2] * M, v.rect[3] * M, v.top + F] };
+    geo.push({ type:'vol', t:s.t, settle:s.t + grow, v:piece, bb:piece.bb, lead:bl * .5 });
+    v.fl += 1; v.top += F; v.bb.max[2] = Math.max(v.bb.max[2], v.top); lastStack = s.t;
+  }
+  function makeCut(s, loose) {
+    const targets = vols.filter(v => v.cuts < 2 && s.t - v.t > bl);
+    if (!targets.length) return;
+    const v = pickR(r, targets), [x0, y0, x1, y1] = v.rect, w = x1 - x0, d = y1 - y0, e = .03;
+    const kind = !v.isRect ? 'slice' : pickW(r, { notch:1.2, chamfer:.4 + 1.5 * loose, split:1.6 * loose, slice:.3 + 2 * loose,
+      court:w >= 3 && d >= 3 ? 1 : 0, under:v.fl >= 2 && v.z0 === 0 ? 1.1 : 0 });
+    const topF = v.z0 + v.fl + 3;
+    let spec;
+    if (kind === 'notch') {
+      const nw = w >= 4 ? 2 : 1, cx = r() < .5 ? x0 - e : x1 - nw, cy = r() < .5 ? y0 - e : y1 - 1, k = 1 + ri(r, Math.min(2, v.fl));
+      spec = { poly:rect(cx, cy, nw + e, 1 + e), z0:v.z0 + v.fl - k, z1:topF };
+    } else if (kind === 'chamfer') {
+      const a = Math.min(w - .5, 1 + ri(r, 2)), b = Math.min(d - .5, 1 + ri(r, 2)), sx = r() < .5 ? 1 : -1, sy = r() < .5 ? 1 : -1;
+      const cx = sx > 0 ? x0 - e : x1 + e, cy = sy > 0 ? y0 - e : y1 + e;
+      spec = { poly:[[cx, cy], [cx + sx * (a + e), cy], [cx, cy + sy * (b + e)]], z0:v.z0 - .01, z1:topF };
+    } else if (kind === 'split') {
+      const k = v.fl === 1 ? 1 : 1 + ri(r, v.fl), q = ri(r, 4), C = [[x0 - e, y0 - e], [x1 + e, y0 - e], [x1 + e, y1 + e], [x0 - e, y1 + e]];
+      spec = { poly:[C[q], C[(q + 1) % 4], C[(q + 2) % 4]], z0:k >= v.fl ? v.z0 - .01 : v.z0 + v.fl - k, z1:topF };
+    } else if (kind === 'court') {
+      spec = { poly:rect(x0 + 1, y0 + 1, w - 2, d - 2), z0:v.z0 + .3 / F, z1:topF };
+    } else if (kind === 'under') {
+      const half = Math.max(1, Math.floor((w >= d ? w : d) / 2)), left = r() < .5;
+      const pr = w >= d ? rect(left ? x0 - e : x1 - half, y0 - e, half + e, d + 2 * e) : rect(x0 - e, left ? y0 - e : y1 - half, w + 2 * e, half + e);
+      spec = { poly:pr, z0:v.z0 - .01, z1:v.z0 + 1 };
+    } else {
+      const tilt = pickR(r, loose > .6 ? [15, 30, 45] : [15, 30]), dir = pickR(r, ['+x', '-x', '+y', '-y']), f = .15 + .35 * r();
+      const pt = [(dir === '+x' ? x0 + w * f : dir === '-x' ? x1 - w * f : (x0 + x1) / 2) * M, (dir === '+y' ? y0 + d * f : dir === '-y' ? y1 - d * f : (y0 + y1) / 2) * M, v.top];
+      const sn = Math.sin(tilt * D2R), cs = Math.cos(tilt * D2R);
+      const n = dir === '+x' ? [sn, 0, cs] : dir === '-x' ? [-sn, 0, cs] : dir === '+y' ? [0, sn, cs] : [0, -sn, cs];
+      spec = { slice:true, poly:rect(x0 - .05, y0 - .05, w + .1, d + .1), z0:v.z0 - .01, z1:topF + 20, pt, n, tilt, dir };
+    }
+    spec.kind = kind;
+    const P = spec.poly.map(([x, y]) => [x * M, y * M]);
+    const inside = p => inPoly(P, p[0], p[1]) && p[2] >= spec.z0 * F && p[2] <= spec.z1 * F;
+    const test = spec.slice ? p => inside(p) && (p[0] - spec.pt[0]) * spec.n[0] + (p[1] - spec.pt[1]) * spec.n[1] + (p[2] - spec.pt[2]) * spec.n[2] > 0 : inside;
+    const [bx0, by0, bx1, by1] = polyBB(spec.poly);
+    const bb = { min:[bx0 * M, by0 * M, Math.max(0, spec.z0 * F)], max:[bx1 * M, by1 * M, spec.slice ? v.top : Math.min(spec.z1, v.z0 + v.fl + 1) * F] };
+    geo.push({ type:'cut', t:s.t, settle:s.t, spec, bb, lead:bl * .5 });
+    cuts.push({ t:s.t, test });
+    for (const el of els) if (!el.keep && el.t1 === Infinity && test(bbCenter(el.bb))) el.t1 = s.t;
+    v.cuts++; lastCut = s.t;
+    if (kind === 'under') {   // pilotis: columns appear under the new overhang, a few per 16th
+      const [ux0, uy0, ux1, uy1] = polyBB(spec.poly).map(q => Math.round(q)); let k = 0;
+      for (let x = ux0; x <= ux1; x++) for (let y = uy0; y <= uy1; y++) {
+        const cx = clamp(x * M, x0 * M + .3, x1 * M - .3), cyy = clamp(y * M, y0 * M + .3, y1 * M - .3);
+        addEl(s.t + (k++) * bl / 8, 'pilotis', { prims:[boxC(cx, cyy, .4, .4, 0, (v.z0 + 1) * F)], grow:'z' }, true);
+      }
+    }
+  }
+  const chans = { hat:{ kind:voc.hat }, snare:{ kind:voc.snare }, note:{ kind:voc.note } };
+  function retarget(ch) {
+    const G = GEN[ch.kind], c = vols.filter(v => G.ok(v) && !v.used.has(ch.kind));
+    const pool = c.length ? c : vols.filter(v => G.ok(v));
+    if (!pool.length) { ch.v = null; return; }
+    ch.v = r() < .7 ? pool[pool.length - 1] : pickR(r, pool);
+    ch.v.used.add(ch.kind); ch.i = 0; ch.done = false; ch.used = null;
+    const fs = ch.v.facades.filter(f => f.L >= 2 * M);
+    ch.f = fs.length ? fs.reduce((a, b) => (b.L * (.6 + r()) > a.L * (.6 + r()) ? b : a), fs[0]) : ch.v.facades[0];
+    if (ch.kind === 'trusses') {
+      const xs = vols.map(v => v.rect[2]), xn = vols.map(v => v.rect[0]);
+      ch.dir = ch.v.rect[2] >= Math.max(...xs) ? 1 : ch.v.rect[0] <= Math.min(...xn) ? -1 : (r() < .5 ? 1 : -1);
+    }
+  }
+  function series(name, s) {
+    const ch = chans[name]; if (!ch.kind) return false;
+    for (let k = 0; k < 2; k++) {
+      if (!ch.v || ch.done) retarget(ch);
+      if (!ch.v) return false;
+      const res = GEN[ch.kind].unit(ch, s);
+      if (res === null) { ch.done = true; continue; }
+      ch.i++; addEl(s.t, ch.kind, res); return true;
+    }
+    return false;
+  }
+
+  for (const s of SLOTS) {
+    if (s.t < cy.t0 || s.t >= cy.end - bl) continue;   // the last beat stays quiet before the wipe
+    const p = (s.t - cy.t0) / (cy.end - cy.t0), loose = smooth(.25, .85, p);
+    if (!vols.length) { if ((s.kick || 0) > kThr * .5 || (s.snare || 0) > sThr * .5 || s.down) placeVol(s, p, loose, 'first'); continue; }
+    if ((s.kick || 0) > kThr) {
+      if (vols.length < maxVol && s.t - lastVol >= bl * (p < .45 ? (g > .6 ? 1 : 2) : 3)) placeVol(s, p, loose);
+      else if (s.kick > .55 && s.t - lastStack >= 4 * bl && r() < .4) growTower(s);
+    }
+    if ((s.snare || 0) > sThr) {
+      if (p > .18 && s.t - lastCut >= bl * (loose > .5 ? 2 : 4) && r() < lerp(.2, .65, loose)) makeCut(s, loose);
+      else if (s.t - lastSn >= bl * .5 && p > .1) { if (series('snare', s)) lastSn = s.t; }
+    }
+    if ((s.hat || 0) > hThr && s.t - lastHat >= bl * (g > .5 ? .5 : 1) && p > .08) { if (series('hat', s)) lastHat = s.t; }
+    if (s.note && s.t - lastNote >= bl * .5 && p > .12) { if (series('note', s)) lastNote = s.t; }
+    if (s.down && s.bar % 8 === 0) for (const k in chans) chans[k].v = null;   // every 8 bars each series moves to a new target
+  }
+
+  // drawing marks: grid axes with bubbles, ruled in over the first two bars, extending past the finished footprint
+  cy.bbFinal = bbNew(); for (const o of geo) bbUnion(cy.bbFinal, o.bb); for (const e of els) bbUnion(cy.bbFinal, e.bb);
+  if (!bbOk(cy.bbFinal)) cy.bbFinal = { min:[-12, -6, 0], max:[12, 6, 6] };
+  if (voc.axes && vols.length) {
+    const fb = cy.bbFinal, x0 = Math.floor(fb.min[0] / M) - 1, x1 = Math.ceil(fb.max[0] / M) + 1, y0 = Math.floor(fb.min[1] / M) - 1, y1 = Math.ceil(fb.max[1] / M) + 1;
+    const ring = (cx, cyy, rad) => { const p = []; for (let k = 0; k < 16; k++) { const a = k / 16 * TAU, b = (k + 1) / 16 * TAU; p.push(seg([cx + Math.cos(a) * rad, cyy + Math.sin(a) * rad, 0], [cx + Math.cos(b) * rad, cyy + Math.sin(b) * rad, 0])); } return p; };
+    const lines = [];
+    for (let y = y0 + 1; y < y1; y += 2) lines.push([...ring((x0 - .5) * M, y * M, .8), seg([(x0 - .5) * M + .8, y * M, 0], [x1 * M, y * M, 0])]);
+    for (let x = x0 + 1; x < x1; x += 3) lines.push([...ring(x * M, (y0 - .5) * M, .8), seg([x * M, (y0 - .5) * M + .8, 0], [x * M, y1 * M, 0])]);
+    lines.forEach((pr, k) => addEl(cy.t0 + k * bl / 2, 'axes', { prims:pr }, true));
+  }
+
+  geo.sort((a, b) => a.settle - b.settle || a.t - b.t);
+  els.sort((a, b) => a.t0 - b.t0);
+  cy.geo = geo; cy.geoSettle = geo.map(o => o.settle); cy.els = els; cy.vols = vols;
+  cy.ptsFinal = geo.filter(o => o.type === 'vol').flatMap(opPts);
+  for (const e of els) if (e.kind !== 'axes') cy.ptsFinal.push(...bbCorners(e.bb));
+  if (!cy.ptsFinal.length) cy.ptsFinal = bbCorners(cy.bbFinal);
+}
+
+/* ------------------------------------------------------------------ camera plan: shots cut on downbeats, a new building opens wide */
+const SHOT = {
+  establish:{ el:35.26, fit:'final', m:1.15 },
+  iso:{ el:35.26, fit:'now' }, dim:{ el:22, fit:'now' }, high:{ el:58, fit:'now' }, worm:{ el:-26, fit:'now', m:1.05 },
+  plan:{ el:89.5, fit:'now' }, elev:{ el:0, fit:'now', m:1.05 }, close:{ el:28, fit:'newest' }, dolly:{ el:30, fit:'dolly' },
+  pullout:{ el:48, fit:'final', m:1.5 },
+};
+function buildShots() {
+  const r = rngFor(S.seed, 41), bar = AN.beatLen * 4, every = +S.shots || 0;
+  SHOTS = [];
+  for (const cy of CYCLES) {
+    const az0 = 45 + 90 * ri(r, 4);
+    SHOTS.push({ t:cy.t0, cy, kind:'establish', az:az0, drift:(r() < .5 ? -1 : 1) * 2.5 });
+    if (every) {
+      let k = 0;
+      for (const d of AN.downbeats) {
+        if (d <= cy.t0 + .1 || d >= cy.end - 2 * bar) continue;
+        if (++k % every) continue;
+        const e = AN.rms[fr(AN, d)], p = (d - cy.t0) / (cy.end - cy.t0);
+        const kind = pickW(r, e > .6 ? { iso:2, high:2, close:3, worm:.8, dolly:2, dim:1 } : e < .3 ? { iso:2, plan:2, elev:2, dim:2, high:1 }
+          : { iso:2, dim:1.5, high:1.5, close:1.5 + p, worm:.4, plan:1, elev:1, dolly:1.5 });
+        const az = kind === 'elev' ? 90 * ri(r, 4) : kind === 'plan' ? 90 * ri(r, 4) : kind === 'dim' ? (r() < .5 ? 30 : 60) + 90 * ri(r, 4) : 45 + 90 * ri(r, 4);
+        SHOTS.push({ t:d, cy, kind, az, drift:kind === 'elev' || kind === 'plan' ? 0 : (r() < .5 ? -1 : 1) * (1.5 + r() * 4), ratchet:kind === 'iso' && r() < .35 });
+      }
+    }
+    const tp = cy.end - 2 * bar;
+    if (cy.end - cy.t0 > 6 * bar) SHOTS.push({ t:tp, cy, kind:'pullout', az:45 + 90 * ri(r, 4), drift:6 });
+  }
+  SHOTS.sort((a, b) => a.t - b.t); SHOT_T = SHOTS.map(s => s.t);
+}
+
+/* ------------------------------------------------------------------ rebuild everything from the song */
+function rebuildAll() {
+  const t0 = performance.now();
+  SLOTS = buildSlots(AN); CYCLES = buildCycles(AN); CYC_T = CYCLES.map(c => c.t0);
+  assignPalettes();
+  for (const cy of CYCLES) genCycle(cy);
+  buildShots();
+  SOL.cyc = -1; SOL.live.clear(); SET.key = '';
+  const ticks = $('#ticks'); ticks.innerHTML = '';
+  for (const cy of CYCLES.slice(1)) { const i = document.createElement('i'); i.className = 'tick'; i.style.left = `${cy.t0 / AN.dur * 100}%`; ticks.appendChild(i); }
+  const nv = CYCLES.reduce((s, c) => s + c.vols.length, 0), ne = CYCLES.reduce((s, c) => s + c.els.length, 0), nc = CYCLES.reduce((s, c) => s + c.geo.filter(o => o.type === 'cut').length, 0);
+  STATS.plan = `${CYCLES.length} cycles · ${nv} volumes · ${nc} cuts · ${ne} elements · ${AN.bpm.toFixed(0)} bpm · planned in ${(performance.now() - t0).toFixed(0)} ms`;
+}
+const STATS = { plan:'', geo:'' };
+
+/* ------------------------------------------------------------------ geometry */
 const wasm = await Manifold3d(); wasm.setup();
 const { Manifold, CrossSection } = wasm;
-const SOURCES = new Map();   // manifold originalID → { kind, role rule }
-function tag(m, kind) { const o = m.asOriginal(); m.delete(); SOURCES.set(o.originalID(), { kind }); return o; }
-// footprints may be drawn either way round; manifold wants them counter-clockwise or it fills nothing
-const ccw = poly => { let a = 0; for (let i = 0; i < poly.length; i++) { const [x0, y0] = poly[i], [x1, y1] = poly[(i + 1) % poly.length]; a += x0 * y1 - x1 * y0; } return a < 0 ? [...poly].reverse() : poly; };
+const SOURCES = new Map();   // manifold originalID → what made that face
+function tag(m, kind) { const o = m.asOriginal(); m.delete(); SOURCES.set(o.originalID(), kind); return o; }
 const section = poly => new CrossSection(ccw(poly).map(([x, y]) => [x * M, y * M]));
 const prism = (poly, z0, z1) => section(poly).extrude((z1 - z0) * F).translate([0, 0, z0 * F]);
-
-function gableRoof(poly, z, pitch, ridge) {
-  const xs = poly.map(p => p[0] * M), ys = poly.map(p => p[1] * M);
-  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
-  const span = ridge === 'y' ? x1 - x0 : y1 - y0, len = ridge === 'y' ? y1 - y0 : x1 - x0;
-  const h = span / 2 * Math.tan(pitch * Math.PI / 180);
-  // a triangle in (span, height), extruded along the ridge: rotating about x turns the extrusion axis into −y
-  let m = new CrossSection([[0, 0], [span, 0], [span / 2, h]]).extrude(len).rotate([90, 0, 0]);
-  m = ridge === 'y' ? m.translate([x0, y1, z]) : m.rotate([0, 0, -90]).translate([x0, y1, z]);
+function roofPiece(v) {
+  const [x0, y0, x1, y1] = v.rect.map(q => q * M), alongX = x1 - x0 >= y1 - y0, span = alongX ? y1 - y0 : x1 - x0, len = alongX ? x1 - x0 : y1 - y0;
+  const tn = Math.tan(v.roof.pitch * D2R), tri = v.roof.type === 'gable' ? [[0, 0], [span, 0], [span / 2, span / 2 * tn]] : [[0, 0], [span, 0], [0, span * tn * .6]];
+  const m = new CrossSection(tri).extrude(len).rotate([90, 0, 0]);   // x∈[0,span], y∈[−len,0], height up z
+  return alongX ? m.rotate([0, 0, 90]).translate([x0, y0, v.top]) : m.translate([x0, y1, v.top]);
+}
+function volPiece(v) {
+  let m = prism(v.poly, v.z0, v.z0 + v.fl);
+  if (v.roof) { const rp = roofPiece(v), u = m.add(rp); m.delete(); rp.delete(); m = u; }
   return m;
 }
-function sliceCutter(c) {
-  const L = 400;   // a half-space: everything above the plane through c.at, tilted c.tilt° towards +x, turned c.az° about z
-  return Manifold.cube([L, L, L]).translate([-L / 2, -L / 2, 0]).rotate([0, c.tilt, 0]).rotate([0, 0, c.az])
-    .translate([c.at[0] * M, c.at[1] * M, c.at[2] * F]);
+function cutterOf(spec) {
+  const col = prism(spec.poly, spec.z0, spec.z1);
+  if (!spec.slice) return col;
+  const L = 400, a = spec.tilt;
+  let h = Manifold.cube([L, L, L]).translate([-L / 2, -L / 2, 0]);
+  h = spec.dir === '+x' ? h.rotate([0, a, 0]) : spec.dir === '-x' ? h.rotate([0, -a, 0]) : spec.dir === '+y' ? h.rotate([-a, 0, 0]) : h.rotate([a, 0, 0]);
+  const hp = h.translate(spec.pt), out = hp.intersect(col);
+  h.delete(); hp.delete(); col.delete();
+  return out;
 }
 
-function buildSolid() {
-  SOURCES.clear();
-  const t0 = performance.now(), parts = [];
-  for (const v of MODEL.volumes) {
-    parts.push(tag(prism(v.poly, 0, v.floors), 'volume'));
-    if (v.roof && v.roof.type === 'gable') parts.push(tag(gableRoof(v.poly, v.floors * F, v.roof.pitch, v.roof.ridge), 'volume'));
+// the settled solid of the current cycle, grown op by op and rebuilt from scratch on a seek backwards or a new cycle
+const SOL = { cyc:-1, n:0, solid:null, live:new Map() };
+function updateSolid(cy, t) {
+  const n = upperBound(cy.geoSettle, t);
+  if (SOL.cyc === cy.idx && n === SOL.n) return false;
+  const t0 = performance.now();
+  if (SOL.cyc !== cy.idx || n < SOL.n) { if (SOL.solid) SOL.solid.delete(); SOL.solid = null; SOL.n = 0; SOL.cyc = cy.idx; SOURCES.clear(); }
+  for (let i = SOL.n; i < n; i++) {
+    const op = cy.geo[i];
+    if (op.type === 'vol') {
+      const piece = tag(volPiece(op.v), 'vol');
+      if (piece.isEmpty()) { piece.delete(); continue; }
+      if (!SOL.solid) SOL.solid = piece;
+      else { const u = SOL.solid.add(piece); SOL.solid.delete(); piece.delete(); SOL.solid = u; }
+    } else if (SOL.solid) {
+      const c = tag(cutterOf(op.spec), op.spec.slice ? 'slice' : 'cut');
+      if (!c.isEmpty()) { const u = SOL.solid.subtract(c); if (!u.isEmpty()) { SOL.solid.delete(); SOL.solid = u; } else u.delete(); }
+      c.delete();
+    }
   }
-  for (const p of MODEL.pads) parts.push(tag(section(p.poly).extrude(.25), 'pad'));
-  if (S.plinth) {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const v of [...MODEL.volumes, ...MODEL.pads]) for (const [x, y] of v.poly) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
-    parts.push(tag(section(rect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2)).extrude(.4).translate([0, 0, -.4]), 'pad'));
-  }
-  // an empty part (a degenerate footprint) makes manifold's union come back empty, so drop those first
-  const solidParts = parts.filter(p => !p.isEmpty());
-  let solid = Manifold.union(solidParts); parts.forEach(p => p.delete());
-  for (const c of MODEL.cuts) {
-    const cutter = tag(c.kind === 'slice' ? sliceCutter(c) : prism(c.poly, c.z0, c.z1), c.kind === 'slice' ? 'slice' : 'cut');
-    const next = solid.subtract(cutter); solid.delete(); cutter.delete(); solid = next;
-  }
-  const mesh = solid.getMesh(); solid.delete();
-  return { mesh, ms:performance.now() - t0 };
+  SOL.n = n;
+  const A = newAcc();
+  if (SOL.solid) meshInto(A, SOL.solid.getMesh(), cy.cols, null, 1);
+  setLayer(LAYERS.solid, A);
+  STATS.geo = `boolean ${(performance.now() - t0).toFixed(1)} ms`;
+  return true;
 }
-
-// role of one triangle from its normal and where it came from
-const ROLE = { wall:0, roof:1, slab:2, under:3 };
+// role of a triangle from its normal and what made it: a slice leaves a sloped roof, other cuts reveal floor slabs
 function roleOf(kind, nz) {
   if (nz < -.3) return ROLE.under;
-  if (nz > .3) return kind === 'cut' || kind === 'pad' ? ROLE.slab : ROLE.roof;   // a slice leaves a sloped roof, a notch reveals a floor
-  return kind === 'pad' ? ROLE.under : ROLE.wall;
+  if (nz > .3) return kind === 'cut' ? ROLE.slab : ROLE.roof;
+  return ROLE.wall;
+}
+const shadeK = (nx, ny, nz) => S.shading !== 'three' || Math.abs(nz) > .3 ? 1 : Math.abs(nx) > Math.abs(ny) ? .9 : .78;
+function meshInto(A, mesh, cols, xf, tint) {
+  const np = mesh.numProp, vp = mesh.vertProperties, tv = mesh.triVerts, nTri = tv.length / 3, pos = new Float32Array(nTri * 9);
+  for (let rr = 0; rr < mesh.runOriginalID.length; rr++) {
+    const kind = SOURCES.get(mesh.runOriginalID[rr]) || 'vol';
+    for (let t = mesh.runIndex[rr] / 3; t < mesh.runIndex[rr + 1] / 3; t++) {
+      for (let k = 0; k < 3; k++) { const v = tv[t * 3 + k] * np; let p = [vp[v], vp[v + 1], vp[v + 2]]; if (xf) p = xf(p); pos.set(p, t * 9 + k * 3); }
+      const o = t * 9, ux = pos[o + 3] - pos[o], uy = pos[o + 4] - pos[o + 1], uz = pos[o + 5] - pos[o + 2], vx = pos[o + 6] - pos[o], vy = pos[o + 7] - pos[o + 1], vz = pos[o + 8] - pos[o + 2];
+      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+      const c = cols[roleOf(kind, nz)], sk = shadeK(nx, ny, nz);
+      const cr = lerp(cols[ROLE.accent].r, c.r, tint) * sk, cg = lerp(cols[ROLE.accent].g, c.g, tint) * sk, cb = lerp(cols[ROLE.accent].b, c.b, tint) * sk;
+      for (let k = 0; k < 9; k++) A.pos.push(pos[o + k]);
+      for (let k = 0; k < 3; k++) A.col.push(cr, cg, cb);
+    }
+  }
+  // feature edges only (dihedral > 15°), so the boolean's coplanar triangle seams never show
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const e = new THREE.EdgesGeometry(g, 15), s = e.attributes.position.array;
+  for (let k = 0; k < s.length; k++) { A.vis.push(s[k]); A.hid.push(s[k]); }
+  g.dispose(); e.dispose();
+}
+
+/* accumulating fills and lines for a layer */
+const newAcc = () => ({ pos:[], col:[], vis:[], hid:[], dash:[] });
+function pushTri(A, a, b, c, col, tint, accent) {
+  const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+  let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1;
+  const sk = shadeK(nx / l, ny / l, nz / l);
+  A.pos.push(...a, ...b, ...c);
+  const cr = lerp(accent.r, col.r, tint) * sk, cg = lerp(accent.g, col.g, tint) * sk, cb = lerp(accent.b, col.b, tint) * sk;
+  A.col.push(cr, cg, cb, cr, cg, cb, cr, cg, cb);
+}
+const BOX_FACES = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]];
+const BOX_EDGES = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
+function primsInto(A, el, cols, xf, tint) {
+  const acc = cols[ROLE.accent];
+  for (const p of el.prims) {
+    if (p.k === 'box') {
+      const c = boxCorners(p).map(xf);
+      for (const f of BOX_FACES) { pushTri(A, c[f[0]], c[f[1]], c[f[2]], cols[p.role], tint, acc); pushTri(A, c[f[0]], c[f[2]], c[f[3]], cols[p.role], tint, acc); }
+      for (const [i, j] of BOX_EDGES) { A.vis.push(...c[i], ...c[j]); A.hid.push(...c[i], ...c[j]); }
+    } else if (p.k === 'quad') {
+      const c = p.p.map(xf);
+      pushTri(A, c[0], c[1], c[2], cols[p.role], tint, acc); pushTri(A, c[0], c[2], c[3], cols[p.role], tint, acc);
+      for (let i = 0; i < 4; i++) A.vis.push(...c[i], ...c[(i + 1) % 4]);
+    } else {
+      const a = xf(p.a), b = xf(p.b); A.vis.push(...a, ...b); if (!el.visOnly) A.hid.push(...a, ...b);
+    }
+  }
+}
+const ID = p => p;
+function popXf(el, k) {
+  const [ax, ay, az] = el.anchor;
+  return el.grow === 'z' ? p => [p[0], p[1], az + (p[2] - az) * k] : p => [ax + (p[0] - ax) * k, ay + (p[1] - ay) * k, az + (p[2] - az) * k];
 }
 
 /* ------------------------------------------------------------------ three.js scene */
 const canvas = $('#view');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true, preserveDrawingBuffer:true });
 const scene = new THREE.Scene();
-const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, .1, 2000);
+const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, .1, 3000);
 camera.up.set(0, 0, 1);
-
-let fillMesh = null, lineVis = null, lineHid = null, ROLES = null, NORMALS = null, CENTER = new THREE.Vector3(), CORNERS = [];
 const fillMat = new THREE.MeshBasicMaterial({ vertexColors:true, side:THREE.DoubleSide, polygonOffset:true, polygonOffsetFactor:2, polygonOffsetUnits:2 });
-const visMat = new LineMaterial({ color:0x7a7a80, linewidth:1.5 });
-visMat.depthWrite = false;
-const hidMat = new LineMaterial({ color:0x7a7a80, linewidth:1.5, dashed:true, dashSize:1, gapSize:1, transparent:true, opacity:.5 });
+const visMat = new LineMaterial({ color:0x7a7a80, linewidth:1.5 }); visMat.depthWrite = false;
+const hidMat = new LineMaterial({ color:0x7a7a80, linewidth:1.2, dashed:true, dashSize:1, gapSize:1, transparent:true, opacity:.5 });
 hidMat.depthWrite = false; hidMat.depthFunc = THREE.GreaterDepth;
+const ghostMat = new LineMaterial({ color:0xffffff, linewidth:1.5, dashed:true, dashSize:1, gapSize:1, transparent:true, opacity:.9 });
+ghostMat.depthWrite = false; ghostMat.depthTest = false;
+function makeLayer(order) {
+  const L = { mesh:new THREE.Mesh(new THREE.BufferGeometry(), fillMat), vis:new LineSegments2(new LineSegmentsGeometry(), visMat),
+    hid:new LineSegments2(new LineSegmentsGeometry(), hidMat), ghost:new LineSegments2(new LineSegmentsGeometry(), ghostMat) };
+  L.mesh.renderOrder = order; L.vis.renderOrder = 10 + order; L.hid.renderOrder = 20 + order; L.ghost.renderOrder = 30 + order;
+  for (const o of [L.mesh, L.vis, L.hid, L.ghost]) { o.frustumCulled = false; o.visible = false; scene.add(o); }
+  return L;
+}
+function setLines(obj, arr) {
+  obj.geometry.dispose();
+  obj.visible = obj.userData.has = arr.length > 0;
+  if (!arr.length) { obj.geometry = new LineSegmentsGeometry(); return; }
+  obj.geometry = new LineSegmentsGeometry().setPositions(new Float32Array(arr));
+  if (obj.material.dashed) obj.computeLineDistances();
+}
+function setLayer(L, A) {
+  L.mesh.geometry.dispose();
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(A.pos), 3));
+  g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(A.col), 3));
+  L.mesh.geometry = g; L.mesh.visible = A.pos.length > 0;
+  setLines(L.vis, A.vis); setLines(L.hid, A.hid); setLines(L.ghost, A.dash);
+}
+const LAYERS = { solid:makeLayer(0), set:makeLayer(1), live:makeLayer(2) };
 
-function rebuild() {
-  const { mesh, ms } = buildSolid();
-  const np = mesh.numProp, vp = mesh.vertProperties, tv = mesh.triVerts, nTri = tv.length / 3;
-  const pos = new Float32Array(nTri * 9);
-  ROLES = new Uint8Array(nTri); NORMALS = new Float32Array(nTri * 3);
-  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
-  for (let r = 0; r < mesh.runOriginalID.length; r++) {
-    const kind = (SOURCES.get(mesh.runOriginalID[r]) || { kind:'volume' }).kind;
-    for (let t = mesh.runIndex[r] / 3; t < mesh.runIndex[r + 1] / 3; t++) {
-      for (let k = 0; k < 3; k++) { const v = tv[t * 3 + k] * np; pos.set([vp[v], vp[v + 1], vp[v + 2]], t * 9 + k * 3); }
-      a.fromArray(pos, t * 9); b.fromArray(pos, t * 9 + 3); c.fromArray(pos, t * 9 + 6);
-      n.subVectors(b, a).cross(c.clone().sub(a)).normalize();
-      n.toArray(NORMALS, t * 3);
-      ROLES[t] = roleOf(kind, n.z);
+// settled elements: rebuilt only when one finishes popping in or a cut removes one
+const POP = .22, FLASH = .35;
+const SET = { key:'' };
+function updateSettled(cy, t) {
+  let n = 0, gone = 0;
+  for (const e of cy.els) { if (e.t0 + POP <= t) { n++; if (e.t1 <= t) gone++; } }
+  const key = `${cy.idx}|${n}|${gone}|${S.shading}|${S.palette}`;
+  if (key === SET.key) return;
+  SET.key = key;
+  const A = newAcc();
+  for (const e of cy.els) if (e.t0 + POP <= t && e.t1 > t) primsInto(A, e, cy.cols, ID, 1);
+  setLayer(LAYERS.set, A);
+}
+// live: volumes extruding, elements popping in, and the dotted ghosts of what is about to arrive
+function liveVolGeom(op) {
+  let c = SOL.live.get(op);
+  if (!c) {
+    const m = tag(volPiece(op.v), 'vol'), mesh = m.getMesh(); m.delete();
+    c = { mesh }; SOL.live.set(op, c);
+    if (SOL.live.size > 64) SOL.live.delete(SOL.live.keys().next().value);
+  }
+  return c;
+}
+function ghostLoop(A, poly, z, zTop, k) {
+  const P = ccw(poly).map(([x, y]) => [x * M, y * M]);
+  for (let i = 0; i < P.length; i++) {
+    const a = P[i], b = P[(i + 1) % P.length];
+    A.dash.push(a[0], a[1], z, b[0], b[1], z);
+    if (k > 0) A.dash.push(a[0], a[1], z, a[0], a[1], z + (zTop - z) * k);
+  }
+}
+function updateLive(cy, t) {
+  const A = newAcc(), bl = AN.beatLen;
+  for (const op of cy.geo) {
+    if (op.t - op.lead > t) continue;
+    if (op.type === 'vol') {
+      const v = op.v;
+      if (t < op.t) ghostLoop(A, v.poly, v.z0 * F, v.top, clamp((t - (op.t - op.lead)) / op.lead, 0, 1));
+      else if (t < op.settle) {
+        const k = easeOutBack(clamp((t - op.t) / (op.settle - op.t), 0, 1)), base = v.z0 * F;
+        meshInto(A, liveVolGeom(op).mesh, cy.cols, p => [p[0], p[1], base + (p[2] - base) * Math.max(.02, k)], clamp((t - op.t) / (op.settle - op.t), 0, 1));
+      }
+    } else if (t < op.t) {
+      // the cutter shows as a dotted box for half a beat: the "about to cut" warning
+      ghostLoop(A, op.spec.poly, op.bb.min[2], op.bb.max[2], 1);
+      ghostLoop(A, op.spec.poly, op.bb.max[2], op.bb.max[2], 0);
     }
   }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(nTri * 9), 3));
-  geo.computeBoundingBox(); geo.boundingBox.getCenter(CENTER);
-  const bb = geo.boundingBox; CORNERS = [];
-  for (let i = 0; i < 8; i++) CORNERS.push(new THREE.Vector3(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z));
-
-  // feature edges only (dihedral > 15°), so the boolean's coplanar triangle seams never show
-  const edges = new THREE.EdgesGeometry(geo, 15);
-  const segs = edges.attributes.position.array;
-  [fillMesh, lineVis, lineHid].forEach(o => { if (o) { scene.remove(o); o.geometry.dispose(); } });
-  fillMesh = new THREE.Mesh(geo, fillMat);
-  const lg1 = new LineSegmentsGeometry().setPositions(segs), lg2 = new LineSegmentsGeometry().setPositions(segs);
-  lineVis = new LineSegments2(lg1, visMat); lineHid = new LineSegments2(lg2, hidMat); lineHid.computeLineDistances();
-  fillMesh.renderOrder = 0; lineVis.renderOrder = 1; lineHid.renderOrder = 2;
-  scene.add(fillMesh, lineVis, lineHid);
-  edges.dispose();
-  recolour();
-  $('#stats').textContent = `${MODEL.volumes.length} volumes · ${MODEL.cuts.length} cuts · ${nTri} triangles · ${segs.length / 6} edges · boolean ${ms.toFixed(1)} ms`;
-  dirty = true;
-}
-
-function recolour() {
-  const P = PALETTES[S.palette] || PALETTES.axo;
-  const role = [new THREE.Color(P.wall), new THREE.Color(P.roof), new THREE.Color(P.slab), new THREE.Color(P.wall).multiplyScalar(.85)];
-  const col = fillMesh.geometry.attributes.color.array, tmp = new THREE.Color();
-  for (let t = 0; t < ROLES.length; t++) {
-    tmp.copy(role[ROLES[t]]);
-    if (S.shading === 'three') {   // the classic axo convention: tops lightest, one side mid, the other darkest
-      const nx = NORMALS[t * 3], ny = NORMALS[t * 3 + 1], nz = NORMALS[t * 3 + 2];
-      if (nz < .3 && nz > -.3) tmp.multiplyScalar(Math.abs(nx) > Math.abs(ny) ? .9 : .78);
-    }
-    for (let k = 0; k < 3; k++) tmp.toArray(col, t * 9 + k * 3);
+  for (const e of cy.els) {
+    if (e.t0 > t) break;
+    if (e.t0 + POP <= t || e.t1 <= t) continue;
+    const k = easeOutBack(clamp((t - e.t0) / POP, 0, 1));
+    primsInto(A, e, cy.cols, popXf(e, Math.max(.02, k)), clamp((t - e.t0) / FLASH, 0, 1));
   }
-  fillMesh.geometry.attributes.color.needsUpdate = true;
-  scene.background = new THREE.Color(P.bg);
-  document.body.style.background = P.bg;
-  visMat.color.set(P.line); hidMat.color.set(P.line);
-  dirty = true;
+  setLayer(LAYERS.live, A);
 }
 
-/* ------------------------------------------------------------------ camera: orthographic, drawing-convention presets */
-const VIEWS = {
-  iso:   { name:'Isometric',    az:45,  el:35.264 },
-  dim:   { name:'Dimetric',     az:30,  el:24 },
-  steep: { name:'High axo',     az:50,  el:55 },
-  worm:  { name:"Worm's eye",   az:45,  el:-25 },
-  plan:  { name:'Plan',         az:0,   el:89.9 },
-  elev:  { name:'Elevation',    az:0,   el:0 },
-};
-const cam = { az:0, el:0, dragAz:0, dragEl:0, half:30 };
-let turnStart = performance.now();
-function viewAngles(now) {
-  const v = VIEWS[S.view] || VIEWS.iso;
-  let az = v.az + cam.dragAz;
-  const t = (now - turnStart) / 1000;
-  if (S.turn === 'slow') az += t * 6;
-  if (S.turn === 'ratchet') { const k = Math.floor(t / 2), f = clamp((t - k * 2) / .45, 0, 1); az += 90 * (k + 1 - Math.pow(1 - f, 3)); }   // 90° every 2 s, eased, always landing on a clean axo
-  return { az, el:clamp(v.el + cam.dragEl, -89, 89.9) };
+/* ------------------------------------------------------------------ camera */
+const CAM = { c:new THREE.Vector3(), half:20, shot:-1, last:0, dragAz:0, dragEl:0 };
+const VIEWS = { iso:['Isometric', 45, 35.26], dim:['Dimetric', 30, 22], high:['High axo', 50, 58], worm:["Worm's eye", 45, -26], plan:['Plan', 0, 89.5], elev:['Elevation', 0, 0] };
+// framing works on real corner points, not bounding boxes: a long diagonal spine has a huge, mostly empty box in axo
+const bbCorners = b => Array.from({ length:8 }, (_, i) => [i & 1 ? b.max[0] : b.min[0], i & 2 ? b.max[1] : b.min[1], i & 4 ? b.max[2] : b.min[2]]);
+const opPts = op => op.type === 'vol' ? op.v.poly.flatMap(([x, y]) => [[x * M, y * M, op.v.z0 * F], [x * M, y * M, op.bb.max[2]]]) : bbCorners(op.bb);
+function visiblePts(cy, t) {
+  const pts = [];
+  for (const op of cy.geo) if (op.type === 'vol' && op.t - op.lead <= t) pts.push(...opPts(op));
+  for (const e of cy.els) { if (e.t0 > t) break; if (e.t1 > t && e.kind !== 'axes') pts.push(...bbCorners(e.bb)); }
+  return pts;
 }
-function placeCamera(now, snap) {
-  const { az, el } = viewAngles(now), r = 500, ra = az * Math.PI / 180, re = el * Math.PI / 180;
-  camera.position.set(CENTER.x + r * Math.cos(re) * Math.sin(ra), CENTER.y - r * Math.cos(re) * Math.cos(ra), CENTER.z + r * Math.sin(re));
-  camera.lookAt(CENTER); camera.updateMatrixWorld();
-  // frame the bounding box as seen from here; a spring keeps the zoom from jumping while the view turns
-  const inv = camera.matrixWorldInverse, p = new THREE.Vector3(), w = canvas.clientWidth, h = canvas.clientHeight, asp = w / h;
-  let hx = 0, hy = 0;
-  for (const c of CORNERS) { p.copy(c).applyMatrix4(inv); hx = Math.max(hx, Math.abs(p.x)); hy = Math.max(hy, Math.abs(p.y)); }
-  const target = Math.max(hy, hx / asp) * (1 + S.margin);
-  cam.half = snap ? target : lerp(cam.half, target, .08);
-  camera.left = -cam.half * asp; camera.right = cam.half * asp; camera.top = cam.half; camera.bottom = -cam.half;
-  camera.updateProjectionMatrix();
-  return Math.abs(cam.half - target) > target * .001;
+function newestPts(cy, t) {
+  let best = null, bt = -1e9;
+  for (const op of cy.geo) if (op.type === 'vol' && op.t <= t && op.t > bt) { bt = op.t; best = opPts(op); }
+  for (const e of cy.els) { if (e.t0 > t) break; if (e.t1 > t && e.kind !== 'axes' && e.t0 > bt) { bt = e.t0; best = bbCorners(e.bb); } }
+  return best;
+}
+function punchAt(t) {
+  let i = upperBound(KICKS.ts || [], t) - 1, p = 0;
+  for (; i >= 0; i--) { const age = t - KICKS[i].t; if (age > .5) break; p = Math.max(p, KICKS[i].s * (1 - Math.exp(-age * 40)) * Math.exp(-age * 8)); }
+  return p;
+}
+function fitPts(pts, asp) {
+  const rx = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0), ry = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const p of pts) {
+    const x = p[0] * rx.x + p[1] * rx.y + p[2] * rx.z, y = p[0] * ry.x + p[1] * ry.y + p[2] * ry.z;
+    x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+  }
+  const at = (x, y) => rx.clone().multiplyScalar(x).addScaledVector(ry, y);
+  return { half:Math.max((y1 - y0) / 2, (x1 - x0) / 2 / asp), c:at((x0 + x1) / 2, (y0 + y1) / 2), x0, x1, y0, y1, at };
+}
+function placeCamera(cy, t, dt) {
+  let sh, az, el;
+  const auto = S.shots !== 'off';
+  if (auto) {
+    const si = Math.max(0, upperBound(SHOT_T, t) - 1); sh = SHOTS[si];
+    const age = t - sh.t, K = SHOT[sh.kind], bar = AN.beatLen * 4;
+    az = sh.az + sh.drift * age;
+    if (sh.ratchet) { const k = Math.floor(age / (2 * bar)), f = clamp((age - k * 2 * bar) / (AN.beatLen * .9), 0, 1); az = sh.az + 90 * (k - 1 + easeOutCubic(f)) + 90; }
+    el = K.el;
+    if (si !== CAM.shot) { CAM.shot = si; CAM.snap = true; }
+  } else { const v = VIEWS[S.view] || VIEWS.iso; az = v[1]; el = v[2]; sh = { kind:'iso', t:0 }; }
+  az += CAM.dragAz; el = clamp(el + CAM.dragEl, -89, 89.5);
+  const ra = az * D2R, re = el * D2R, R = 800;
+  const dir = new THREE.Vector3(Math.cos(re) * Math.sin(ra), -Math.cos(re) * Math.cos(ra), Math.sin(re));
+  camera.position.copy(CAM.c).addScaledVector(dir, R); camera.lookAt(CAM.c); camera.updateMatrixWorld();
+  const asp = canvas.clientWidth / canvas.clientHeight, K = SHOT[sh.kind] || SHOT.iso;
+  const fin = cy.ptsFinal, nowP = visiblePts(cy, t), use = nowP.length ? nowP : fin;
+  const f0 = fitPts(K.fit === 'final' ? fin : K.fit === 'newest' ? newestPts(cy, t) || use : use, asp);
+  let half = f0.half * (K.m || 1), cen = f0.c;
+  half = Math.max(half, fitPts(fin, asp).half * .38);   // the first block of a cycle never fills the screen
+  if (K.fit === 'newest') half = Math.max(f0.half * 2.4, 9);
+  if (K.fit === 'dolly') {   // a tight frame sliding along the building
+    half = Math.max(f0.half * .45, 9);
+    const w = half * asp, f = clamp((t - sh.t) / (AN.beatLen * 16), 0, 1), dirn = sh.az % 180 > 90 ? 1 - f : f;
+    const xa = f0.x0 + w * .8, xb = f0.x1 - w * .8;
+    cen = f0.at(xa < xb ? lerp(xa, xb, dirn) : (f0.x0 + f0.x1) / 2, (f0.y0 + f0.y1) / 2);
+  }
+  half *= 1 + S.margin;
+  half *= 1 - .07 * S.punch * punchAt(t);
+  const target = cen;
+  if (CAM.snap) { CAM.c.copy(target); CAM.half = half; CAM.snap = false; }
+  else { const k = 1 - Math.exp(-dt * 3); CAM.c.lerp(target, k); CAM.half = lerp(CAM.half, half, k); }
+  camera.position.copy(CAM.c).addScaledVector(dir, R); camera.lookAt(CAM.c);
+  camera.left = -CAM.half * asp; camera.right = CAM.half * asp; camera.top = CAM.half; camera.bottom = -CAM.half;
+  camera.updateProjectionMatrix(); camera.updateMatrixWorld();
 }
 
-/* ------------------------------------------------------------------ render */
-let dirty = true, snap = true;
-function resize() {
-  const dpr = Math.min(devicePixelRatio || 1, 2);
-  renderer.setPixelRatio(dpr); renderer.setSize(innerWidth, innerHeight, false);
-  dirty = true; snap = true;
-}
+/* ------------------------------------------------------------------ paper grain */
+const grainTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d'), d = g.createImageData(256, 256), r = rngFor(7, 7);
+  for (let i = 0; i < d.data.length; i += 4) { const v = 200 + r() * 55; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; d.data[i + 3] = 255; }
+  g.putImageData(d, 0, 0); return c.toDataURL();
+})();
+$('#grain').style.backgroundImage = `url(${grainTex})`;
+
+/* ------------------------------------------------------------------ frame loop */
+function resize() { renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2)); renderer.setSize(innerWidth, innerHeight, false); CAM.snap = true; }
 addEventListener('resize', resize);
+let lastNow = performance.now(), lastCy = -1, lastT = 0;
 function frame(now) {
   requestAnimationFrame(frame);
-  if (!fillMesh || (!dirty && S.turn === 'off')) return;
-  const moving = placeCamera(now, snap); snap = false;
-  const dpr = renderer.getPixelRatio(), bw = canvas.width, bh = canvas.height;
-  const lw = lerp(.75, 3, S.lineW) * dpr;
-  for (const m of [visMat, hidMat]) { m.resolution.set(bw, bh); m.linewidth = lw; }
-  // dots stay a fixed size on screen: world units per pixel from the ortho frustum
-  const upp = (camera.top - camera.bottom) / bh;
-  hidMat.dashSize = (S.hidden === 'dashed' ? 6 : 2) * dpr * upp; hidMat.gapSize = (S.hidden === 'dashed' ? 4 : 3) * dpr * upp;
-  lineHid.visible = S.hidden !== 'off';
+  if (!AN || !CYCLES.length) return;
+  const dt = Math.min(.1, (now - lastNow) / 1000); lastNow = now;
+  const t = curTime(), cy = cycleAt(t);
+  if (cy.idx !== lastCy || Math.abs(t - lastT) > .5) { CAM.snap = true; lastCy = cy.idx; }
+  lastT = t;
+  updateSolid(cy, t); updateSettled(cy, t); updateLive(cy, t);
+  const P = cy.pal;
+  scene.background = new THREE.Color(P.bg); document.body.style.background = P.bg;
+  visMat.color.set(P.line); hidMat.color.set(P.line); ghostMat.color.set(P.accent === '#ffffff' ? P.line : P.accent);
+  placeCamera(cy, t, dt);
+  const dpr = renderer.getPixelRatio(), bw = canvas.width, bh = canvas.height, lw = lerp(.75, 3, S.lineW) * dpr, upp = (camera.top - camera.bottom) / bh;
+  for (const m of [visMat, hidMat, ghostMat]) m.resolution.set(bw, bh);
+  visMat.linewidth = lw; hidMat.linewidth = lw * .85; ghostMat.linewidth = lw * 1.1;
+  hidMat.dashSize = (S.hidden === 'dashed' ? 6 : 1.6) * dpr * upp; hidMat.gapSize = (S.hidden === 'dashed' ? 4 : 3) * dpr * upp;
+  ghostMat.dashSize = 5 * dpr * upp; ghostMat.gapSize = 4 * dpr * upp;
+  for (const L of Object.values(LAYERS)) L.hid.visible = S.hidden !== 'off' && !!L.hid.userData.has;
   renderer.render(scene, camera);
-  dirty = moving;
+  // a wipe to the next building gets a one-frame flash, like a splice
+  const since = t - cy.t0;
+  $('#flash').style.opacity = S.flash && cy.idx > 0 && since >= 0 && since < .12 ? (1 - since / .12) * .85 : 0;
+  const gr = $('#grain').style; gr.opacity = S.grain * (P.scheme === 'night' || P.scheme === 'mono' ? .35 : .7);
+  if (((now / 83) | 0) !== frame.gk) { frame.gk = (now / 83) | 0; gr.transform = `translate(${(Math.random() * 64) | 0}px,${(Math.random() * 64) | 0}px)`; }
+  if (!seeking) $('#seek').value = t / AN.dur * 1000;
+  const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  $('#time').textContent = `${fmt(t)} / ${fmt(AN.dur)}`;
+  if (statsEl && ((now / 250) | 0) !== frame.sk) { frame.sk = (now / 250) | 0; statsEl.textContent = `${STATS.plan} · cycle ${cy.idx + 1} (${cy.pal.scheme || cy.pal.name}) · ${STATS.geo}`; }
 }
 
-/* drag to turn the view, double-click to reset */
+/* drag to nudge the view, double-click to reset */
 let drag = null;
-canvas.addEventListener('pointerdown', e => { drag = { x:e.clientX, y:e.clientY, az:cam.dragAz, el:cam.dragEl }; canvas.setPointerCapture(e.pointerId); canvas.classList.add('drag'); });
-canvas.addEventListener('pointermove', e => { if (!drag) return; cam.dragAz = drag.az - (e.clientX - drag.x) * .3; cam.dragEl = drag.el + (e.clientY - drag.y) * .3; dirty = true; });
+canvas.addEventListener('pointerdown', e => { drag = { x:e.clientX, y:e.clientY, az:CAM.dragAz, el:CAM.dragEl }; canvas.setPointerCapture(e.pointerId); canvas.classList.add('drag'); });
+canvas.addEventListener('pointermove', e => { if (!drag) return; CAM.dragAz = drag.az - (e.clientX - drag.x) * .3; CAM.dragEl = drag.el + (e.clientY - drag.y) * .3; });
 canvas.addEventListener('pointerup', () => { drag = null; canvas.classList.remove('drag'); });
-canvas.addEventListener('dblclick', () => { cam.dragAz = cam.dragEl = 0; dirty = true; });
+canvas.addEventListener('dblclick', () => { CAM.dragAz = CAM.dragEl = 0; });
 
 /* ------------------------------------------------------------------ UI */
 const vp = $('#viewPanel');
@@ -345,22 +1253,51 @@ function addCheck(key, label, on) {
   i.onchange = () => { S[key] = i.checked; saveSettings(); on(); };
   l.append(i, label); vp.appendChild(l);
 }
-const redraw = () => { dirty = true; };
-addSelect('view', 'View', Object.entries(VIEWS).map(([k, v]) => [k, v.name]), () => { cam.dragAz = cam.dragEl = 0; snap = true; redraw(); });
-addSelect('turn', 'Turntable', [['off', 'Still'], ['slow', 'Slow turn'], ['ratchet', 'Ratchet 90°']], () => { turnStart = performance.now(); redraw(); });
-addSelect('palette', 'Colours', Object.entries(PALETTES).map(([k, v]) => [k, v.name]), recolour);
-addSelect('shading', 'Shading', [['flat', 'Flat'], ['three', 'Three-tone']], recolour);
-addSelect('hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashed'], ['off', 'Off']], redraw);
-addSlider('lineW', 'Line width', redraw);
-addSlider('margin', 'Margin', redraw);
-addCheck('plinth', 'Site plinth', rebuild);
+let regenTimer = 0;
+const regen = () => { clearTimeout(regenTimer); regenTimer = setTimeout(() => rebuildAll(), 200); };
+const recolour = () => { assignPalettes(); SOL.cyc = -1; SET.key = ''; };
+const nop = () => {};
+addSelect('shots', 'Camera', [['2', 'New shot every 2 bars'], ['4', 'Every 4 bars'], ['8', 'Every 8 bars'], ['off', 'Fixed view']], () => { buildShots(); CAM.snap = true; });
+addSelect('view', 'Fixed view', Object.entries(VIEWS).map(([k, v]) => [k, v[0]]), () => { CAM.snap = true; });
+addSelect('palette', 'Colours', [['generated', 'New palette every cycle'], ...Object.entries(FIXED).map(([k, v]) => [k, v.name])], recolour);
+addSelect('shading', 'Shading', [['flat', 'Flat'], ['three', 'Three-tone']], () => { SOL.cyc = -1; SET.key = ''; });
+addSelect('hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashed'], ['off', 'Off']], nop);
+addSlider('growth', 'Growth', regen);
+addSlider('lineW', 'Line width', nop);
+addSlider('punch', 'Kick zoom', nop);
+addSlider('grain', 'Paper grain', nop);
+addSlider('margin', 'Margin', nop);
+addCheck('flash', 'Flash on wipe', nop);
+const seedBtn = document.createElement('button'); seedBtn.textContent = 'New seed'; seedBtn.onclick = () => { S.seed = (S.seed % 9999) + 1; saveSettings(); rebuildAll(); };
+vp.appendChild(seedBtn);
+const statsEl = document.createElement('div'); statsEl.className = 'stats'; vp.appendChild(statsEl);
 $('#viewBtn').onclick = () => { vp.classList.toggle('open'); $('#viewBtn').classList.toggle('on'); };
+$('#playBtn').onclick = () => { if (!A.buffer) { DEMO.paused = !DEMO.paused; if (!DEMO.paused) DEMO.start = performance.now() / 1000 - DEMO.at; updateUI(); } else if (A.playing) pause(); else play(); };
+$('#loadBtn').onclick = () => $('#file').click();
+$('#file').addEventListener('change', async e => { const f = e.target.files[0]; if (f) massingLoad(await f.arrayBuffer(), f.name); });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', async e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) massingLoad(await f.arrayBuffer(), f.name); });
+let seeking = false;
+$('#seek').addEventListener('input', () => { seeking = true; seek($('#seek').value / 1000 * AN.dur); });
+$('#seek').addEventListener('change', () => { seeking = false; });
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if (e.code === 'Space') { e.preventDefault(); $('#playBtn').click(); }
+  else if (e.code === 'ArrowRight') seek(curTime() + 5);
+  else if (e.code === 'ArrowLeft') seek(curTime() - 5);
+});
+let idleT = 0;
+const wake = () => { document.body.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => document.body.classList.add('idle'), 2800); };
+addEventListener('pointermove', wake); wake();
 
+AN = fakeAnalysis();
+rebuildAll();
 resize();
-rebuild();
-$('#status').textContent = '';
+setStatus('');
+updateUI();
 requestAnimationFrame(frame);
-window.MASSING = { MODEL, S, rebuild, recolour, scene, camera };   // for poking at from the console
+if (pendingLoad) massingLoad(...pendingLoad);
+window.MASSING = { S, get AN() { return AN; }, get CYCLES() { return CYCLES; }, seek, rebuildAll, scene, camera, DEMO };   // for poking at from the console
 </script>
 
 <script src="../../shared/source.js"></script>
