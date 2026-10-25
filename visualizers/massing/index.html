@@ -833,7 +833,8 @@ function genCycle(cy) {
     if (!res || !res.prims || !res.prims.length) return false;
     const bb = primsBB(res.prims), c = bbCenter(bb);
     if (!keep && inCut([...c, t])) return false;
-    els.push({ t0:t, t1:Infinity, kind, prims:res.prims, bb, keep, visOnly:!!res.visOnly, grow:res.grow || 'all',
+    const hn = k => (hashInt(els.length * 3 + k, 97) / 4294967296 - .5) * .006;   // ±3 mm
+    els.push({ eps:[hn(0), hn(1), hn(2)], t0:t, t1:Infinity, kind, prims:res.prims, bb, keep, visOnly:!!res.visOnly, grow:res.grow || 'all',
       anchor:res.grow === 'z' ? [c[0], c[1], bb.min[2]] : c,
       vid:ch ? ch.v.id : null, run:ch ? ch.run : null, ex:ch ? ch.v.ex || null : null });   // added to a detached volume: it rides along
     return true;
@@ -1307,7 +1308,8 @@ function pushTri(A, a, b, c, col, tint, accent, role) {
 }
 const BOX_FACES = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]];
 const BOX_EDGES = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
-function primsInto(A, el, cols, xf, tint) {
+function primsInto(A, el, cols, xf0, tint) {
+  const e = el.eps, xf = e ? p => { const q = xf0(p); return [q[0] + e[0], q[1] + e[1], q[2] + e[2]]; } : xf0;
   const acc = cols[ROLE.accent];
   for (const p of el.prims) {
     if (p.k === 'box') {
@@ -1372,8 +1374,11 @@ vec3 patApply(vec3 c, float id) {
 ` + sh.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = patApply(diffuseColor.rgb, vPat);');
 };
 const MARK_KINDS = new Set(['axes', 'dims']);
-function makeLayer(order) {
-  const L = { mesh:new THREE.Mesh(new THREE.BufferGeometry(), fillMat), vis:new LineSegments2(new LineSegmentsGeometry(), visMat),
+// coplanar surfaces from different layers would z-fight; each layer's fill is pushed back by a different amount instead,
+// so the building always sits just behind settled elements, and those just behind whatever is being built
+const fillFor = units => { const m = fillMat.clone(); m.polygonOffsetUnits = units; m.onBeforeCompile = fillMat.onBeforeCompile; m.customProgramCacheKey = () => 'massing-fill'; return m; };
+function makeLayer(order, mat = fillMat) {
+  const L = { mesh:new THREE.Mesh(new THREE.BufferGeometry(), mat), vis:new LineSegments2(new LineSegmentsGeometry(), visMat),
     hid:new LineSegments2(new LineSegmentsGeometry(), hidMat), ghost:new LineSegments2(new LineSegmentsGeometry(), ghostMat), dl:new LineSegments2(new LineSegmentsGeometry(), dashLineMat),
     mark:new LineSegments2(new LineSegmentsGeometry(), markMat), lin:new LineSegments2(new LineSegmentsGeometry(), linMat) };
   L.mesh.renderOrder = order; L.vis.renderOrder = 10 + order; L.hid.renderOrder = 20 + order; L.ghost.renderOrder = 30 + order; L.dl.renderOrder = 15 + order; L.mark.renderOrder = 12 + order; L.lin.renderOrder = 11 + order;
@@ -1407,7 +1412,8 @@ function setLayer(L, A) {
   L.mesh.geometry = g; L.mesh.visible = L.mesh.userData.has = A.pos.length > 0;
   setLines(L.vis, overshoot(A.vis)); setLines(L.hid, A.hid); setLines(L.ghost, A.dash); setLines(L.dl, A.dl); setLines(L.mark, A.mark); setLines(L.lin, overshoot(A.lin));
 }
-const LAYERS = { solid:makeLayer(0), set:makeLayer(1), live:makeLayer(2), ex:makeLayer(3) };
+const FILLS = { solid:fillFor(8), set:fillFor(4), live:fillFor(1), ex:fillFor(4) };
+const LAYERS = { solid:makeLayer(0, FILLS.solid), set:makeLayer(1, FILLS.set), live:makeLayer(2, FILLS.live), ex:makeLayer(3, FILLS.ex) };
 
 // optional hard shadows: a sun casts every fill onto a ground plane that shows only the shadow, solid or hatched
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -1663,7 +1669,7 @@ function placeCamera(cy, t, dt) {
   }
 }
 // clipping for the 2D cuts: every fill and line material clips against the same plane
-const CLIP_MATS = [fillMat, visMat, hidMat, ghostMat, dashLineMat, markMat, linMat];
+const CLIP_MATS = [...Object.values(FILLS), visMat, hidMat, ghostMat, dashLineMat, markMat, linMat];
 renderer.localClippingEnabled = true;
 function setClip(plane) { const arr = plane ? [plane] : null; for (const m of CLIP_MATS) if (m.clippingPlanes !== arr && (arr || m.clippingPlanes)) { m.clippingPlanes = arr; m.needsUpdate = true; } }
 // standing in the building: eye height beside it, a walk along it, or inside the biggest block
