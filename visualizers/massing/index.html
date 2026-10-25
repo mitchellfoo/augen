@@ -138,7 +138,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 const S = {
   seed:1, growth:.7, actions:2, unify:.85, form:'mixed', camStyle:'mixed', pitchSens:.5,
   shots:'4', view:'iso', punch:.5, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:.25, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35,
-  palette:'generated', variety:.5, shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.35, flash:true, look:'drawing',
+  palette:'generated', variety:.5, shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.35, flash:false, look:'drawing',
   // old drawing
   paper:.55, tooth:.6, age:.15, bleed:.12, wobble:.25, wash:.35,
   // film print (the Sculpture Machine's stock)
@@ -1806,6 +1806,7 @@ postQuad.frustumCulled = false; postScene.add(postQuad);
 const hash01 = (a, b) => hashInt(a | 0, b) / 4294967296;
 const frameOf = t => Math.floor(t * S.fps + 1e-6);
 function cutInfo(t, fi) {
+  if (!S.splices && !S.flash) return { k:-1, roll:0, y:0 };   // clean cuts: no roll, tape or flash unless asked for
   const ts = S.splices ? SHOT_T : CYC_T, ci = upperBound(ts, t + 1e-6) - 1;
   if (ci < 1 && !(ci === 0 && ts[0] > 0)) return { k:-1, roll:0, y:0 };
   const k = fi - frameOf(ts[ci]);
@@ -2147,7 +2148,7 @@ for (const [k, l] of [['grain', 'Film grain'], ['flicker', 'Flicker'], ['dust', 
   ['chroma', 'Colour fringe'], ['halation', 'Halation'], ['saturation', 'B&W ↔ saturated'], ['warmth', 'Cool ↔ warm']]) lookSlider(k, l);
 addSelect(LP, 'fps', 'Frame rate (preview and export)', [['8', '8 · hand-cranked'], ['12', '12 · on twos'], ['24', '24 · film'], ['30', '30'], ['60', '60 · smooth']], () => { S.fps = +S.fps; });
 addCheck(LP, 'splices', 'Splice on every shot');
-addCheck(LP, 'flash', 'Flash on wipe');
+addCheck(LP, 'flash', 'Splice flash and roll on wipes');
 addHint(LP, 'space play · ← → seek · r new seed · b c k l e panels · f fullscreen');
 
 const PANELS = [['#buildBtn', BP], ['#cameraBtn', CP], ['#colourBtn', KP], ['#lookBtn', LP], ['#exportBtn', '#exportPanel']];
