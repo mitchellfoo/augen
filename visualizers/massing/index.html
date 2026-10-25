@@ -31,6 +31,8 @@
   .settings input[type=range] { accent-color:var(--accent); width:100%; }
   .settings label.check { flex-direction:row; align-items:center; gap:8px; }
   .name { max-width:28ch; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .swatches { display:flex; flex-wrap:wrap; gap:4px; }
+  .swatches i { width:16px; height:16px; border-radius:3px; border:1px solid var(--line); }
   .stats { font-size:11px; opacity:.6; font-variant-numeric:tabular-nums; grid-column:1 / -1; }
   #exporting { display:none; position:fixed; left:50%; bottom:24px; transform:translateX(-50%); width:min(420px, calc(100% - 32px));
     background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:12px; box-sizing:border-box;
@@ -58,8 +60,10 @@
     <label><span>&nbsp;</span><button id="exp-go">Render MP4</button></label>
     <div class="hint" id="exp-msg">Renders frame by frame at the film frame rate. The buildings, camera, colours, paper and film damage come out exactly as the preview shows them.</div>
   </div>
+  <div class="settings bar" id="buildPanel"></div>
+  <div class="settings bar" id="cameraPanel"></div>
+  <div class="settings bar" id="colourPanel"></div>
   <div class="settings bar" id="lookPanel"></div>
-  <div class="settings bar" id="viewPanel"></div>
   <div class="bar">
     <button id="loadBtn">Load</button>
     <input type="file" id="file" accept="audio/*,video/*" hidden>
@@ -67,9 +71,12 @@
     <div class="seekwrap"><input type="range" id="seek" min="0" max="1000" value="0"><div id="ticks"></div></div>
     <span class="time" id="time">0:00</span>
     <span class="name hide-sm" id="name">Demo pattern</span>
+    <button id="buildBtn">Build</button>
+    <button id="cameraBtn" class="hide-sm">Camera</button>
+    <button id="colourBtn">Colour</button>
     <button id="lookBtn">Look</button>
     <button id="exportBtn">Export</button>
-    <button id="viewBtn">Settings</button>
+    <button id="fsBtn" class="hide-sm">Full</button>
   </div>
 </div>
 
@@ -130,7 +137,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 /* ------------------------------------------------------------------ settings */
 const S = {
   seed:1, growth:.7, actions:2, unify:.85, form:'mixed', camStyle:'mixed', pitchSens:.5,
-  shots:'4', view:'iso', punch:.5, margin:.12,
+  shots:'4', view:'iso', punch:.5, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:.25, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35,
   palette:'generated', variety:.5, shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.35, flash:true, look:'drawing',
   // old drawing
   paper:.55, tooth:.6, age:.15, bleed:.12, wobble:.25, wash:.35,
@@ -543,15 +550,22 @@ function programColours(r, P) {
 }
 let PROG = null;
 const progOf = v => { const o = v && (v.parent || v); if (!o || !PROG || !PROG.n || o.progRoll == null) return 0; return o.progRoll < PROG.frac ? 1 + Math.floor(o.progPick * PROG.n) : 0; };
+// line inks: outlines in the sheet's ink; drawing marks in blue pencil, phantoms and detach lines in red, structural linework in ochre
+function inksFor(P, r) {
+  const dark = new THREE.Color(P.bg).getHSL({}).l < .35, j = () => (r() - .5) * 24;
+  return dark ? { mark:hsl(205 + j(), .6, .66), dash:hsl(4 + j(), .72, .62), lin:hsl(44 + j(), .7, .64) }
+    : { mark:hsl(212 + j(), .55, .44), dash:hsl(356 + j(), .66, .5), lin:hsl(28 + j(), .5, .4) };
+}
 function assignPalettes() {
-  const rp = rngFor(S.seed * 53, 53);
-  const r = rngFor(S.seed * 31, 31); let prev = null;
+  const rp = rngFor(S.seed * 53 + (S.palShuffle || 0) * 7919, 53);
+  const r = rngFor(S.seed * 31 + (S.palShuffle || 0) * 7919, 31); let prev = null;
   for (const cy of CYCLES) {
     cy.pal = S.palette !== 'generated' ? FIXED[S.palette] || REF : cy.idx === 0 ? { ...REF, h:150 } : genPalette(r, prev);
     prev = cy.pal;
     const c = k => new THREE.Color(cy.pal[k]);
     // role colours, in the order the geometry stores them: wall, roof, slab, underside, element, window, accent
     if (!cy.pal.struct) cy.pal = { ...cy.pal, struct:new THREE.Color(cy.pal.wall).lerp(new THREE.Color(cy.pal.line), .45).getStyle() };
+    cy.inks = inksFor(cy.pal, rp);
     cy.cols = [c('wall'), c('roof'), c('slab'), c('wall').multiplyScalar(.82), c('elem'), c('window'), c('accent'), c('struct'), c('line').lerp(c('bg'), .22)];   // last: the one surface a unifying cut leaves on every block
     // colour variety: how many programs (0–5) and how many volumes belong to one
     const n = Math.round(S.variety * 5), dark = new THREE.Color(cy.pal.bg).getHSL({}).l < .35;
@@ -811,7 +825,7 @@ function genCycle(cy) {
   const voc = cy.voc = pickVocab(r, cy.idx > 0 ? CYCLES[cy.idx - 1].voc : null);
   const kThr = lerp(.6, .12, g), sThr = lerp(.65, .15, g), hThr = lerp(.6, .12, g);
   const acts = clamp(Math.round(S.actions), 1, 4), vActs = 1 + Math.floor((acts - 1) / 2);   // volumes and cuts scale more gently than elements
-  const maxVol = Math.round(lerp(8, 20, g) * (1 + (acts - 1) * .3) * clamp((cy.end - cy.t0) / 30, .7, 1.5)), grow = clamp(bl * .75, .22, .6);
+  const maxVol = Math.round(lerp(8, 20, g) * (1 + (acts - 1) * .3) * clamp((cy.end - cy.t0) / 30, .7, 1.5)), slow = buildSlow(), grow = clamp(bl * .75, .22, .6) * slow, lead = bl * Math.max(1, slow * .6);
   let lastVol = -1e9, lastCut = -1e9, lastHat = -1e9, lastNote = -1e9, lastSn = -1e9, lastStack = -1e9, lastLine = -1e9, lastStruct = -1e9, vid = 0, runId = 0, bi = upperBound(BIG.ts, cy.t0 - 1);
   const inCut = p => cuts.some(c => c.t <= p[3] && c.test(p));
 
@@ -848,7 +862,7 @@ function genCycle(cy) {
     if (v.isRect && voc.pitched && !v.stacked && v.fl <= 3 && r() < .5) v.roof = { type:r() < .65 ? 'gable' : 'shed', pitch:20 + ri(r, 3) * 10 };
     const [x0, y0, x1, y1] = v.rect, rh = v.roof ? Math.max(x1 - x0, y1 - y0) * M * Math.tan(v.roof.pitch * D2R) : 0;
     v.bb = { min:[x0 * M, y0 * M, v.z0 * F], max:[x1 * M, y1 * M, v.top + rh] };
-    vols.push(v); geo.push({ type:'vol', t, settle:t + grow, v, bb:v.bb, lead:bl });
+    vols.push(v); geo.push({ type:'vol', t, settle:t + grow, v, bb:v.bb, lead });
     for (const o of vols) if (o !== v && v.z0 === o.z0 + o.fl && v.rect[0] >= o.rect[0] && v.rect[2] <= o.rect[2] && v.rect[1] >= o.rect[1] && v.rect[3] <= o.rect[3]) o.capped = true;
     lastVol = t;
     return v;
@@ -909,7 +923,7 @@ function genCycle(cy) {
     if (!ok(v) || (!FM.tall && s.t - v.t > 6 * bl)) return;
     const piece = { id:vid++, t:s.t, poly:v.poly, z0:v.z0 + v.fl, fl:1, isRect:true, rect:v.rect, facades:v.facades, top:v.top + F, parent:v };
     piece.bb = { min:[v.rect[0] * M, v.rect[1] * M, v.top], max:[v.rect[2] * M, v.rect[3] * M, v.top + F] };
-    geo.push({ type:'vol', t:s.t, settle:s.t + grow, v:piece, bb:piece.bb, lead:bl * .5 });
+    geo.push({ type:'vol', t:s.t, settle:s.t + grow, v:piece, bb:piece.bb, lead:lead * .5 });
     v.fl += 1; v.top += F; v.bb.max[2] = Math.max(v.bb.max[2], v.top); lastStack = s.t;
   }
   function makeCut(s, loose) {
@@ -949,7 +963,7 @@ function genCycle(cy) {
     const test = spec.slice ? p => inside(p) && (p[0] - spec.pt[0]) * spec.n[0] + (p[1] - spec.pt[1]) * spec.n[1] + (p[2] - spec.pt[2]) * spec.n[2] > 0 : inside;
     const [bx0, by0, bx1, by1] = polyBB(spec.poly);
     const bb = { min:[bx0 * M, by0 * M, Math.max(0, spec.z0 * F)], max:[bx1 * M, by1 * M, spec.slice ? v.top : Math.min(spec.z1, v.z0 + v.fl + 1) * F] };
-    geo.push({ type:'cut', t:s.t, settle:s.t, spec, bb, lead:bl * .5 });
+    geo.push({ type:'cut', t:s.t, settle:s.t, spec, bb, lead:lead * .5 });
     cuts.push({ t:s.t, test });
     for (const el of els) if (!el.keep && el.t1 === Infinity && test(bbCenter(el.bb))) el.t1 = s.t;
     v.cuts++; lastCut = s.t;
@@ -1111,10 +1125,16 @@ const SHOT = {
   // perspective: a 3/4 view, a low wide-angle near street level, an aerial, and a long lens that flattens everything
   persp:{ el:24, persp:40 }, low:{ el:4, persp:70, low:true }, aerial:{ el:52, persp:30 }, tele:{ el:26, persp:9 },
   // flattened obliques: plan oblique (military axo: true plan, verticals sheared) and cavalier elevation
-  planobl:{ el:89.5, shear:[-.55, .55] }, cavalier:{ el:0, shear:[.5, .5], m:1.05 },
+  planobl:{ el:89.5, shear:[-.55, .55], flat:true }, cavalier:{ el:0, shear:[.5, .5], m:1.05, flat:true },
+  // true 2D: a plan cut through the ground floor, and a section through the middle of the building
+  plancut:{ el:89.9, clip:'plan', flat:true }, section:{ el:0, clip:'section', m:1.05, flat:true },
+  // standing in it: at eye height beside the blocks, walking along them, and inside the biggest one
+  eye:{ persp:74, mode:'eye' }, walk:{ persp:70, mode:'walk' }, inside:{ persp:86, mode:'inside' },
 };
-const SHOT_GROUP = { persp:'persp', low:'persp', aerial:'persp', tele:'persp', planobl:'flat', cavalier:'flat', plan:'flat', elev:'flat' };
-const STYLE_W = { mixed:{ axo:1, persp:1, flat:1 }, axo:{ axo:1, persp:0, flat:.3 }, persp:{ axo:.4, persp:3, flat:.3 }, flat:{ axo:.5, persp:.2, flat:3 } };
+SHOT.plan.flat = SHOT.elev.flat = true;
+const SHOT_GROUP = { persp:'persp', low:'persp', aerial:'persp', tele:'persp', planobl:'flat', cavalier:'flat', plan:'flat', elev:'flat', plancut:'flat', section:'flat', eye:'eye', walk:'eye', inside:'eye' };
+const STYLE_W = { mixed:{ axo:1, persp:1, flat:1.2, eye:.9 }, axo:{ axo:1, persp:0, flat:.3, eye:0 }, persp:{ axo:.4, persp:3, flat:.3, eye:1.5 },
+  eye:{ axo:.2, persp:.7, flat:.2, eye:4 }, flat:{ axo:.4, persp:.15, flat:3.5, eye:0 } };
 function buildShots() {
   const r = rngFor(S.seed, 41), bar = AN.beatLen * 4, every = +S.shots || 0;
   SHOTS = [];
@@ -1124,15 +1144,15 @@ function buildShots() {
     if (every) {
       let k = 0;
       for (const d of AN.downbeats) {
-        if (d <= cy.t0 + .1 || d >= cy.end - 2 * bar) continue;
+        if (d <= cy.t0 + .1 || d >= cy.end - 2 * bar - .1) continue;
         if (++k % every) continue;
         const e = AN.rms[fr(AN, d)], p = (d - cy.t0) / (cy.end - cy.t0);
-        const base = e > .6 ? { iso:2, high:2, close:3, worm:.8, dolly:2, dim:1, persp:1.6, low:1.6, aerial:.8, tele:.8, planobl:.8, cavalier:.6 }
-          : e < .3 ? { iso:2, plan:2, elev:2, dim:2, high:1, tele:1.6, aerial:1.2, planobl:1.6, cavalier:1.4, persp:.6 }
-          : { iso:2, dim:1.5, high:1.5, close:1.5 + p, worm:.4, plan:1, elev:1, dolly:1.5, persp:1.4, low:.7, aerial:1, tele:1.2, planobl:1.2, cavalier:1 };
+        const base = e > .6 ? { iso:2, high:2, close:3, worm:.8, dolly:2, dim:1, persp:1.6, low:1.6, aerial:.8, tele:.8, planobl:.8, cavalier:.6, eye:1.4, walk:1.2, inside:1, section:.8, plancut:.6 }
+          : e < .3 ? { iso:2, plan:2, elev:2, dim:2, high:1, tele:1.6, aerial:1.2, planobl:1.6, cavalier:1.4, persp:.6, plancut:2, section:2, eye:.8, inside:.8, walk:.6 }
+          : { iso:2, dim:1.5, high:1.5, close:1.5 + p, worm:.4, plan:1.2, elev:1.2, dolly:1.5, persp:1.4, low:.7, aerial:1, tele:1.2, planobl:1.2, cavalier:1, plancut:1.2, section:1.2, eye:1, walk:1, inside:.8 };
         const sw = STYLE_W[S.camStyle] || STYLE_W.mixed;
         const kind = pickW(r, Object.fromEntries(Object.entries(base).map(([k, w]) => [k, w * sw[SHOT_GROUP[k] || 'axo']])));
-        const flat = ['elev', 'plan', 'cavalier', 'planobl'].includes(kind);
+        const flat = !!SHOT[kind].flat;
         const az = flat ? 90 * ri(r, 4) : kind === 'dim' ? (r() < .5 ? 30 : 60) + 90 * ri(r, 4) : SHOT_GROUP[kind] === 'persp' ? 20 + r() * 50 + 90 * ri(r, 4) : 45 + 90 * ri(r, 4);
         SHOTS.push({ t:d, cy, kind, az, drift:flat ? 0 : (r() < .5 ? -1 : 1) * (1.5 + r() * 4), ratchet:kind === 'iso' && r() < .35 });
       }
@@ -1269,7 +1289,7 @@ function meshInto(A, mesh, cols, xf, tint) {
 }
 
 /* accumulating fills and lines for a layer */
-const newAcc = () => ({ pos:[], col:[], pat:[], vis:[], hid:[], dash:[], dl:[] });
+const newAcc = () => ({ pos:[], col:[], pat:[], vis:[], hid:[], dash:[], dl:[], mark:[], lin:[] });
 function pushTri(A, a, b, c, col, tint, accent, role) {
   const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
   let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1;
@@ -1294,8 +1314,9 @@ function primsInto(A, el, cols, xf, tint) {
       for (let i = 0; i < 4; i++) A.vis.push(...c[i], ...c[(i + 1) % 4]);
     } else if (p.k === 'dash') {
       A.dl.push(...xf(p.a), ...xf(p.b));
-    } else {
-      const a = xf(p.a), b = xf(p.b); A.vis.push(...a, ...b); if (!el.visOnly) A.hid.push(...a, ...b);
+    } else {   // drawing marks (grid, dimensions) and structural linework each go to their own ink
+      const a = xf(p.a), b = xf(p.b), dst = MARK_KINDS.has(el.kind) ? A.mark : GEN[el.kind] && GEN[el.kind].line || el.kind === 'folie' ? A.lin : A.vis;
+      dst.push(...a, ...b); if (!el.visOnly && dst !== A.mark) A.hid.push(...a, ...b);
     }
   }
 }
@@ -1320,6 +1341,8 @@ hidMat.depthWrite = false; hidMat.depthFunc = THREE.GreaterDepth;
 const ghostMat = new LineMaterial({ color:0xffffff, linewidth:1.5, dashed:true, dashSize:1, gapSize:1, transparent:true, opacity:.9 });
 ghostMat.depthWrite = false; ghostMat.depthTest = false;
 // phantom lines: what a cut took away, an overhang's shadow line on the ground; dashed, and hidden behind solids
+const markMat = new LineMaterial({ color:0x7a7a80, linewidth:1 }); markMat.depthWrite = false;
+const linMat = new LineMaterial({ color:0x7a7a80, linewidth:1 }); linMat.depthWrite = false;
 const dashLineMat = new LineMaterial({ color:0x7a7a80, linewidth:1, dashed:true, dashSize:1, gapSize:1, transparent:true, opacity:.8 }); dashLineMat.depthWrite = false;
 const patU = { uInk:{ value:new THREE.Color() }, uSp:{ value:8 }, uW:{ value:1 }, uAmt:{ value:0 } };
 fillMat.onBeforeCompile = sh => {
@@ -1342,11 +1365,13 @@ vec3 patApply(vec3 c, float id) {
 }
 ` + sh.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = patApply(diffuseColor.rgb, vPat);');
 };
+const MARK_KINDS = new Set(['axes', 'dims']);
 function makeLayer(order) {
   const L = { mesh:new THREE.Mesh(new THREE.BufferGeometry(), fillMat), vis:new LineSegments2(new LineSegmentsGeometry(), visMat),
-    hid:new LineSegments2(new LineSegmentsGeometry(), hidMat), ghost:new LineSegments2(new LineSegmentsGeometry(), ghostMat), dl:new LineSegments2(new LineSegmentsGeometry(), dashLineMat) };
-  L.mesh.renderOrder = order; L.vis.renderOrder = 10 + order; L.hid.renderOrder = 20 + order; L.ghost.renderOrder = 30 + order; L.dl.renderOrder = 15 + order;
-  for (const o of [L.mesh, L.vis, L.hid, L.ghost, L.dl]) { o.frustumCulled = false; o.visible = false; scene.add(o); }
+    hid:new LineSegments2(new LineSegmentsGeometry(), hidMat), ghost:new LineSegments2(new LineSegmentsGeometry(), ghostMat), dl:new LineSegments2(new LineSegmentsGeometry(), dashLineMat),
+    mark:new LineSegments2(new LineSegmentsGeometry(), markMat), lin:new LineSegments2(new LineSegmentsGeometry(), linMat) };
+  L.mesh.renderOrder = order; L.vis.renderOrder = 10 + order; L.hid.renderOrder = 20 + order; L.ghost.renderOrder = 30 + order; L.dl.renderOrder = 15 + order; L.mark.renderOrder = 12 + order; L.lin.renderOrder = 11 + order;
+  for (const o of [L.mesh, L.vis, L.hid, L.ghost, L.dl, L.mark, L.lin]) { o.frustumCulled = false; o.visible = false; scene.add(o); }
   return L;
 }
 function setLines(obj, arr) {
@@ -1374,7 +1399,7 @@ function setLayer(L, A) {
   g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(A.col), 3));
   g.setAttribute('pat', new THREE.BufferAttribute(new Float32Array(A.pat.length ? A.pat : A.pos.length / 3), 1));
   L.mesh.geometry = g; L.mesh.visible = L.mesh.userData.has = A.pos.length > 0;
-  setLines(L.vis, overshoot(A.vis)); setLines(L.hid, A.hid); setLines(L.ghost, A.dash); setLines(L.dl, A.dl);
+  setLines(L.vis, overshoot(A.vis)); setLines(L.hid, A.hid); setLines(L.ghost, A.dash); setLines(L.dl, A.dl); setLines(L.mark, A.mark); setLines(L.lin, overshoot(A.lin));
 }
 const LAYERS = { solid:makeLayer(0), set:makeLayer(1), live:makeLayer(2), ex:makeLayer(3) };
 
@@ -1409,7 +1434,9 @@ function placeSun(cy) {
 }
 
 // settled elements: rebuilt only when one finishes popping in or a cut removes one
-const POP = .22, FLASH = .35;
+// build speed: slow stretches every arrival (ghost, extrusion, element pop), so construction overlaps all over the site
+const buildSlow = () => lerp(6, 1, S.buildSpeed);
+let POP = .22, FLASH = .35;
 const SET = { key:'' };
 /* exploded axo: on big hits the building comes apart into its volumes and elements, upper levels and roof-top pieces
    lifting furthest, everything easing out from the centre, with dashed lines back to where each piece sits */
@@ -1453,7 +1480,8 @@ function updateExploded(cy, t) {
 }
 function applyVis(L, active) {
   L.mesh.visible = active && !!L.mesh.userData.has; L.vis.visible = active && !!L.vis.userData.has; L.ghost.visible = active && !!L.ghost.userData.has;
-  L.dl.visible = active && !!L.dl.userData.has; L.hid.visible = active && S.hidden !== 'off' && !!L.hid.userData.has;
+  L.dl.visible = active && !!L.dl.userData.has; L.hid.visible = active && S.hidden !== 'off' && !CAM.noHidden && !!L.hid.userData.has;
+  L.mark.visible = active && !!L.mark.userData.has; L.lin.visible = active && !!L.lin.userData.has;
 }
 function updateSettled(cy, t) {
   let n = 0, gone = 0, det = 0;
@@ -1491,7 +1519,11 @@ function updateLive(cy, t) {
       const v = op.v;
       if (t < op.t) ghostLoop(A, v.poly, v.z0 * F, v.top, clamp((t - (op.t - op.lead)) / op.lead, 0, 1));
       else if (t < op.settle) {
-        const k = easeOutBack(clamp((t - op.t) / (op.settle - op.t), 0, 1)), base = v.z0 * F;
+        const g = clamp((t - op.t) / (op.settle - op.t), 0, 1), k = buildSlow() > 2 ? ease(g) : easeOutBack(g), base = v.z0 * F;
+        // scaffold: a dashed cage at every floor of the finished block, in the construction ink, until it is built
+        const P = ccw(v.poly).map(([x, y]) => [x * M, y * M]);
+        for (let z = base; z <= v.top + .01; z += F) P.forEach((a, i) => { const b = P[(i + 1) % P.length]; A.dl.push(a[0], a[1], z, b[0], b[1], z); });
+        for (const a of P) A.dl.push(a[0], a[1], base, a[0], a[1], v.top);
         meshInto(A, liveVolGeom(op).mesh, cy.cols, p => [p[0], p[1], base + (p[2] - base) * Math.max(.02, k)], clamp((t - op.t) / (op.settle - op.t), 0, 1));
       }
     } else if (t < op.t) {
@@ -1550,18 +1582,30 @@ function placeCamera(cy, t, dt) {
   const auto = S.shots !== 'off';
   if (auto) {
     const si = Math.max(0, upperBound(SHOT_T, t) - 1); sh = SHOTS[si];
-    const age = t - sh.t, K = SHOT[sh.kind], bar = AN.beatLen * 4;
-    az = sh.az + sh.drift * age;
-    if (sh.ratchet) { const k = Math.floor(age / (2 * bar)), f = clamp((age - k * 2 * bar) / (AN.beatLen * .9), 0, 1); az = sh.az + 90 * (k - 1 + easeOutCubic(f)) + 90; }
-    el = K.el;
-    if (si !== CAM.shot) { CAM.shot = si; CAM.snap = true; }
+    const age = t - sh.t, K = SHOT[sh.kind], bar = AN.beatLen * 4, tk = lerp(0, 2.2, S.turnSpeed);
+    if (K.flat || S.turn === 'still') az = sh.az;
+    else if (S.turn === 'pingpong') az = sh.az + Math.sin(age * .6) * lerp(8, 45, S.turnSpeed);
+    else if (S.turn === 'ratchet' || sh.ratchet) { const per = S.turn === 'ratchet' ? bar : 2 * bar, k = Math.floor(age / per), f = clamp((age - k * per) / (AN.beatLen * .9), 0, 1); az = sh.az + 90 * (k + easeOutCubic(f)); }
+    else az = sh.az + sh.drift * tk * age * (S.turn === 'loud' ? .3 + 1.7 * AN.rms[fr(AN, sh.t)] : 1);
+    el = K.flat ? K.el : K.el + (S.elev - .5) * 40;
+    if (si !== CAM.shot) {
+      const pk = SHOTS[CAM.shot] && SHOT[SHOTS[CAM.shot].kind];
+      const same = pk && !!pk.persp === !!K.persp && !pk.mode && !K.mode && !pk.shear && !K.shear;
+      CAM.shot = si; if (S.cuts !== 'glide' || !same || sh.kind === 'establish') CAM.snap = true;
+    }
   } else { const v = VIEWS[S.view] || VIEWS.iso; az = v[1]; el = v[2]; sh = { kind:'iso', t:0 }; }
-  az += CAM.dragAz; el = clamp(el + CAM.dragEl, -89, 89.5);
+  az += CAM.dragAz; el = clamp(el + CAM.dragEl, -89, 89.9);
+  if (S.cuts === 'glide' && !CAM.snap && CAM.az != null) {   // glide: the angle eases to the new shot instead of cutting
+    const k = 1 - Math.exp(-dt * 2.5), d = ((az - CAM.az + 540) % 360) - 180; az = CAM.az + d * k; el = CAM.el + (el - CAM.el) * k;
+  }
+  CAM.az = az; CAM.el = el;
   const ra = az * D2R, re = el * D2R, R = 800;
   const dir = new THREE.Vector3(Math.cos(re) * Math.sin(ra), -Math.cos(re) * Math.cos(ra), Math.sin(re));
   camera.position.copy(CAM.c).addScaledVector(dir, R); camera.lookAt(CAM.c); camera.updateMatrixWorld();
   const asp = canvas.width / canvas.height, K = SHOT[sh.kind] || SHOT.iso;
   const fin = cy.ptsFinal, nowP = visiblePts(cy, t), use = nowP.length ? nowP : fin;
+  setClip(null); CAM.noHidden = !!K.mode;
+  if (K.mode) return placeEye(cy, t, dt, K, sh, asp, use);
   if (K.persp) return placePersp(cy, t, dt, K, sh, dir, use, fin, asp);
   VIEW = camera;
   const f0 = fitPts(K.fit === 'final' ? fin : K.fit === 'newest' ? newestPts(cy, t) || use : use, asp, K.shear);
@@ -1574,7 +1618,10 @@ function placeCamera(cy, t, dt) {
     const xa = f0.x0 + w * .8, xb = f0.x1 - w * .8;
     cen = f0.at(xa < xb ? lerp(xa, xb, dirn) : (f0.x0 + f0.x1) / 2, (f0.y0 + f0.y1) / 2);
   }
-  half *= (1 + S.margin) * (1 + .18 * EXP);   // room for detached pieces
+  if (S.follow > 0 && K.fit !== 'final' && K.fit !== 'newest') {   // glance at the newest piece
+    const np = newestPts(cy, t); if (np) { const fn = fitPts(np, asp, K.shear); cen = cen.clone().lerp(fn.c, S.follow * .4); }
+  }
+  half *= (1 + S.margin) * (1 + .18 * EXP) * lerp(.65, 1.5, S.dist);   // room for detached pieces, and the distance slider
   half *= 1 - .07 * S.punch * punchAt(t);
   const target = cen;
   if (CAM.snap) { CAM.c.copy(target); CAM.half = half; CAM.snap = false; }
@@ -1587,6 +1634,48 @@ function placeCamera(cy, t, dt) {
     camera.projectionMatrix.multiply(new THREE.Matrix4().set(1, 0, kx, kx * R, 0, 1, ky, ky * R, 0, 0, 1, 0, 0, 0, 0, 1));
     camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
   }
+  if (K.clip) {   // true 2D cuts: a plan through the ground floor, or a section through the middle, facing the camera
+    const b = bbNew(); for (const p of use) bbAdd(b, p);
+    if (K.clip === 'plan') setClip(new THREE.Plane(new THREE.Vector3(0, 0, -1), F * 1.2));
+    else { const n = new THREE.Vector3(-dir.x, -dir.y, 0).normalize(), c = new THREE.Vector3(...bbCenter(b)); setClip(new THREE.Plane(n, -n.dot(c))); }
+  }
+}
+// clipping for the 2D cuts: every fill and line material clips against the same plane
+const CLIP_MATS = [fillMat, visMat, hidMat, ghostMat, dashLineMat, markMat, linMat];
+renderer.localClippingEnabled = true;
+function setClip(plane) { const arr = plane ? [plane] : null; for (const m of CLIP_MATS) if (m.clippingPlanes !== arr && (arr || m.clippingPlanes)) { m.clippingPlanes = arr; m.needsUpdate = true; } }
+// standing in the building: eye height beside it, a walk along it, or inside the biggest block
+function placeEye(cy, t, dt, K, sh, asp, use) {
+  const vs = cy.vols.filter(v => v.t <= t && !v.ex);
+  if (vs.length < 2) return placePersp(cy, t, dt, SHOT.persp, sh, new THREE.Vector3(.5, -.6, .5).normalize(), use, cy.ptsFinal, asp);
+  VIEW = pcam;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, H = 0;
+  for (const v of vs) { x0 = Math.min(x0, v.rect[0] * M); y0 = Math.min(y0, v.rect[1] * M); x1 = Math.max(x1, v.rect[2] * M); y1 = Math.max(y1, v.rect[3] * M); H = Math.max(H, v.top); }
+  const cx = (x0 + x1) / 2, cyy = (y0 + y1) / 2, alongX = x1 - x0 >= y1 - y0, age = t - sh.t, f = clamp(age / (AN.beatLen * 16), 0, 1), back = Math.floor(sh.az / 90) % 2 ? -1 : 1;
+  const free = (x, y) => !vs.some(v => v.z0 === 0 && inPoly(v.poly, x / M, y / M));
+  let pos, look;
+  if (K.mode === 'inside') {
+    const v = vs.filter(q => q.z0 === 0 && q.isRect).sort((a, b) => (b.rect[2] - b.rect[0]) * (b.rect[3] - b.rect[1]) - (a.rect[2] - a.rect[0]) * (a.rect[3] - a.rect[1]))[0] || vs[0];
+    const [a0, b0, a1, b1] = v.rect.map(q => q * M), ax = a1 - a0 >= b1 - b0, u = lerp(.12, .55, f);
+    pos = ax ? [back > 0 ? lerp(a0, a1, u) : lerp(a1, a0, u), (b0 + b1) / 2, v.z0 * F + 1.7] : [(a0 + a1) / 2, back > 0 ? lerp(b0, b1, u) : lerp(b1, b0, u), v.z0 * F + 1.7];
+    look = ax ? [pos[0] + back * 20, pos[1], pos[2] + .8] : [pos[0], pos[1] + back * 20, pos[2] + .8];
+  } else if (K.mode === 'walk') {
+    const side = back;
+    if (alongX) { pos = [lerp(x0 - 8, x1 + 8, f), side > 0 ? y1 + 4 : y0 - 4, 1.7]; look = [pos[0] + 16, cyy, 1.7 + H * .3]; }
+    else { pos = [side > 0 ? x1 + 4 : x0 - 4, lerp(y0 - 8, y1 + 8, f), 1.7]; look = [cx, pos[1] + 16, 1.7 + H * .3]; }
+  } else {
+    // stand out on the plaza, far enough to take the blocks in, with clear ground around you
+    const a = (sh.az + age * sh.drift * .5) * D2R; let d = Math.max(x1 - x0, y1 - y0) * .5 + 10, x = cx + Math.sin(a) * d, y = cyy - Math.cos(a) * d;
+    const clear = (x, y) => [[0, 0], [3, 0], [-3, 0], [0, 3], [0, -3]].every(([dx, dy]) => free(x + dx, y + dy));
+    for (let k = 0; k < 24 && !clear(x, y); k++) { d += 3; x = cx + Math.sin(a) * d; y = cyy - Math.cos(a) * d; }
+    pos = [x, y, 1.7]; look = [cx, cyy, Math.min(H * .35, 12)];
+  }
+  const P = new THREE.Vector3(...pos), L = new THREE.Vector3(...look);
+  if (CAM.snap || !CAM.ep) { CAM.ep = P.clone(); CAM.el3 = L.clone(); CAM.snap = false; }
+  else { const k = 1 - Math.exp(-dt * 4); CAM.ep.lerp(P, k); CAM.el3.lerp(L, k); }
+  pcam.fov = clamp(K.persp * lerp(.75, 1.25, S.fov), 30, 110); pcam.aspect = asp; pcam.near = .1; pcam.far = 3000;
+  pcam.position.copy(CAM.ep); pcam.lookAt(CAM.el3); pcam.updateProjectionMatrix(); pcam.updateMatrixWorld();
+  CAM.D = CAM.ep.distanceTo(CAM.el3);
 }
 // perspective shots: frame the building's bounding sphere, push in slowly over the shot
 function placePersp(cy, t, dt, K, sh, dir, use, fin, asp) {
@@ -1594,13 +1683,18 @@ function placePersp(cy, t, dt, K, sh, dir, use, fin, asp) {
   const b = bbNew(); for (const p of use) bbAdd(b, p);
   const c = bbCenter(b); if (K.low) c[2] = Math.min(c[2], 2.5);
   let rad = 1; for (const p of use) rad = Math.max(rad, Math.hypot(p[0] - c[0], p[1] - c[1], p[2] - c[2]));
-  const vf = K.persp * D2R, hf = 2 * Math.atan(Math.tan(vf / 2) * asp), f = Math.min(vf, hf);
-  let D = rad / Math.sin(f / 2) * (1 + S.margin) * (K.low ? .62 : .95);
-  D *= lerp(1, .86, clamp((t - sh.t) / (AN.beatLen * 16), 0, 1)) * (1 - .05 * S.punch * punchAt(t)) * (1 + .18 * EXP);
+  const fov0 = clamp(K.persp * lerp(.55, 1.5, S.fov), 4, 110), vf = fov0 * D2R, hf = 2 * Math.atan(Math.tan(vf / 2) * asp), f = Math.min(vf, hf);
+  let D = rad / Math.sin(f / 2) * (1 + S.margin) * (K.low ? .62 : .95) * lerp(.6, 1.5, S.dist);
+  D *= lerp(1, .86, clamp((t - sh.t) / (AN.beatLen * 16), 0, 1)) * (1 + .18 * EXP);
+  let fov = fov0;
+  const pk = S.punch * punchAt(t);
+  if (S.dollyZoom) { fov = fov0 * (1 - .3 * pk); D *= Math.tan(fov0 * D2R / 2) / Math.tan(fov * D2R / 2); }   // vertigo: lens punches in, camera pulls back
+  else D *= 1 - .05 * pk;
+  if (S.follow > 0) { const np = newestPts(cy, t); if (np) { const nb = bbNew(); for (const q of np) bbAdd(nb, q); const nc = bbCenter(nb); for (let i = 0; i < 3; i++) c[i] = lerp(c[i], nc[i], S.follow * .35); } }
   const target = new THREE.Vector3(...c);
   if (CAM.snap) { CAM.c.copy(target); CAM.D = D; CAM.snap = false; }
   else { const k = 1 - Math.exp(-dt * 3); CAM.c.lerp(target, k); CAM.D = lerp(CAM.D || D, D, k); }
-  pcam.fov = K.persp; pcam.aspect = asp; pcam.near = Math.max(.3, CAM.D * .02); pcam.far = CAM.D * 6;
+  pcam.fov = fov; pcam.aspect = asp; pcam.near = Math.max(.3, CAM.D * .02); pcam.far = CAM.D * 6;
   pcam.position.copy(CAM.c).addScaledVector(dir, CAM.D); pcam.lookAt(CAM.c);
   pcam.updateProjectionMatrix(); pcam.updateMatrixWorld();
 }
@@ -1793,7 +1887,7 @@ function renderAt(t, dt) {
   const cy = cycleAt(t);
   if (cy.idx !== lastCy || Math.abs(t - lastT) > .5) { CAM.snap = true; lastCy = cy.idx; }
   lastT = t;
-  PAT = S.hatch > 0 ? cy.pat : null; PROG = cy.prog;
+  PAT = S.hatch > 0 ? cy.pat : null; PROG = cy.prog; POP = .22 * buildSlow(); FLASH = .35 * buildSlow();
   placeSun(cy);
   updateSolid(cy, t); updateSettled(cy, t); updateLive(cy, t);
   const detached = updateExploded(cy, t); EXP = detached ? 1 : 0;
@@ -1803,11 +1897,13 @@ function renderAt(t, dt) {
   placeCamera(cy, t, dt);
   // pixels per CSS pixel of the preview: lines and dots keep their weight relative to the frame at any export size
   const bw = canvas.width, bh = canvas.height, dpr = bh / (innerHeight > 100 ? innerHeight : 900), lw = lerp(.6, 2.6, S.lineW) * dpr, upp = VIEW === pcam ? 2 * (CAM.D || 50) * Math.tan(pcam.fov * D2R / 2) / bh : (camera.top - camera.bottom) / bh;
-  for (const m of [visMat, hidMat, ghostMat]) m.resolution.set(bw, bh);
-  visMat.linewidth = lw; hidMat.linewidth = lw * .75; ghostMat.linewidth = lw;
+  for (const m of [visMat, hidMat, ghostMat, markMat, linMat]) m.resolution.set(bw, bh);
+  visMat.linewidth = lw; hidMat.linewidth = lw * .75; ghostMat.linewidth = lw; markMat.linewidth = lw * .8; linMat.linewidth = lw;
+  const inks = S.lineInks === 'diverse' ? cy.inks : { mark:P.line, dash:P.line, lin:P.line };
+  markMat.color.set(inks.mark); linMat.color.set(inks.lin);
   hidMat.dashSize = (S.hidden === 'dashed' ? 6 : 1.6) * dpr * upp; hidMat.gapSize = (S.hidden === 'dashed' ? 4 : 3) * dpr * upp;
   ghostMat.dashSize = 5 * dpr * upp; ghostMat.gapSize = 4 * dpr * upp;
-  dashLineMat.resolution.set(bw, bh); dashLineMat.linewidth = lw * .9; dashLineMat.color.set(P.line);
+  dashLineMat.resolution.set(bw, bh); dashLineMat.linewidth = lw * .9; dashLineMat.color.set(inks.dash);
   dashLineMat.dashSize = 6 * dpr * upp; dashLineMat.gapSize = 4 * dpr * upp;
   // hatch ink is the line colour pushed a little further from the paper, so fine strokes still read on a mid-tone fill
   const bgL = new THREE.Color(P.bg).getHSL({}).l, ink = new THREE.Color(P.line).lerp(new THREE.Color(bgL < .35 ? '#ffffff' : '#000000'), .2);
@@ -1822,8 +1918,13 @@ function renderAt(t, dt) {
 function frame(now) {
   requestAnimationFrame(frame);
   if (!AN || !CYCLES.length || EXPORT) return;
-  const dt = Math.min(.1, (now - lastNow) / 1000); lastNow = now;
-  const t = curTime(), cy = renderAt(t, dt);
+  // the picture advances only at the film frame rate, so 8 or 12 fps hold each frame like old stop-motion;
+  // paused, the projector keeps running so grain and flicker stay alive and setting changes show
+  const t = curTime(), live = A.buffer ? A.playing : !DEMO.paused, fps = +S.fps || 24;
+  const key = live ? Math.floor(t * fps + 1e-6) : Math.floor(now / 1000 * fps);
+  if (key === frame.lastKey) return;
+  frame.lastKey = key; lastNow = now;
+  const cy = renderAt(live ? key / fps : t, 1 / fps);
   if (!seeking) $('#seek').value = t / AN.dur * 1000;
   const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
   $('#time').textContent = `${fmt(t)} / ${fmt(AN.dur)}`;
@@ -1863,7 +1964,7 @@ async function exportMP4(sizeKey, lengthKey, file) {
   if (!A.buffer || EXPORT) return;
   if (!window.VideoEncoder || !window.Mp4Muxer) return setExportMsg('MP4 export needs a recent Chrome, Edge or Safari.');
   initAudio(); pause();
-  const [w, h] = SIZES[sizeKey], fps = S.fps, sr = 48000, ch = Math.min(2, A.buffer.numberOfChannels);
+  const [w, h] = SIZES[sizeKey], fps = +S.fps || 24, sr = 48000, ch = Math.min(2, A.buffer.numberOfChannels);
   const songStart = lengthKey === 'clip' ? A.offset : 0;
   const songDur = lengthKey === 'clip' ? Math.min(30, A.buffer.duration - songStart) : A.buffer.duration;
   // silent padding: the empty site before the music, the last building holding after it
@@ -1946,76 +2047,117 @@ canvas.addEventListener('pointerup', () => { drag = null; canvas.classList.remov
 canvas.addEventListener('dblclick', () => { CAM.dragAz = CAM.dragEl = 0; });
 
 /* ------------------------------------------------------------------ UI */
-let vp = $('#viewPanel');
-function addSelect(key, label, opts, on) {
+/* panels, as in the Sculpture Machine: each control is added to a named panel, and one panel is open at a time */
+function addSelect(panel, key, label, opts, on = nop) {
   const l = document.createElement('label'); l.textContent = label;
   const s = document.createElement('select');
   for (const [v, t] of opts) { const o = document.createElement('option'); o.value = v; o.textContent = t; s.appendChild(o); }
   s.value = S[key]; s.onchange = () => { S[key] = s.value; saveSettings(); on(); };
-  l.appendChild(s); vp.appendChild(l);
+  l.appendChild(s); $(panel).appendChild(l); return s;
 }
-function addSlider(key, label, on) {
+function addSlider(panel, key, label, on = nop) {
   const l = document.createElement('label'); l.textContent = label;
   const i = document.createElement('input'); i.type = 'range'; i.min = 0; i.max = 1; i.step = .01; i.value = S[key];
   i.oninput = () => { S[key] = +i.value; saveSettings(); on(); };
-  l.appendChild(i); vp.appendChild(l);
+  l.appendChild(i); $(panel).appendChild(l); return i;
 }
-function addCheck(key, label, on) {
+function addCheck(panel, key, label, on = nop) {
   const l = document.createElement('label'); l.className = 'check';
   const i = document.createElement('input'); i.type = 'checkbox'; i.checked = S[key];
   i.onchange = () => { S[key] = i.checked; saveSettings(); on(); };
-  l.append(i, label); vp.appendChild(l);
+  l.append(i, label); $(panel).appendChild(l); return i;
 }
+function addButton(panel, label, on) { const b = document.createElement('button'); b.textContent = label; b.onclick = on; $(panel).appendChild(b); return b; }
+function addHint(panel, text) { const d = document.createElement('div'); d.className = 'hint'; d.textContent = text; $(panel).appendChild(d); return d; }
 let regenTimer = 0;
+function nop() {}
 const regen = () => { clearTimeout(regenTimer); regenTimer = setTimeout(() => rebuildAll(), 200); };
 const recolour = () => { assignPalettes(); SOL.cyc = -1; SET.key = ''; };
-const nop = () => {};
-addSelect('shots', 'Camera', [['1', 'New shot every bar'], ['2', 'Every 2 bars'], ['4', 'Every 4 bars'], ['8', 'Every 8 bars'], ['off', 'Fixed view']], () => { buildShots(); CAM.snap = true; });
-addSelect('camStyle', 'Camera style', [['mixed', 'Mixed'], ['axo', 'Axo only'], ['persp', 'Mostly perspective'], ['flat', 'Flat & oblique']], () => { buildShots(); CAM.snap = true; });
-addSelect('view', 'Fixed view', Object.entries(VIEWS).map(([k, v]) => [k, v[0]]), () => { CAM.snap = true; });
-addSelect('palette', 'Colours', [['generated', 'New palette every cycle'], ...Object.entries(FIXED).map(([k, v]) => [k, v.name])], recolour);
-addSlider('variety', 'Colour variety', recolour);
-addSelect('shading', 'Shading', [['flat', 'Flat'], ['three', 'Three-tone']], () => { SOL.cyc = -1; SET.key = ''; });
-addSelect('hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashed'], ['off', 'Off']], nop);
-addSlider('growth', 'Growth', regen);
-addSelect('form', 'Form', [['mixed', 'Mixed (one per building)'], ['long', 'Long'], ['cluster', 'Clustered'], ['tall', 'Tall']], regen);
-addSlider('unify', 'Late unifying cuts', regen);
-addSelect('actions', 'Actions per hit', [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']], () => { S.actions = +S.actions; regen(); });
-addSlider('lineW', 'Line width', nop);
-addSlider('hatch', 'Hatching & dot screens', () => { SOL.cyc = -1; SET.key = ''; });
-addSlider('hatchSize', 'Hatch spacing', nop);
-addSelect('explodeMode', 'Big beats detach pieces', [['beats', 'On'], ['off', 'Off']], nop);
-addSlider('explode', 'Detach distance', nop);
-addSelect('shadow', 'Hard shadows', [['off', 'Off'], ['solid', 'Solid'], ['hatched', 'Hatched']], () => { SOL.cyc = -1; SET.key = ''; });
-addSlider('sunAz', 'Sun direction', () => { SOL.cyc = -1; SET.key = ''; });
-addSlider('punch', 'Kick zoom', nop);
-addSlider('margin', 'Margin', nop);
-const seedBtn = document.createElement('button'); seedBtn.textContent = 'New seed'; seedBtn.onclick = () => { S.seed = (S.seed % 9999) + 1; saveSettings(); rebuildAll(); };
-vp.appendChild(seedBtn);
-const statsEl = document.createElement('div'); statsEl.className = 'stats'; vp.appendChild(statsEl);
-// the look panel: paper and film
+const rebuildLines = () => { SOL.cyc = -1; SET.key = ''; };
+const reshoot = () => { buildShots(); CAM.snap = true; };
+
+// build: what the song makes
+const BP = '#buildPanel';
+addSelect(BP, 'form', 'Form', [['mixed', 'Mixed (one per building)'], ['long', 'Long'], ['cluster', 'Clustered'], ['tall', 'Tall']], regen);
+addSlider(BP, 'growth', 'Growth: sparse ↔ dense', regen);
+addSlider(BP, 'buildSpeed', 'Build speed: slow ↔ fast', regen);
+addSelect(BP, 'actions', 'Actions per hit', [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']], () => { S.actions = +S.actions; regen(); });
+addSlider(BP, 'unify', 'Late unifying cuts', regen);
+addSelect(BP, 'explodeMode', 'Big beats detach pieces', [['beats', 'On'], ['off', 'Off']]);
+addSlider(BP, 'explode', 'Detach distance');
+addSlider(BP, 'pitchSens', 'Note sensitivity (windows, trusses)', regen);
+addButton(BP, 'New seed', () => { S.seed = (S.seed % 9999) + 1; saveSettings(); rebuildAll(); });
+const statsEl = document.createElement('div'); statsEl.className = 'stats'; $(BP).appendChild(statsEl);
+
+// camera
+const CP = '#cameraPanel';
+addSelect(CP, 'shots', 'Shots', [['1', 'New shot every bar'], ['2', 'Every 2 bars'], ['4', 'Every 4 bars'], ['8', 'Every 8 bars'], ['16', 'Every 16 bars'], ['off', 'Fixed view']], reshoot);
+addSelect(CP, 'camStyle', 'Camera style', [['mixed', 'Mixed'], ['axo', 'Axo only'], ['persp', 'Mostly perspective'], ['eye', 'Eye level & inside'], ['flat', 'Flat 2D & oblique']], reshoot);
+addSelect(CP, 'turn', 'Turntable', [['drift', 'Drift per shot'], ['ratchet', 'Ratchet on the bar'], ['loud', 'Speed follows loudness'], ['pingpong', 'Rock back and forth'], ['still', 'Still']]);
+addSlider(CP, 'turnSpeed', 'Turn speed');
+addSlider(CP, 'dist', 'Distance: close ↔ far');
+addSlider(CP, 'elev', 'Low ↔ overhead');
+addSlider(CP, 'fov', 'Lens: long ↔ wide');
+addSlider(CP, 'punch', 'Kick punch-in');
+addSlider(CP, 'follow', 'Glance at new pieces');
+addSelect(CP, 'cuts', 'Between shots', [['cut', 'Hard cut'], ['glide', 'Glide']]);
+addCheck(CP, 'dollyZoom', 'Dolly-zoom on kicks (perspective shots)');
+addSlider(CP, 'margin', 'Margin');
+addSelect(CP, 'view', 'Fixed view (when shots are off)', Object.entries(VIEWS).map(([k, v]) => [k, v[0]]), () => { CAM.snap = true; });
+
+// colour
+const KP = '#colourPanel';
+addSelect(KP, 'palette', 'Colours', [['generated', 'New palette every building'], ...Object.entries(FIXED).map(([k, v]) => [k, v.name])], recolour);
+addSlider(KP, 'variety', 'Colour variety: tonal ↔ many programs', recolour);
+addSelect(KP, 'shading', 'Shading', [['flat', 'Flat'], ['three', 'Three-tone']], rebuildLines);
+addSlider(KP, 'hatch', 'Hatching & dot screens', rebuildLines);
+addSlider(KP, 'hatchSize', 'Hatch spacing');
+addSelect(KP, 'hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashed'], ['off', 'Off']]);
+addSlider(KP, 'lineW', 'Line weight');
+addSelect(KP, 'lineInks', 'Line colours', [['diverse', 'Coloured pencils (by line type)'], ['mono', 'One ink']]);
+addSelect(KP, 'shadow', 'Hard shadows', [['off', 'Off'], ['solid', 'Solid'], ['hatched', 'Hatched']], rebuildLines);
+addSlider(KP, 'sunAz', 'Sun direction', rebuildLines);
+const swatchBox = document.createElement('label'); swatchBox.innerHTML = '<span>Colours at the playhead</span><div class="swatches"></div>'; $(KP).appendChild(swatchBox);
+addButton(KP, 'Shuffle colours', () => { S.palShuffle = (S.palShuffle || 0) + 1; saveSettings(); recolour(); showSwatches(); });
+function showSwatches() {
+  if (!CYCLES.length) return;
+  const cy = cycleAt(curTime()), P = cy.pal, list = [P.bg, P.wall, P.roof, P.slab, P.elem, P.struct, P.line, ...(cy.prog ? cy.prog.cols.slice(0, cy.prog.n).map(c => '#' + c[ROLE.wall].getHexString()) : [])];
+  swatchBox.querySelector('.swatches').innerHTML = list.map(c => `<i style="background:${c}"></i>`).join('');
+}
+setInterval(() => { if ($(KP).classList.contains('open')) showSwatches(); }, 500);
+
+// look: paper and film
+const LP = '#lookPanel';
 const LOOKS = {
   drawing:{ paper:.55, tooth:.6, age:.15, bleed:.12, wobble:.25, wash:.35, overshoot:.35, grain:.3, flicker:.2, dust:.3, scratch:.2, weave:.25, vignette:.45, chroma:.12, halation:.08, saturation:.46, warmth:.56 },
   archive:{ paper:.8, tooth:.8, age:.4, bleed:.3, wobble:.4, wash:.5, overshoot:.5, grain:.45, flicker:.35, dust:.5, scratch:.4, weave:.4, vignette:.6, chroma:.2, halation:.1, saturation:.35, warmth:.66 },
   film:{ paper:.25, tooth:.3, age:.1, bleed:.1, wobble:.15, wash:.2, overshoot:.15, grain:.55, flicker:.45, dust:.5, scratch:.5, weave:.4, vignette:.55, chroma:.35, halation:.3, saturation:.5, warmth:.5 },
   clean:{ paper:0, tooth:0, age:0, bleed:0, wobble:0, wash:0, overshoot:0, grain:0, flicker:0, dust:0, scratch:0, weave:0, vignette:0, chroma:0, halation:0, saturation:.5, warmth:.5 },
 };
-vp = $('#lookPanel');
 const lookSliders = {};
-const rebuildLines = () => { SOL.cyc = -1; SET.key = ''; };
-addSelect('look', 'Look', [['drawing', 'Old drawing'], ['archive', 'Well-worn drawing'], ['film', 'Film print'], ['clean', 'Clean'], ['custom', 'Custom']], () => {
+const lookSel = addSelect(LP, 'look', 'Look', [['drawing', 'Old drawing'], ['archive', 'Well-worn drawing'], ['film', 'Film print'], ['clean', 'Clean'], ['custom', 'Custom']], () => {
   const L = LOOKS[S.look]; if (!L) return; Object.assign(S, L); saveSettings();
   for (const k in lookSliders) lookSliders[k].value = S[k];
   rebuildLines();
 });
-const lookSlider = (key, label, on = nop) => { addSlider(key, label, () => { if (S.look !== 'custom') { S.look = 'custom'; vp.querySelector('select').value = 'custom'; saveSettings(); } on(); }); lookSliders[key] = vp.lastChild.querySelector('input'); };
+const lookSlider = (key, label, on = nop) => { lookSliders[key] = addSlider(LP, key, label, () => { if (S.look !== 'custom') { S.look = 'custom'; lookSel.value = 'custom'; saveSettings(); } on(); }); };
 for (const [k, l] of [['paper', 'Paper texture'], ['tooth', 'Paper tooth'], ['age', 'Yellowing'], ['bleed', 'Ink bleed'], ['wash', 'Uneven wash'], ['wobble', 'Hand wobble']]) lookSlider(k, l);
 lookSlider('overshoot', 'Line overshoot', rebuildLines);
 for (const [k, l] of [['grain', 'Film grain'], ['flicker', 'Flicker'], ['dust', 'Dust & specks'], ['scratch', 'Scratches & hairs'], ['weave', 'Gate weave'], ['vignette', 'Vignette'],
   ['chroma', 'Colour fringe'], ['halation', 'Halation'], ['saturation', 'B&W ↔ saturated'], ['warmth', 'Cool ↔ warm']]) lookSlider(k, l);
-addCheck('splices', 'Splice on every shot', nop);
-addCheck('flash', 'Flash on wipe', nop);
-$('#exportBtn').onclick = () => { $('#exportPanel').classList.toggle('open'); $('#exportBtn').classList.toggle('on'); };
+addSelect(LP, 'fps', 'Frame rate (preview and export)', [['8', '8 · hand-cranked'], ['12', '12 · on twos'], ['24', '24 · film'], ['30', '30'], ['60', '60 · smooth']], () => { S.fps = +S.fps; });
+addCheck(LP, 'splices', 'Splice on every shot');
+addCheck(LP, 'flash', 'Flash on wipe');
+addHint(LP, 'space play · ← → seek · r new seed · b c k l e panels · f fullscreen');
+
+const PANELS = [['#buildBtn', BP], ['#cameraBtn', CP], ['#colourBtn', KP], ['#lookBtn', LP], ['#exportBtn', '#exportPanel']];
+function togglePanel(btn, panel) {
+  const open = !$(panel).classList.contains('open');
+  for (const [b, q] of PANELS) { $(b).classList.remove('on'); $(q).classList.remove('open'); }
+  if (open) { $(btn).classList.add('on'); $(panel).classList.add('open'); if (panel === KP) showSwatches(); }
+}
+for (const [b, q] of PANELS) $(b).onclick = () => togglePanel(b, q);
+$('#fsBtn').onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.();
 $('#exp-go').onclick = async () => {
   if (EXPORT) return;
   if (!A.buffer) return setExportMsg('load a song first: the demo pattern has no audio to export');
@@ -2032,8 +2174,6 @@ $('#exp-q').value = S.expQ;
 $('#exp-q').onchange = e => { S.expQ = e.target.value; saveSettings(); };
 $('#exp-pad').onchange = e => { S.pad = +e.target.value; saveSettings(); };
 $('#exp-cancel').onclick = () => { if (EXPORT) EXPORT.cancel = true; };
-$('#lookBtn').onclick = () => { $('#lookPanel').classList.toggle('open'); $('#lookBtn').classList.toggle('on'); };
-$('#viewBtn').onclick = () => { vp.classList.toggle('open'); $('#viewBtn').classList.toggle('on'); };
 $('#playBtn').onclick = () => { if (!A.buffer) { DEMO.paused = !DEMO.paused; if (!DEMO.paused) DEMO.start = performance.now() / 1000 - DEMO.at; updateUI(); } else if (A.playing) pause(); else play(); };
 $('#loadBtn').onclick = () => $('#file').click();
 $('#file').addEventListener('change', async e => { const f = e.target.files[0]; if (f) massingLoad(await f.arrayBuffer(), f.name); });
@@ -2048,6 +2188,9 @@ addEventListener('keydown', e => {
   if (e.code === 'Space') { e.preventDefault(); $('#playBtn').click(); }
   else if (e.code === 'ArrowRight') seek(curTime() + 5);
   else if (e.code === 'ArrowLeft') seek(curTime() - 5);
+  else if (e.key === 'r') { S.seed = (S.seed % 9999) + 1; saveSettings(); rebuildAll(); }
+  else if (e.key === 'f') $('#fsBtn').click();
+  else { const k = { b:0, c:1, k:2, l:3, e:4 }[e.key]; if (k != null) togglePanel(...PANELS[k]); }
 });
 let idleT = 0;
 const wake = () => { document.body.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => document.body.classList.add('idle'), 2800); };
