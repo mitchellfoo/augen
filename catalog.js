@@ -18,6 +18,14 @@ window.AUGEN = {
       accent: '#e8553a',
       art: 'sculpture',
     },
+    {
+      id: 'massing',
+      title: 'Massing Machine',
+      blurb: 'A building drawn as an architect\'s axo: flat pink walls, tan roofs, cut slabs and dotted hidden lines. A static model for now; the song comes next.',
+      tags: ['3D', 'axo', 'booleans'],
+      accent: '#e2b2d2',
+      art: 'massing',
+    },
   ],
   // Tracks bundled in audio/, offered alongside upload.
   library: [

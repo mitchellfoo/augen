@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Massing Machine</title>
+<style>
+  :root { --ink:#f3ecd8; --panel:rgba(14,12,10,.78); --line:rgba(243,236,216,.2); --accent:#e2b2d2; }
+  html,body { margin:0; height:100%; background:#43966f; overflow:hidden; color:var(--ink);
+    font:13px/1.3 Futura,"Avenir Next","Helvetica Neue",Arial,sans-serif; }
+  canvas#view { position:fixed; inset:0; width:100%; height:100%; display:block; cursor:grab; touch-action:none; }
+  canvas#view.drag { cursor:grabbing; }
+  .ui { position:fixed; left:16px; right:16px; bottom:16px; display:flex; flex-direction:column; gap:8px; }
+  .bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; background:var(--panel); backdrop-filter:blur(8px);
+    -webkit-backdrop-filter:blur(8px); border:1px solid var(--line); border-radius:6px; padding:8px 10px; }
+  button,select { font:inherit; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink);
+    background:transparent; border:1px solid var(--line); border-radius:4px; padding:6px 10px; cursor:pointer; }
+  select option { background:#1a1714; }
+  button:hover,select:hover { border-color:var(--ink); }
+  button.on { background:var(--ink); color:#0c0a08; }
+  button:disabled { opacity:.4; cursor:default; }
+  .settings { display:none; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px 18px; max-height:52vh; overflow:auto; }
+  .settings.open { display:grid; }
+  .settings label { display:flex; flex-direction:column; gap:4px; font-size:10px; letter-spacing:.12em; text-transform:uppercase; opacity:.85; }
+  .settings input[type=range] { accent-color:var(--accent); width:100%; }
+  .settings label.check { flex-direction:row; align-items:center; gap:8px; }
+  .name { flex:1; min-width:120px; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .stats { font-size:11px; opacity:.6; font-variant-numeric:tabular-nums; }
+  #status { position:fixed; top:16px; left:16px; font-size:11px; letter-spacing:.08em; text-transform:uppercase; opacity:.75; }
+  @media (max-width:640px) { .hide-sm { display:none; } }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="status">building…</div>
+
+<div class="ui">
+  <div class="settings bar" id="viewPanel"></div>
+  <div class="bar">
+    <button id="loadBtn">Load</button>
+    <input type="file" id="file" accept="audio/*,video/*" hidden>
+    <button id="playBtn" disabled>Play</button>
+    <span class="name" id="name">No track · static model</span>
+    <span class="stats hide-sm" id="stats"></span>
+    <button id="viewBtn">View</button>
+  </div>
+</div>
+
+<script>
+/* ------------------------------------------------------------------ audio (classic script, so hub.js finds loadArrayBuffer) */
+// Step 1 of the plan is a static drawing: the track only loads and plays. The building does not listen yet.
+const A = { ctx:null, buffer:null, src:null, t0:0, offset:0, playing:false, name:'' };
+function initAudio() { if (A.ctx) { A.ctx.resume(); return; } A.ctx = new (window.AudioContext || window.webkitAudioContext)(); }
+const cleanName = n => n.split('/').pop().replace(/\.[a-z0-9]+$/i,'').replace(/[_]+/g,' ').trim();
+async function loadArrayBuffer(ab, name, autoplay = true) {
+  initAudio(); pause();
+  let buf;
+  try { buf = await A.ctx.decodeAudioData(ab); } catch (e) { document.getElementById('name').textContent = 'Could not decode that file'; return; }
+  A.buffer = buf; A.name = cleanName(name); A.offset = 0;
+  document.getElementById('name').textContent = A.name + ' · static model';
+  document.getElementById('playBtn').disabled = false;
+  if (autoplay) play();
+}
+function play() {
+  if (!A.buffer || A.playing) return;
+  initAudio();
+  const s = A.ctx.createBufferSource(); s.buffer = A.buffer; s.connect(A.ctx.destination);
+  s.start(0, A.offset); A.t0 = A.ctx.currentTime - A.offset; A.src = s; A.playing = true;
+  s.onended = () => { if (A.src === s) { A.playing = false; A.src = null; A.offset = 0; playBtn.textContent = 'Play'; } };
+  playBtn.textContent = 'Pause';
+}
+function pause() {
+  if (!A.playing) return;
+  A.offset = A.ctx.currentTime - A.t0; const s = A.src; A.src = null; A.playing = false; s.stop();
+  playBtn.textContent = 'Play';
+}
+const playBtn = document.getElementById('playBtn');
+playBtn.onclick = () => A.playing ? pause() : play();
+document.getElementById('loadBtn').onclick = () => document.getElementById('file').click();
+document.getElementById('file').addEventListener('change', async e => { const f = e.target.files[0]; if (f) loadArrayBuffer(await f.arrayBuffer(), f.name); });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', async e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) loadArrayBuffer(await f.arrayBuffer(), f.name); });
+</script>
+
+<script type="importmap">{ "imports": { "three": "./vendor/three/three.module.js" } }</script>
+<script type="module">
+import * as THREE from 'three';
+import { LineSegments2 } from './vendor/three/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from './vendor/three/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from './vendor/three/lines/LineMaterial.js';
+import Manifold3d from './vendor/manifold/manifold.js';
+
+const $ = s => document.querySelector(s);
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+
+/* ------------------------------------------------------------------ settings */
+const S = { view:'iso', turn:'off', palette:'axo', shading:'flat', lineW:.3, hidden:'dotted', plinth:false, margin:.15 };
+try { Object.assign(S, JSON.parse(localStorage.getItem('massing-settings') || '{}')); } catch (e) {}
+const saveSettings = () => { try { localStorage.setItem('massing-settings', JSON.stringify(S)); } catch (e) {} };
+
+/* ------------------------------------------------------------------ palettes: one colour per surface role */
+// sampled from the reference axos; generated palettes per cycle come later
+const PALETTES = {
+  axo:       { name:'Presentation axo', bg:'#43966f', wall:'#e2b2d2', roof:'#d4b990', slab:'#a3c1d8', line:'#7a7a80' },
+  massing:   { name:'Massing only',     bg:'#43966f', wall:'#e2b2d2', roof:'#e2b2d2', slab:'#e2b2d2', line:'#7a7a80' },
+  blueprint: { name:'Blueprint',        bg:'#1f3f8f', wall:'#2d55b0', roof:'#3a68c8', slab:'#5d86d8', line:'#e8eefc' },
+  paper:     { name:'Warm paper',       bg:'#efe6d2', wall:'#f7f1e3', roof:'#e3cfa5', slab:'#cfdbe0', line:'#4a4440' },
+  riso:      { name:'Riso',             bg:'#f3ecd8', wall:'#ff8fb1', roof:'#f6cf1d', slab:'#1aa3c8', line:'#1d3e9e' },
+};
+
+/* ------------------------------------------------------------------ the model: a hardcoded building in grid units */
+// Plan units are modules (3 m), heights are floors (3.5 m). Later the song writes this model; for now it is fixed.
+const M = 3, F = 3.5;
+const rect = (x, y, w, d) => [[x, y], [x + w, y], [x + w, y + d], [x, y + d]];
+const MODEL = {
+  volumes: [
+    { id:'head',   poly:rect(0, -6, 2, 8),    floors:2 },
+    { id:'stair',  poly:rect(1, 2, 1, 1),     floors:3 },
+    { id:'link',   poly:rect(2, 0, 12, 1),    floors:1 },
+    { id:'pav',    poly:rect(4.5, -2.5, 2, 2.5), floors:1, roof:{ type:'gable', ridge:'y', pitch:30 } },
+    { id:'wedge',  poly:[[8, 1], [11, 1], [13.31, -3], [10.31, -3]], floors:1 },   // a wing skewed 30° off the spine
+    { id:'end',    poly:rect(14, -1, 5, 2.5), floors:2 },
+  ],
+  // ground pads (pale blue slabs), like the terrace at the end of reference image 2
+  pads: [ { poly:rect(19, -1, 2, 2.5) } ],
+  cuts: [
+    { kind:'notch',    poly:rect(18, -1, 1.01, 1.01), z0:1, z1:2.01 },        // top-floor corner off the end block
+    { kind:'undercut', poly:rect(-0.01, -6.01, 2.02, 2.01), z0:-.01, z1:1 },  // ground floor removed under the head: a cantilever
+    { kind:'slice',    at:[17, 0, 2], tilt:22, az:0 },                        // a tilted plane shaves the end block into a wedge
+  ],
+};
+
+/* ------------------------------------------------------------------ geometry: manifold union(volumes) − cuts, every face tagged by source */
+const wasm = await Manifold3d(); wasm.setup();
+const { Manifold, CrossSection } = wasm;
+const SOURCES = new Map();   // manifold originalID → { kind, role rule }
+function tag(m, kind) { const o = m.asOriginal(); m.delete(); SOURCES.set(o.originalID(), { kind }); return o; }
+// footprints may be drawn either way round; manifold wants them counter-clockwise or it fills nothing
+const ccw = poly => { let a = 0; for (let i = 0; i < poly.length; i++) { const [x0, y0] = poly[i], [x1, y1] = poly[(i + 1) % poly.length]; a += x0 * y1 - x1 * y0; } return a < 0 ? [...poly].reverse() : poly; };
+const section = poly => new CrossSection(ccw(poly).map(([x, y]) => [x * M, y * M]));
+const prism = (poly, z0, z1) => section(poly).extrude((z1 - z0) * F).translate([0, 0, z0 * F]);
+
+function gableRoof(poly, z, pitch, ridge) {
+  const xs = poly.map(p => p[0] * M), ys = poly.map(p => p[1] * M);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const span = ridge === 'y' ? x1 - x0 : y1 - y0, len = ridge === 'y' ? y1 - y0 : x1 - x0;
+  const h = span / 2 * Math.tan(pitch * Math.PI / 180);
+  // a triangle in (span, height), extruded along the ridge: rotating about x turns the extrusion axis into −y
+  let m = new CrossSection([[0, 0], [span, 0], [span / 2, h]]).extrude(len).rotate([90, 0, 0]);
+  m = ridge === 'y' ? m.translate([x0, y1, z]) : m.rotate([0, 0, -90]).translate([x0, y1, z]);
+  return m;
+}
+function sliceCutter(c) {
+  const L = 400;   // a half-space: everything above the plane through c.at, tilted c.tilt° towards +x, turned c.az° about z
+  return Manifold.cube([L, L, L]).translate([-L / 2, -L / 2, 0]).rotate([0, c.tilt, 0]).rotate([0, 0, c.az])
+    .translate([c.at[0] * M, c.at[1] * M, c.at[2] * F]);
+}
+
+function buildSolid() {
+  SOURCES.clear();
+  const t0 = performance.now(), parts = [];
+  for (const v of MODEL.volumes) {
+    parts.push(tag(prism(v.poly, 0, v.floors), 'volume'));
+    if (v.roof && v.roof.type === 'gable') parts.push(tag(gableRoof(v.poly, v.floors * F, v.roof.pitch, v.roof.ridge), 'volume'));
+  }
+  for (const p of MODEL.pads) parts.push(tag(section(p.poly).extrude(.25), 'pad'));
+  if (S.plinth) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const v of [...MODEL.volumes, ...MODEL.pads]) for (const [x, y] of v.poly) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+    parts.push(tag(section(rect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2)).extrude(.4).translate([0, 0, -.4]), 'pad'));
+  }
+  // an empty part (a degenerate footprint) makes manifold's union come back empty, so drop those first
+  const solidParts = parts.filter(p => !p.isEmpty());
+  let solid = Manifold.union(solidParts); parts.forEach(p => p.delete());
+  for (const c of MODEL.cuts) {
+    const cutter = tag(c.kind === 'slice' ? sliceCutter(c) : prism(c.poly, c.z0, c.z1), c.kind === 'slice' ? 'slice' : 'cut');
+    const next = solid.subtract(cutter); solid.delete(); cutter.delete(); solid = next;
+  }
+  const mesh = solid.getMesh(); solid.delete();
+  return { mesh, ms:performance.now() - t0 };
+}
+
+// role of one triangle from its normal and where it came from
+const ROLE = { wall:0, roof:1, slab:2, under:3 };
+function roleOf(kind, nz) {
+  if (nz < -.3) return ROLE.under;
+  if (nz > .3) return kind === 'cut' || kind === 'pad' ? ROLE.slab : ROLE.roof;   // a slice leaves a sloped roof, a notch reveals a floor
+  return kind === 'pad' ? ROLE.under : ROLE.wall;
+}
+
+/* ------------------------------------------------------------------ three.js scene */
+const canvas = $('#view');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+const scene = new THREE.Scene();
+const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, .1, 2000);
+camera.up.set(0, 0, 1);
+
+let fillMesh = null, lineVis = null, lineHid = null, ROLES = null, NORMALS = null, CENTER = new THREE.Vector3(), CORNERS = [];
+const fillMat = new THREE.MeshBasicMaterial({ vertexColors:true, side:THREE.DoubleSide, polygonOffset:true, polygonOffsetFactor:2, polygonOffsetUnits:2 });
+const visMat = new LineMaterial({ color:0x7a7a80, linewidth:1.5 });
+visMat.depthWrite = false;
+const hidMat = new LineMaterial({ color:0x7a7a80, linewidth:1.5, dashed:true, dashSize:1, gapSize:1, transparent:true, opacity:.5 });
+hidMat.depthWrite = false; hidMat.depthFunc = THREE.GreaterDepth;
+
+function rebuild() {
+  const { mesh, ms } = buildSolid();
+  const np = mesh.numProp, vp = mesh.vertProperties, tv = mesh.triVerts, nTri = tv.length / 3;
+  const pos = new Float32Array(nTri * 9);
+  ROLES = new Uint8Array(nTri); NORMALS = new Float32Array(nTri * 3);
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
+  for (let r = 0; r < mesh.runOriginalID.length; r++) {
+    const kind = (SOURCES.get(mesh.runOriginalID[r]) || { kind:'volume' }).kind;
+    for (let t = mesh.runIndex[r] / 3; t < mesh.runIndex[r + 1] / 3; t++) {
+      for (let k = 0; k < 3; k++) { const v = tv[t * 3 + k] * np; pos.set([vp[v], vp[v + 1], vp[v + 2]], t * 9 + k * 3); }
+      a.fromArray(pos, t * 9); b.fromArray(pos, t * 9 + 3); c.fromArray(pos, t * 9 + 6);
+      n.subVectors(b, a).cross(c.clone().sub(a)).normalize();
+      n.toArray(NORMALS, t * 3);
+      ROLES[t] = roleOf(kind, n.z);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(nTri * 9), 3));
+  geo.computeBoundingBox(); geo.boundingBox.getCenter(CENTER);
+  const bb = geo.boundingBox; CORNERS = [];
+  for (let i = 0; i < 8; i++) CORNERS.push(new THREE.Vector3(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z));
+
+  // feature edges only (dihedral > 15°), so the boolean's coplanar triangle seams never show
+  const edges = new THREE.EdgesGeometry(geo, 15);
+  const segs = edges.attributes.position.array;
+  [fillMesh, lineVis, lineHid].forEach(o => { if (o) { scene.remove(o); o.geometry.dispose(); } });
+  fillMesh = new THREE.Mesh(geo, fillMat);
+  const lg1 = new LineSegmentsGeometry().setPositions(segs), lg2 = new LineSegmentsGeometry().setPositions(segs);
+  lineVis = new LineSegments2(lg1, visMat); lineHid = new LineSegments2(lg2, hidMat); lineHid.computeLineDistances();
+  fillMesh.renderOrder = 0; lineVis.renderOrder = 1; lineHid.renderOrder = 2;
+  scene.add(fillMesh, lineVis, lineHid);
+  edges.dispose();
+  recolour();
+  $('#stats').textContent = `${MODEL.volumes.length} volumes · ${MODEL.cuts.length} cuts · ${nTri} triangles · ${segs.length / 6} edges · boolean ${ms.toFixed(1)} ms`;
+  dirty = true;
+}
+
+function recolour() {
+  const P = PALETTES[S.palette] || PALETTES.axo;
+  const role = [new THREE.Color(P.wall), new THREE.Color(P.roof), new THREE.Color(P.slab), new THREE.Color(P.wall).multiplyScalar(.85)];
+  const col = fillMesh.geometry.attributes.color.array, tmp = new THREE.Color();
+  for (let t = 0; t < ROLES.length; t++) {
+    tmp.copy(role[ROLES[t]]);
+    if (S.shading === 'three') {   // the classic axo convention: tops lightest, one side mid, the other darkest
+      const nx = NORMALS[t * 3], ny = NORMALS[t * 3 + 1], nz = NORMALS[t * 3 + 2];
+      if (nz < .3 && nz > -.3) tmp.multiplyScalar(Math.abs(nx) > Math.abs(ny) ? .9 : .78);
+    }
+    for (let k = 0; k < 3; k++) tmp.toArray(col, t * 9 + k * 3);
+  }
+  fillMesh.geometry.attributes.color.needsUpdate = true;
+  scene.background = new THREE.Color(P.bg);
+  document.body.style.background = P.bg;
+  visMat.color.set(P.line); hidMat.color.set(P.line);
+  dirty = true;
+}
+
+/* ------------------------------------------------------------------ camera: orthographic, drawing-convention presets */
+const VIEWS = {
+  iso:   { name:'Isometric',    az:45,  el:35.264 },
+  dim:   { name:'Dimetric',     az:30,  el:24 },
+  steep: { name:'High axo',     az:50,  el:55 },
+  worm:  { name:"Worm's eye",   az:45,  el:-25 },
+  plan:  { name:'Plan',         az:0,   el:89.9 },
+  elev:  { name:'Elevation',    az:0,   el:0 },
+};
+const cam = { az:0, el:0, dragAz:0, dragEl:0, half:30 };
+let turnStart = performance.now();
+function viewAngles(now) {
+  const v = VIEWS[S.view] || VIEWS.iso;
+  let az = v.az + cam.dragAz;
+  const t = (now - turnStart) / 1000;
+  if (S.turn === 'slow') az += t * 6;
+  if (S.turn === 'ratchet') { const k = Math.floor(t / 2), f = clamp((t - k * 2) / .45, 0, 1); az += 90 * (k + 1 - Math.pow(1 - f, 3)); }   // 90° every 2 s, eased, always landing on a clean axo
+  return { az, el:clamp(v.el + cam.dragEl, -89, 89.9) };
+}
+function placeCamera(now, snap) {
+  const { az, el } = viewAngles(now), r = 500, ra = az * Math.PI / 180, re = el * Math.PI / 180;
+  camera.position.set(CENTER.x + r * Math.cos(re) * Math.sin(ra), CENTER.y - r * Math.cos(re) * Math.cos(ra), CENTER.z + r * Math.sin(re));
+  camera.lookAt(CENTER); camera.updateMatrixWorld();
+  // frame the bounding box as seen from here; a spring keeps the zoom from jumping while the view turns
+  const inv = camera.matrixWorldInverse, p = new THREE.Vector3(), w = canvas.clientWidth, h = canvas.clientHeight, asp = w / h;
+  let hx = 0, hy = 0;
+  for (const c of CORNERS) { p.copy(c).applyMatrix4(inv); hx = Math.max(hx, Math.abs(p.x)); hy = Math.max(hy, Math.abs(p.y)); }
+  const target = Math.max(hy, hx / asp) * (1 + S.margin);
+  cam.half = snap ? target : lerp(cam.half, target, .08);
+  camera.left = -cam.half * asp; camera.right = cam.half * asp; camera.top = cam.half; camera.bottom = -cam.half;
+  camera.updateProjectionMatrix();
+  return Math.abs(cam.half - target) > target * .001;
+}
+
+/* ------------------------------------------------------------------ render */
+let dirty = true, snap = true;
+function resize() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  renderer.setPixelRatio(dpr); renderer.setSize(innerWidth, innerHeight, false);
+  dirty = true; snap = true;
+}
+addEventListener('resize', resize);
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (!fillMesh || (!dirty && S.turn === 'off')) return;
+  const moving = placeCamera(now, snap); snap = false;
+  const dpr = renderer.getPixelRatio(), bw = canvas.width, bh = canvas.height;
+  const lw = lerp(.75, 3, S.lineW) * dpr;
+  for (const m of [visMat, hidMat]) { m.resolution.set(bw, bh); m.linewidth = lw; }
+  // dots stay a fixed size on screen: world units per pixel from the ortho frustum
+  const upp = (camera.top - camera.bottom) / bh;
+  hidMat.dashSize = (S.hidden === 'dashed' ? 6 : 2) * dpr * upp; hidMat.gapSize = (S.hidden === 'dashed' ? 4 : 3) * dpr * upp;
+  lineHid.visible = S.hidden !== 'off';
+  renderer.render(scene, camera);
+  dirty = moving;
+}
+
+/* drag to turn the view, double-click to reset */
+let drag = null;
+canvas.addEventListener('pointerdown', e => { drag = { x:e.clientX, y:e.clientY, az:cam.dragAz, el:cam.dragEl }; canvas.setPointerCapture(e.pointerId); canvas.classList.add('drag'); });
+canvas.addEventListener('pointermove', e => { if (!drag) return; cam.dragAz = drag.az - (e.clientX - drag.x) * .3; cam.dragEl = drag.el + (e.clientY - drag.y) * .3; dirty = true; });
+canvas.addEventListener('pointerup', () => { drag = null; canvas.classList.remove('drag'); });
+canvas.addEventListener('dblclick', () => { cam.dragAz = cam.dragEl = 0; dirty = true; });
+
+/* ------------------------------------------------------------------ UI */
+const vp = $('#viewPanel');
+function addSelect(key, label, opts, on) {
+  const l = document.createElement('label'); l.textContent = label;
+  const s = document.createElement('select');
+  for (const [v, t] of opts) { const o = document.createElement('option'); o.value = v; o.textContent = t; s.appendChild(o); }
+  s.value = S[key]; s.onchange = () => { S[key] = s.value; saveSettings(); on(); };
+  l.appendChild(s); vp.appendChild(l);
+}
+function addSlider(key, label, on) {
+  const l = document.createElement('label'); l.textContent = label;
+  const i = document.createElement('input'); i.type = 'range'; i.min = 0; i.max = 1; i.step = .01; i.value = S[key];
+  i.oninput = () => { S[key] = +i.value; saveSettings(); on(); };
+  l.appendChild(i); vp.appendChild(l);
+}
+function addCheck(key, label, on) {
+  const l = document.createElement('label'); l.className = 'check';
+  const i = document.createElement('input'); i.type = 'checkbox'; i.checked = S[key];
+  i.onchange = () => { S[key] = i.checked; saveSettings(); on(); };
+  l.append(i, label); vp.appendChild(l);
+}
+const redraw = () => { dirty = true; };
+addSelect('view', 'View', Object.entries(VIEWS).map(([k, v]) => [k, v.name]), () => { cam.dragAz = cam.dragEl = 0; snap = true; redraw(); });
+addSelect('turn', 'Turntable', [['off', 'Still'], ['slow', 'Slow turn'], ['ratchet', 'Ratchet 90°']], () => { turnStart = performance.now(); redraw(); });
+addSelect('palette', 'Colours', Object.entries(PALETTES).map(([k, v]) => [k, v.name]), recolour);
+addSelect('shading', 'Shading', [['flat', 'Flat'], ['three', 'Three-tone']], recolour);
+addSelect('hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashed'], ['off', 'Off']], redraw);
+addSlider('lineW', 'Line width', redraw);
+addSlider('margin', 'Margin', redraw);
+addCheck('plinth', 'Site plinth', rebuild);
+$('#viewBtn').onclick = () => { vp.classList.toggle('open'); $('#viewBtn').classList.toggle('on'); };
+
+resize();
+rebuild();
+$('#status').textContent = '';
+requestAnimationFrame(frame);
+window.MASSING = { MODEL, S, rebuild, recolour, scene, camera };   // for poking at from the console
+</script>
+
+<script src="../../shared/source.js"></script>
+<script src="../../shared/hub.js"></script>
+</body>
+</html>

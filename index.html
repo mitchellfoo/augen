@@ -139,6 +139,21 @@ const ART = {
       <path d="M58 78 C52 60 60 46 72 40" fill="none" stroke="#121015" stroke-width="1.5"/>
       <path d="M102 78 C112 66 112 48 98 42" fill="none" stroke="#121015" stroke-width="1.5"/>`;
   },
+  massing(svg, c) {
+    // a few boxes in isometric, back to front: tan tops, pink walls, grey outlines on green
+    const boxes = [[0, 2, 0, 8, 2], [2, 14, 3, 4, 1], [5, 7, 4, 6, 1], [14, 19, 2, 4.5, 2], [19, 21, 2, 4.5, .15]];
+    const P = (x, y, z) => [(x - y) * .866, (x + y) * .5 - z * 1.15];
+    const pts = boxes.flatMap(([x0, x1, y0, y1, h]) => [P(x0, y1, 0), P(x1, y0, 0), P(x0, y0, h), P(x1, y1, 0)]);
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]), x0 = Math.min(...xs), y0 = Math.min(...ys);
+    const k = Math.min(140 / (Math.max(...xs) - x0), 80 / (Math.max(...ys) - y0)), ox = 80 - (Math.max(...xs) + x0) / 2 * k, oy = 50 - (Math.max(...ys) + y0) / 2 * k;
+    const poly = (fill, ...q) => `<polygon points="${q.map(p => P(...p)).map(([x, y]) => `${(ox + x * k).toFixed(1)},${(oy + y * k).toFixed(1)}`).join(' ')}" fill="${fill}" stroke="#7a7a80" stroke-width=".6" stroke-linejoin="round"/>`;
+    let s = '';
+    for (const [a, b, d, e, h] of [...boxes].sort((p, q) => (p[0] + p[2]) - (q[0] + q[2]))) {
+      const top = h < .5 ? '#a3c1d8' : '#d4b990';
+      s += poly(c, [b, d, 0], [b, e, 0], [b, e, h], [b, d, h]) + poly(c, [a, e, 0], [b, e, 0], [b, e, h], [a, e, h]) + poly(top, [a, d, h], [b, d, h], [b, e, h], [a, e, h]);
+    }
+    svg.innerHTML = `<rect width="160" height="100" fill="#43966f"/>${s}`;
+  },
   default(svg, c) {
     const r = rnd(3); let d = 'M0 50';
     for (let x = 0; x <= 160; x += 4) d += ` L${x} ${50 + (r() - .5) * 60 * Math.sin(x / 26)}`;
