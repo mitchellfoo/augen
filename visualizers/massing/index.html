@@ -1484,7 +1484,7 @@ function placeSun(cy) {
 
 // settled elements: rebuilt only when one finishes popping in or a cut removes one
 // build speed: slow stretches every arrival (ghost, extrusion, element pop), so construction overlaps all over the site
-const buildSlow = () => lerp(6, 1, S.buildSpeed);
+const buildSlow = () => Math.pow(16, 1 - S.buildSpeed);   // 16× slower at the slow end, 1× at the fast end
 let POP = .22, FLASH = .35;
 const SET = { key:'' };
 /* exploded axo: on big hits the building comes apart into its volumes and elements, upper levels and roof-top pieces
@@ -1497,7 +1497,8 @@ function buildBigHits() {
   BIG.ts = BIG.map(k => k.t);
 }
 const FIXED_KINDS = new Set(['axes', 'dims', 'phantom', 'pilotis']);   // drawing marks never detach
-const exK = (ex, t) => easeOutBack(clamp((t - ex.t) / .4, 0, 1)) * S.explode / .55;
+// detaching flies out at the build speed too: a snap with an overshoot when fast, a long ease when slow
+const exK = (ex, t) => { const sl = buildSlow(), g = clamp((t - ex.t) / (.4 * sl), 0, 1); return (sl > 2 ? ease(g) : easeOutBack(g)) * S.explode / .55; };
 function updateExploded(cy, t) {
   const A = newAcc(); let any = false;
   for (const pc of SOL.pieces) {
