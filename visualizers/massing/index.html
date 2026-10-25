@@ -129,7 +129,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 
 /* ------------------------------------------------------------------ settings */
 const S = {
-  seed:1, growth:.7, actions:2, unify:.85, pitchSens:.5,
+  seed:1, growth:.7, actions:2, unify:.85, form:'mixed', pitchSens:.5,
   shots:'4', view:'iso', punch:.5, margin:.12,
   palette:'generated', variety:.5, shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.35, flash:true, look:'drawing',
   // old drawing
@@ -801,6 +801,13 @@ function pickVocab(r, prev) {
 function genCycle(cy) {
   const an = AN, r = rngFor(S.seed * 1009 + cy.idx * 7919, 3), bl = an.beatLen, g = S.growth;
   const vols = [], cuts = [], geo = [], els = [], pr = rngFor(S.seed * 7 + cy.idx, 77);
+  // form: long (a low spine), clustered (a compact knot) or tall (towers and stacks); mixed picks one per building
+  const formR = rngFor(S.seed * 17 + cy.idx, 61), form = cy.form = S.form === 'mixed' ? pickW(formR, (w => { const pf = cy.idx > 0 && CYCLES[cy.idx - 1].form; if (pf) w[pf] = .25; return w; })({ long:1, cluster:1, tall:1 })) : S.form;   // rarely the same form twice running
+  const FM = {
+    long:{ modes:{ extend:3, link:2.5, branch:.4, stack:.2, skew:1, tri:1 }, flAdd:-1, flMax:3, bounds:[-30, -6, 50, 6], towerMax:4, towerP:.15, towerGap:4, longer:true },
+    cluster:{ modes:{ extend:.35, link:.15, branch:3, stack:1.6, skew:1.2, tri:1.2 }, flAdd:0, flMax:5, bounds:[-9, -10, 15, 10], towerMax:7, towerP:.4, towerGap:4 },
+    tall:{ modes:{ extend:.5, link:.2, branch:1.6, stack:3.5, skew:.6, tri:.5 }, flAdd:2, flMax:8, bounds:[-8, -8, 14, 8], towerMax:14, towerP:.8, towerGap:2, small:true, tall:true },
+  }[form];
   const voc = cy.voc = pickVocab(r, cy.idx > 0 ? CYCLES[cy.idx - 1].voc : null);
   const kThr = lerp(.6, .12, g), sThr = lerp(.65, .15, g), hThr = lerp(.6, .12, g);
   const acts = clamp(Math.round(S.actions), 1, 4), vActs = 1 + Math.floor((acts - 1) / 2);   // volumes and cuts scale more gently than elements
@@ -867,14 +874,14 @@ function genCycle(cy) {
       return { poly:[[x0, yb], [x0 + w, yb], [x0 + (r() < .5 ? 0 : w), yb + side * Math.max(2, d)]], z0:0, fl, isRect:false };
     }
     // stack: a smaller block on a flat roof
-    const hosts = vols.filter(v => v.isRect && !v.roof && !v.capped && v.rect[2] - v.rect[0] >= 2 && v.rect[3] - v.rect[1] >= 2 && v.top < 6 * F);
+    const hosts = vols.filter(v => v.isRect && !v.roof && !v.capped && v.rect[2] - v.rect[0] >= 2 && v.rect[3] - v.rect[1] >= 2 && v.top < (FM.towerMax - 1) * F);
     if (!hosts.length) return null;
     const v = pickR(r, hosts), [vx0, vy0, vx1, vy1] = v.rect, sw = 1 + ri(r, vx1 - vx0 - 1), sd = 1 + ri(r, vy1 - vy0 - 1);
     return { poly:rect(vx0 + ri(r, vx1 - vx0 - sw + 1), vy0 + ri(r, vy1 - vy0 - sd + 1), sw, sd), z0:v.z0 + v.fl, fl:1 + ri(r, 2), isRect:true, stacked:true };
   }
   function fits(c) {
-    const [x0, y0, x1, y1] = polyBB(c.poly);
-    if (y0 < -12 || y1 > 12 || x0 < -18 || x1 > 34) return false;
+    const [x0, y0, x1, y1] = polyBB(c.poly), [bx0, by0, bx1, by1] = FM.bounds;
+    if (y0 < by0 || y1 > by1 || x0 < bx0 || x1 > bx1) return false;
     const area = (x1 - x0) * (y1 - y0);
     for (const v of vols) {
       if (v.z0 !== c.z0) continue;
@@ -884,9 +891,10 @@ function genCycle(cy) {
     return true;
   }
   function placeVol(s, p, loose, mode) {
-    const w = 2 + Math.round((s.kick || .5) * 3 * r() + r() * 1.5), d = 1 + ri(r, 3);
-    const fl = clamp(1 + Math.round((s.rms ?? .5) * 3 + r() * 1.2 - .6), 1, 5);
-    mode = mode || pickW(r, { extend:lerp(5, 1.5, p), link:lerp(2, .5, p), branch:1 + 2 * p, stack:.3 + 1.6 * p, skew:3 * loose, tri:2 * loose });
+    const w = FM.small ? 1 + ri(r, 3) : 2 + Math.round((s.kick || .5) * 3 * r() + r() * 1.5) + (FM.longer ? 1 : 0), d = FM.small ? 1 + ri(r, 2) : 1 + ri(r, 3);
+    const fl = clamp(1 + Math.round((s.rms ?? .5) * 3 + r() * 1.2 - .6) + FM.flAdd, 1, FM.flMax);
+    const mw = FM.modes, base = { extend:lerp(5, 1.5, p), link:lerp(2, .5, p), branch:1 + 2 * p, stack:.3 + 1.6 * p, skew:3 * loose, tri:2 * loose };
+    mode = mode || pickW(r, Object.fromEntries(Object.entries(base).map(([k, v]) => [k, v * mw[k]])));
     for (let k = 0; k < 6; k++) {
       const c = candidate(mode, w, d, fl, loose);
       if (c && fits(c)) return commitVol(c, s.t);
@@ -896,7 +904,7 @@ function genCycle(cy) {
   }
   function growTower(s) {   // a held kick on a young flat block adds a floor
     const v = vols[vols.length - 1];
-    if (!v || v.roof || !v.isRect || v.capped || v.top >= 7 * F || s.t - v.t > 6 * bl) return;
+    if (!v || v.roof || !v.isRect || v.capped || v.top >= FM.towerMax * F || s.t - v.t > 6 * bl) return;
     const piece = { id:vid++, t:s.t, poly:v.poly, z0:v.z0 + v.fl, fl:1, isRect:true, rect:v.rect, facades:v.facades, top:v.top + F, parent:v };
     piece.bb = { min:[v.rect[0] * M, v.rect[1] * M, v.top], max:[v.rect[2] * M, v.rect[3] * M, v.top + F] };
     geo.push({ type:'vol', t:s.t, settle:s.t + grow, v:piece, bb:piece.bb, lead:bl * .5 });
@@ -1057,7 +1065,7 @@ function genCycle(cy) {
     if (willUnify && !unified && s.down && p >= unifyAt && vols.length >= 3 && s.t < cy.end - 4 * bl) unify(s);
     if ((s.kick || 0) > kThr) {
       if (!unified && vols.length < maxVol && s.t - lastVol >= bl * (p < .45 ? (g > .6 ? 1 : 2) : 3)) for (let a = 0; a < vActs && vols.length < maxVol; a++) placeVol(a ? { ...s, t:s.t + a * bl / 4 } : s, p, loose);
-      else if (!unified && s.kick > .55 && s.t - lastStack >= 4 * bl && r() < .4) growTower(s);
+      else if (!unified && s.kick > (FM.tall ? .35 : .55) && s.t - lastStack >= FM.towerGap * bl && r() < FM.towerP) growTower(s);
     }
     if ((s.snare || 0) > sThr) {
       if (p > .18 && s.t - lastCut >= bl * (loose > .5 ? 2 : 4) && r() < lerp(.2, .65, loose)) for (let a = 0; a < vActs; a++) makeCut(a ? { ...s, t:s.t + a * bl / 4 } : s, loose);
@@ -1930,6 +1938,7 @@ addSlider('variety', 'Colour variety', recolour);
 addSelect('shading', 'Shading', [['flat', 'Flat'], ['three', 'Three-tone']], () => { SOL.cyc = -1; SET.key = ''; });
 addSelect('hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashed'], ['off', 'Off']], nop);
 addSlider('growth', 'Growth', regen);
+addSelect('form', 'Form', [['mixed', 'Mixed (one per building)'], ['long', 'Long'], ['cluster', 'Clustered'], ['tall', 'Tall']], regen);
 addSlider('unify', 'Late unifying cuts', regen);
 addSelect('actions', 'Actions per hit', [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']], () => { S.actions = +S.actions; regen(); });
 addSlider('lineW', 'Line width', nop);
