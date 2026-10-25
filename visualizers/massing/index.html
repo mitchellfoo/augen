@@ -1140,8 +1140,10 @@ function buildShots() {
   SHOTS = [];
   for (const cy of CYCLES) {
     const az0 = 45 + 90 * ri(r, 4);
-    const pw = (STYLE_W[S.camStyle] || STYLE_W.mixed).persp;
-    SHOTS.push({ t:cy.t0, cy, kind:r() < .3 * pw ? 'aerial' : 'establish', az:az0 - 20 + r() * 40, drift:(r() < .5 ? -1 : 1) * 2.5 });   // some buildings open in perspective
+    // every building opens and closes in the camera style too, so the style shows even when shots are rare
+    const sw = STYLE_W[S.camStyle] || STYLE_W.mixed, grp = () => pickW(r, { ...sw, axo:sw.axo * 1.5 });
+    const g0 = grp(), k0 = g0 === 'flat' ? pickR(r, ['plancut', 'planobl', 'cavalier']) : { axo:'establish', persp:'aerial', eye:'eye' }[g0];
+    SHOTS.push({ t:cy.t0, cy, kind:k0, az:SHOT[k0].flat ? 90 * ri(r, 4) : az0 - 20 + r() * 40, drift:SHOT[k0].flat ? 0 : (r() < .5 ? -1 : 1) * 2.5 });
     if (every) {
       let k = 0;
       for (const d of AN.downbeats) {
@@ -1159,7 +1161,10 @@ function buildShots() {
       }
     }
     const tp = cy.end - 2 * bar;
-    if (cy.end - cy.t0 > 6 * bar) SHOTS.push({ t:tp, cy, kind:r() < .3 * pw ? 'aerial' : 'pullout', az:45 + 90 * ri(r, 4) - 20 + r() * 40, drift:6 });
+    if (cy.end - cy.t0 > 6 * bar) {
+      const g1 = grp(), k1 = g1 === 'flat' ? pickR(r, ['plan', 'elev', 'section']) : { axo:'pullout', persp:'aerial', eye:'walk' }[g1];
+      SHOTS.push({ t:tp, cy, kind:k1, az:SHOT[k1].flat ? 90 * ri(r, 4) : 45 + 90 * ri(r, 4) - 20 + r() * 40, drift:SHOT[k1].flat ? 0 : 6 });
+    }
   }
   SHOTS.sort((a, b) => a.t - b.t); SHOT_T = SHOTS.map(s => s.t);
 }
@@ -1545,7 +1550,8 @@ function updateLive(cy, t) {
 
 /* ------------------------------------------------------------------ camera */
 const CAM = { c:new THREE.Vector3(), half:20, shot:-1, last:0, dragAz:0, dragEl:0 };
-const VIEWS = { iso:['Isometric', 45, 35.26], dim:['Dimetric', 30, 22], high:['High axo', 50, 58], worm:["Worm's eye", 45, -26], plan:['Plan', 0, 89.5], elev:['Elevation', 0, 0] };
+const VIEWS = [['iso', 'Isometric'], ['dim', 'Dimetric'], ['high', 'High axo'], ['worm', "Worm's eye"], ['persp', 'Perspective 3/4'], ['low', 'Low wide-angle'], ['aerial', 'Aerial'], ['tele', 'Telephoto'],
+  ['eye', 'Eye level'], ['walk', 'Walk along'], ['inside', 'Inside'], ['plan', 'Plan'], ['plancut', 'Plan cut'], ['elev', 'Elevation'], ['section', 'Section'], ['planobl', 'Plan oblique'], ['cavalier', 'Cavalier oblique']];
 // framing works on real corner points, not bounding boxes: a long diagonal spine has a huge, mostly empty box in axo
 const bbCorners = b => Array.from({ length:8 }, (_, i) => [i & 1 ? b.max[0] : b.min[0], i & 2 ? b.max[1] : b.min[1], i & 4 ? b.max[2] : b.min[2]]);
 const opPts = op => op.type === 'vol' ? op.v.poly.flatMap(([x, y]) => [[x * M, y * M, op.v.z0 * F], [x * M, y * M, op.bb.max[2]]]) : bbCorners(op.bb);
@@ -1588,8 +1594,10 @@ function fitPts(pts, asp, k = null) {
 function placeCamera(cy, t, dt) {
   let sh, az, el;
   const auto = S.shots !== 'off';
-  if (auto) {
-    const si = Math.max(0, upperBound(SHOT_T, t) - 1); sh = SHOTS[si];
+  {
+    let si = -1;
+    if (auto) { si = Math.max(0, upperBound(SHOT_T, t) - 1); sh = SHOTS[si]; }
+    else { const k = SHOT[S.view] ? S.view : 'iso', f = !!SHOT[k].flat; sh = { kind:k, t:cy.t0, az:f ? 0 : k === 'dim' ? 30 : 45, drift:f ? 0 : 2 }; si = CAM.shot; }
     const age = t - sh.t, K = SHOT[sh.kind], bar = AN.beatLen * 4, tk = lerp(0, 2.2, S.turnSpeed);
     if (K.flat || S.turn === 'still') az = sh.az;
     else if (S.turn === 'pingpong') az = sh.az + Math.sin(age * .6) * lerp(8, 45, S.turnSpeed);
@@ -1601,7 +1609,7 @@ function placeCamera(cy, t, dt) {
       const same = pk && !!pk.persp === !!K.persp && !pk.mode && !K.mode && !pk.shear && !K.shear;
       CAM.shot = si; if (S.cuts !== 'glide' || !same || sh.kind === 'establish') CAM.snap = true;
     }
-  } else { const v = VIEWS[S.view] || VIEWS.iso; az = v[1]; el = v[2]; sh = { kind:'iso', t:0 }; }
+  }
   az += CAM.dragAz; el = clamp(el + CAM.dragEl, -89, 89.9);
   if (S.cuts === 'glide' && !CAM.snap && CAM.az != null) {   // glide: the angle eases to the new shot instead of cutting
     const k = 1 - Math.exp(-dt * 2.5), d = ((az - CAM.az + 540) % 360) - 180; az = CAM.az + d * k; el = CAM.el + (el - CAM.el) * k;
@@ -2105,7 +2113,7 @@ const statsEl = document.createElement('div'); statsEl.className = 'stats'; $(BP
 
 // camera
 const CP = '#cameraPanel';
-addSelect(CP, 'shots', 'Shots', [['1', 'New shot every bar'], ['2', 'Every 2 bars'], ['4', 'Every 4 bars'], ['8', 'Every 8 bars'], ['16', 'Every 16 bars'], ['off', 'Fixed view']], reshoot);
+const shotsSel = addSelect(CP, 'shots', 'Shots', [['1', 'New shot every bar'], ['2', 'Every 2 bars'], ['4', 'Every 4 bars'], ['8', 'Every 8 bars'], ['16', 'Every 16 bars'], ['off', 'Fixed view']], reshoot);
 addSelect(CP, 'camStyle', 'Camera style', [['mixed', 'Mixed'], ['axo', 'Axo only'], ['persp', 'Mostly perspective'], ['eye', 'Eye level & inside'], ['flat', 'Flat 2D & oblique']], reshoot);
 addSelect(CP, 'turn', 'Turntable', [['drift', 'Drift per shot'], ['ratchet', 'Ratchet on the bar'], ['loud', 'Speed follows loudness'], ['pingpong', 'Rock back and forth'], ['still', 'Still']]);
 addSlider(CP, 'turnSpeed', 'Turn speed');
@@ -2117,7 +2125,7 @@ addSlider(CP, 'follow', 'Glance at new pieces');
 addSelect(CP, 'cuts', 'Between shots', [['cut', 'Hard cut'], ['glide', 'Glide']]);
 addCheck(CP, 'dollyZoom', 'Dolly-zoom on kicks (perspective shots)');
 addSlider(CP, 'margin', 'Margin');
-addSelect(CP, 'view', 'Fixed view (when shots are off)', Object.entries(VIEWS).map(([k, v]) => [k, v[0]]), () => { CAM.snap = true; });
+addSelect(CP, 'view', 'Fixed view (picking one holds it)', VIEWS, () => { S.shots = 'off'; shotsSel.value = 'off'; saveSettings(); CAM.snap = true; });
 
 // colour
 const KP = '#colourPanel';
