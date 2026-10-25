@@ -129,7 +129,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 
 /* ------------------------------------------------------------------ settings */
 const S = {
-  seed:1, growth:.7, pitchSens:.5,
+  seed:1, growth:.7, actions:2, pitchSens:.5,
   shots:'4', view:'iso', punch:.5, margin:.12,
   palette:'generated', shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.35, flash:true, look:'drawing',
   // old drawing
@@ -780,7 +780,8 @@ function genCycle(cy) {
   const vols = [], cuts = [], geo = [], els = [];
   const voc = cy.voc = pickVocab(r, cy.idx > 0 ? CYCLES[cy.idx - 1].voc : null);
   const kThr = lerp(.6, .12, g), sThr = lerp(.65, .15, g), hThr = lerp(.6, .12, g);
-  const maxVol = Math.round(lerp(8, 20, g) * clamp((cy.end - cy.t0) / 30, .7, 1.5)), grow = clamp(bl * .75, .22, .6);
+  const acts = clamp(Math.round(S.actions), 1, 4), vActs = 1 + Math.floor((acts - 1) / 2);   // volumes and cuts scale more gently than elements
+  const maxVol = Math.round(lerp(8, 20, g) * (1 + (acts - 1) * .3) * clamp((cy.end - cy.t0) / 30, .7, 1.5)), grow = clamp(bl * .75, .22, .6);
   let lastVol = -1e9, lastCut = -1e9, lastHat = -1e9, lastNote = -1e9, lastSn = -1e9, lastStack = -1e9, lastLine = -1e9, lastStruct = -1e9, vid = 0, runId = 0, bi = upperBound(BIG.ts, cy.t0 - 1);
   const inCut = p => cuts.some(c => c.t <= p[3] && c.test(p));
 
@@ -956,16 +957,21 @@ function genCycle(cy) {
       ch.dir = ch.v.rect[2] >= Math.max(...xs) ? 1 : ch.v.rect[0] <= Math.min(...xn) ? -1 : (r() < .5 ? 1 : -1);
     }
   }
+  // one hit does `acts` steps of its series, a 16th apart, so a single drum hit ripples across several units
   function series(name, s) {
     const ch = chans[name]; if (!ch.kind) return false;
-    for (let k = 0; k < 2; k++) {
-      if (!ch.v || ch.done) retarget(ch);
-      if (!ch.v) return false;
-      const res = GEN[ch.kind].unit(ch, s);
-      if (res === null) { ch.done = true; continue; }
-      ch.i++; addEl(s.t, ch.kind, res, false, ch); return true;
+    let made = 0;
+    for (let a = 0; a < acts; a++) {
+      const sa = a ? { ...s, t:s.t + a * bl / 4 } : s;
+      for (let k = 0; k < 2; k++) {
+        if (!ch.v || ch.done) retarget(ch);
+        if (!ch.v) return made > 0;
+        const res = GEN[ch.kind].unit(ch, sa);
+        if (res === null) { ch.done = true; continue; }
+        ch.i++; addEl(sa.t, ch.kind, res, false, ch); made++; break;
+      }
     }
-    return false;
+    return made > 0;
   }
 
   for (const s of SLOTS) {
@@ -975,11 +981,11 @@ function genCycle(cy) {
     while (bi < BIG.length && BIG[bi].t < s.t - bl * .26) bi++;
     if (bi < BIG.length && Math.abs(BIG[bi].t - s.t) <= bl * .26) { if (p > .12 && s.t < cy.end - 2 * bl) explode(s); bi++; }
     if ((s.kick || 0) > kThr) {
-      if (vols.length < maxVol && s.t - lastVol >= bl * (p < .45 ? (g > .6 ? 1 : 2) : 3)) placeVol(s, p, loose);
+      if (vols.length < maxVol && s.t - lastVol >= bl * (p < .45 ? (g > .6 ? 1 : 2) : 3)) for (let a = 0; a < vActs && vols.length < maxVol; a++) placeVol(a ? { ...s, t:s.t + a * bl / 4 } : s, p, loose);
       else if (s.kick > .55 && s.t - lastStack >= 4 * bl && r() < .4) growTower(s);
     }
     if ((s.snare || 0) > sThr) {
-      if (p > .18 && s.t - lastCut >= bl * (loose > .5 ? 2 : 4) && r() < lerp(.2, .65, loose)) makeCut(s, loose);
+      if (p > .18 && s.t - lastCut >= bl * (loose > .5 ? 2 : 4) && r() < lerp(.2, .65, loose)) for (let a = 0; a < vActs; a++) makeCut(a ? { ...s, t:s.t + a * bl / 4 } : s, loose);
       else if (s.t - lastSn >= bl * (g > .6 ? .25 : .5) && p > .1) { if (series('snare', s)) lastSn = s.t; }
     }
     if ((s.hat || 0) > hThr && s.t - lastHat >= bl * (g > .65 ? .25 : g > .4 ? .5 : 1) && p > .08) { if (series('hat', s)) lastHat = s.t; }
@@ -1846,6 +1852,7 @@ addSelect('palette', 'Colours', [['generated', 'New palette every cycle'], ...Ob
 addSelect('shading', 'Shading', [['flat', 'Flat'], ['three', 'Three-tone']], () => { SOL.cyc = -1; SET.key = ''; });
 addSelect('hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashed'], ['off', 'Off']], nop);
 addSlider('growth', 'Growth', regen);
+addSelect('actions', 'Actions per hit', [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']], () => { S.actions = +S.actions; regen(); });
 addSlider('lineW', 'Line width', nop);
 addSlider('hatch', 'Hatching & dot screens', () => { SOL.cyc = -1; SET.key = ''; });
 addSlider('hatchSize', 'Hatch spacing', nop);
