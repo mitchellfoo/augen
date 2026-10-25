@@ -129,11 +129,11 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 
 /* ------------------------------------------------------------------ settings */
 const S = {
-  seed:1, growth:.55, pitchSens:.5,
+  seed:1, growth:.7, pitchSens:.5,
   shots:'4', view:'iso', punch:.5, margin:.12,
-  palette:'generated', shading:'flat', lineW:.3, hidden:'dotted', overshoot:.35, flash:true, look:'drawing',
+  palette:'generated', shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, hidden:'dotted', overshoot:.35, flash:true, look:'drawing',
   // old drawing
-  paper:.55, tooth:.6, age:.15, bleed:.3, wobble:.25, wash:.35,
+  paper:.55, tooth:.6, age:.15, bleed:.12, wobble:.25, wash:.35,
   // film print (the Sculpture Machine's stock)
   pad:2, expQ:'high',
   fps:24, grain:.3, flicker:.2, dust:.3, scratch:.2, weave:.25, vignette:.45, chroma:.12, halation:.08, saturation:.46, warmth:.56, splices:false,
@@ -511,13 +511,13 @@ function genPalette(r, prev) {
   if (scheme === 'pastel') {
     const hw = h + 140 + r() * 80, hr = 25 + r() * 30;
     Object.assign(P, { bg:hsl(h, .38 + .2 * r(), .38 + .1 * r()), wall:hsl(hw, .45 + .2 * r(), .8), roof:hsl(hr, .45, .72), slab:hsl(200 + j() * 30, .4, .76),
-      elem:hsl(hw, .18, .68), window:hsl(hw, .25, .42), line:hsl(h, .08, .44) });
+      elem:hsl(hw, .18, .72), window:hsl(hw, .22, .5), line:hsl(h, .08, .5) });
   } else if (scheme === 'paper') {
-    Object.assign(P, { bg:hsl(38 + j() * 10, .35, .9), wall:'#fbf8f1', roof:hsl(h, .55, .7), slab:hsl(h + 180, .35, .8), elem:hsl(h, .45, .45), window:hsl(20, .12, .26), line:hsl(20, .12, .22), accent:hsl(h, .9, .55) });
+    Object.assign(P, { bg:hsl(38 + j() * 10, .35, .9), wall:'#fbf8f1', roof:hsl(h, .55, .7), slab:hsl(h + 180, .35, .8), elem:hsl(h, .32, .64), window:hsl(20, .1, .4), line:hsl(20, .1, .36), accent:hsl(h, .9, .55) });
   } else if (scheme === 'mono') {
     Object.assign(P, { bg:hsl(h, .5, .3), wall:hsl(h, .45, .44), roof:hsl(h, .45, .55), slab:hsl(h, .4, .66), elem:hsl(h, .45, .74), window:hsl(h, .55, .2), line:hsl(h, .3, .9) });
   } else if (scheme === 'riso') {
-    Object.assign(P, { bg:hsl(45, .45, .9), wall:hsl(h, .85, .74), roof:hsl(h + 50, .9, .64), slab:hsl(h + 200, .7, .64), elem:hsl(h + 200, .7, .42), window:hsl(h + 200, .75, .32), line:hsl(h + 200, .75, .32), accent:hsl(h + 200, .9, .5) });
+    Object.assign(P, { bg:hsl(45, .45, .9), wall:hsl(h, .85, .74), roof:hsl(h + 50, .9, .64), slab:hsl(h + 200, .7, .64), elem:hsl(h + 200, .6, .58), window:hsl(h + 200, .6, .45), line:hsl(h + 200, .6, .45), accent:hsl(h + 200, .9, .5) });
   } else {
     Object.assign(P, { bg:hsl(h, .35, .1), wall:hsl(h, .2, .24), roof:hsl(h, .2, .33), slab:hsl(h + 30, .4, .42), elem:hsl(h + 180, .6, .62), window:hsl(45, .9, .72), line:hsl(h + 180, .45, .78) });
   }
@@ -531,6 +531,8 @@ function assignPalettes() {
     const c = k => new THREE.Color(cy.pal[k]);
     // role colours, in the order the geometry stores them: wall, roof, slab, underside, element, window, accent
     cy.cols = [c('wall'), c('roof'), c('slab'), c('wall').multiplyScalar(.82), c('elem'), c('window'), c('accent')];
+    const n = o => +pickW(r, o), wx = n({ 0:1.5, 1:2, 4:1.2, 5:1.2 });
+    cy.pat = { wallX:wx, wallY:r() < .6 ? 0 : n({ 2:1, 4:1, 5:1 }), roof:n({ 0:1.2, 4:2.5, 1:1, 3:.6 }), slab:n({ 6:3, 3:1, 4:1 }), under:n({ 0:1, 5:1 }) };
   }
 }
 
@@ -583,7 +585,7 @@ const GEN = {
     const v = ch.v, [x0, y0, x1, y1] = v.rect, alongX = x1 - x0 >= y1 - y0, L = alongX ? x1 - x0 : y1 - y0;
     if (ch.i > L * 2) return null;
     const a = ((alongX ? x0 : y0) + ch.i * .5) * M, mid = ((alongX ? y0 + y1 : x0 + x1) / 2) * M, span = (alongX ? y1 - y0 : x1 - x0) * M + 1.1;
-    return { prims:[alongX ? boxC(a, mid, .2, span, v.top, v.top + .32) : boxC(mid, a, span, .2, v.top, v.top + .32)] };
+    return { prims:[alongX ? boxC(a, mid, .12, span, v.top, v.top + .2) : boxC(mid, a, span, .12, v.top, v.top + .2)] };
   } },
   fins:{ hat:true, ok:v => v.facades.some(f => f.L >= 2 * M), unit(ch) {   // brise-soleil: thin vertical plates along a facade
     const v = ch.v, f = ch.f, s = (ch.i + 1) * .5 * M;
@@ -636,8 +638,8 @@ const GEN = {
   } },
   columns:{ snare:true, ok:v => v.z0 === 0 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // a colonnade standing off a facade, with a beam on top
     const v = ch.v, f = ch.f, n = Math.floor(f.L / M); if (ch.i > n) return null;
-    const s = clamp(ch.i * M, .3, f.L - .3), h = Math.min(v.top, 2 * F), prims = [box(P3(f, s - .18, 1.75, 0), f.u, .36, .36, 0, h)];
-    if (ch.i > 0) { const sp = clamp((ch.i - 1) * M, .3, f.L - .3); prims.push(box(P3(f, sp - .18, 1.75, 0), f.u, s - sp + .36, .36, h - .35, h)); }
+    const s = clamp(ch.i * M, .3, f.L - .3), h = Math.min(v.top, 2 * F), prims = [box(P3(f, s - .13, 1.65, 0), f.u, .26, .26, 0, h)];
+    if (ch.i > 0) { const sp = clamp((ch.i - 1) * M, .3, f.L - .3); prims.push(box(P3(f, sp - .13, 1.65, 0), f.u, s - sp + .26, .26, h - .25, h)); }
     return { prims, grow:'z' };
   } },
   pergola:{ snare:true, line:true, ok:v => v.z0 === 0 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // open bays of posts, beams and slats against a facade
@@ -656,6 +658,30 @@ const GEN = {
     }
     prims.push(seg([xe, ym - 1, zt], [xe, ym + 1, zt]), seg([xe, ym - 1, zb], [xe, ym + 1, zb]));
     return { prims };
+  } },
+  mullions:{ line:true, ok:v => v.facades.some(f => f.L >= 2 * M), unit(ch) {   // a curtain-wall grid: a mullion per hit, transoms on the first
+    const v = ch.v, f = ch.f, s = (ch.i + 1) * .5 * M, z0 = v.z0 * F;
+    if (s > f.L - .2 * M) return null;
+    const prims = [seg(P3(f, s, .03, z0), P3(f, s, .03, v.top))];
+    if (ch.i === 0) for (let k = 0; k < v.fl; k++) for (const dz of [.9, F]) { const z = (v.z0 + k) * F + dz; if (z < v.top - .05) prims.push(seg(P3(f, 0, .03, z), P3(f, f.L, .03, z))); }
+    return { prims, grow:'z' };
+  } },
+  hatch:{ line:true, ok:v => v.isRect && !v.roof && !v.capped, unit(ch) {   // 45° hatching across a flat roof, two strokes a hit
+    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), z = v.top + .02, sp = .7, prims = [];
+    for (const k of [ch.i * 2, ch.i * 2 + 1]) {
+      const c = x0 + y0 + (k + 1) * sp; if (c >= x1 + y1) break;
+      const xa = Math.max(x0, c - y1), xb = Math.min(x1, c - y0);
+      if (xb > xa) prims.push(seg([xa, c - xa, z], [xb, c - xb, z]));
+    }
+    return prims.length ? { prims, visOnly:true } : null;
+  } },
+  dims:{ line:true, ok:v => v.z0 === 0 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // a dimension string on the ground, a tick per module
+    const f = ch.f, off = 2.6, n = Math.round(f.L / M); if (ch.i > n) return null;
+    const p = (s, o) => P3(f, s, o, 0), prims = [];
+    if (ch.i === 0) prims.push(seg(p(0, .4), p(0, off + .5)), seg(p(f.L, .4), p(f.L, off + .5)), seg(p(-.4, off), p(f.L + .4, off)));
+    const s = Math.min(ch.i * M, f.L), t = .28;
+    prims.push(seg([...p(s, off).slice(0, 2).map((q, j) => q - (f.u[j] + f.n[j]) * t), 0], [...p(s, off).slice(0, 2).map((q, j) => q + (f.u[j] + f.n[j]) * t), 0]));
+    return { prims, visOnly:true };
   } },
   windows:{ note:true, ok:v => v.facades.some(f => f.L >= M), unit(ch, s) {   // pitch class picks the facade, octave the floor; held notes draw ribbons
     const v = ch.v, nt = s.note, fs = v.facades.filter(f => f.L >= M); if (!fs.length) return null;
@@ -683,7 +709,8 @@ function pickVocab(r, prev) {
     hat:pickW(r, w({ joists:3, fins:2, stairs:1.5, spaceframe:2, railings:1.5 }, 'hat')),
     snare:pickW(r, w({ frames:3, columns:2, pergola:1.5 }, 'snare')),
     note:pickW(r, { windows:3, trusses:1.2 }),
-    pitched:r() < .5, axes:r() < .55,
+    pitched:r() < .5, axes:r() < .65,
+    line:(() => { const a = pickW(r, { mullions:3, hatch:2.5, dims:2 }), b = pickW(r, { mullions:3, hatch:2.5, dims:2, railings:1.5, spaceframe:1, [a]:0 }); return [a, b]; })(),
   };
   // line-only elements are part of the look: every cycle gets at least one, usually two
   const lines = [V.hat, V.snare, V.note].filter(k => GEN[k].line).length + (V.axes ? 1 : 0);
@@ -698,7 +725,7 @@ function genCycle(cy) {
   const voc = cy.voc = pickVocab(r, cy.idx > 0 ? CYCLES[cy.idx - 1].voc : null);
   const kThr = lerp(.6, .12, g), sThr = lerp(.65, .15, g), hThr = lerp(.6, .12, g);
   const maxVol = Math.round(lerp(6, 16, g) * clamp((cy.end - cy.t0) / 30, .7, 1.5)), grow = clamp(bl * .75, .22, .6);
-  let lastVol = -1e9, lastCut = -1e9, lastHat = -1e9, lastNote = -1e9, lastSn = -1e9, lastStack = -1e9, vid = 0;
+  let lastVol = -1e9, lastCut = -1e9, lastHat = -1e9, lastNote = -1e9, lastSn = -1e9, lastStack = -1e9, lastLine = -1e9, vid = 0;
   const inCut = p => cuts.some(c => c.t <= p[3] && c.test(p));
 
   function addEl(t, kind, res, keep = false) {
@@ -817,6 +844,19 @@ function genCycle(cy) {
     cuts.push({ t:s.t, test });
     for (const el of els) if (!el.keep && el.t1 === Infinity && test(bbCenter(el.bb))) el.t1 = s.t;
     v.cuts++; lastCut = s.t;
+    {   // the massing the cut took away stays as a dashed phantom; an overhang casts a dashed line on the ground
+      const dsh = (a, b) => ({ k:'dash', a, b }), pr = [], loop = (poly, z) => poly.forEach((q, i) => { const b = poly[(i + 1) % poly.length]; pr.push(dsh([q[0] * M, q[1] * M, z], [b[0] * M, b[1] * M, z])); });
+      if (spec.slice) {
+        const zAt = (x, y) => spec.pt[2] - (spec.n[0] * (x - spec.pt[0]) + spec.n[1] * (y - spec.pt[1])) / spec.n[2];
+        loop(v.poly, v.top);
+        for (const [x, y] of v.poly) { const z = Math.max(v.z0 * F, zAt(x * M, y * M)); if (z < v.top - .05) pr.push(dsh([x * M, y * M, z], [x * M, y * M, v.top])); }
+      } else if (kind === 'under') loop(spec.poly, .02);
+      else {
+        const z0 = Math.max(spec.z0 * F, v.z0 * F), z1 = Math.min(spec.z1 * F, v.top);
+        loop(spec.poly, z1); for (const [x, y] of spec.poly) pr.push(dsh([x * M, y * M, z0], [x * M, y * M, z1]));
+      }
+      addEl(s.t + bl * .25, 'phantom', { prims:pr }, true);
+    }
     if (kind === 'under') {   // pilotis: columns appear under the new overhang, a few per 16th
       const [ux0, uy0, ux1, uy1] = polyBB(spec.poly).map(q => Math.round(q)); let k = 0;
       for (let x = ux0; x <= ux1; x++) for (let y = uy0; y <= uy1; y++) {
@@ -825,8 +865,9 @@ function genCycle(cy) {
       }
     }
   }
-  const chans = { hat:{ kind:voc.hat }, snare:{ kind:voc.snare }, note:{ kind:voc.note } };
+  const chans = { hat:{ kind:voc.hat }, snare:{ kind:voc.snare }, note:{ kind:voc.note }, line:{ kind:voc.line[0], kinds:voc.line, rt:0 } };
   function retarget(ch) {
+    if (ch.kinds) ch.kind = ch.kinds[ch.rt++ % ch.kinds.length];   // the line channel alternates between its two kinds
     const G = GEN[ch.kind], c = vols.filter(v => G.ok(v) && !v.used.has(ch.kind));
     const pool = c.length ? c : vols.filter(v => G.ok(v));
     if (!pool.length) { ch.v = null; return; }
@@ -863,8 +904,10 @@ function genCycle(cy) {
       if (p > .18 && s.t - lastCut >= bl * (loose > .5 ? 2 : 4) && r() < lerp(.2, .65, loose)) makeCut(s, loose);
       else if (s.t - lastSn >= bl * .5 && p > .1) { if (series('snare', s)) lastSn = s.t; }
     }
-    if ((s.hat || 0) > hThr && s.t - lastHat >= bl * (g > .5 ? .5 : 1) && p > .08) { if (series('hat', s)) lastHat = s.t; }
+    if ((s.hat || 0) > hThr && s.t - lastHat >= bl * (g > .65 ? .25 : g > .4 ? .5 : 1) && p > .08) { if (series('hat', s)) lastHat = s.t; }
     if (s.note && s.t - lastNote >= bl * .5 && p > .12) { if (series('note', s)) lastNote = s.t; }
+    // fine linework rides on whatever else is playing, an 8th at a time
+    if (((s.hat || 0) > hThr * .6 || (s.snare || 0) > sThr * .6 || s.note || s.down) && s.t - lastLine >= bl * .5 && p > .05) { if (series('line', s)) lastLine = s.t; }
     if (s.down && s.bar % 8 === 0) for (const k in chans) chans[k].v = null;   // every 8 bars each series moves to a new target
   }
 
@@ -996,6 +1039,14 @@ function roleOf(kind, nz) {
   if (nz > .3) return kind === 'cut' ? ROLE.slab : ROLE.roof;
   return ROLE.wall;
 }
+// flat 2D fills, in screen space like a diagram: each cycle hatches walls, dot-screens roofs and pochés its cut faces its own way
+const PATTERN = { none:0, hatch:1, hatchB:2, cross:3, dots:4, lines:5, poche:6 };
+let PAT = null;
+function patOf(role, nx, ny) {
+  if (!PAT) return 0;
+  if (role === ROLE.wall) return Math.abs(nx) > Math.abs(ny) ? PAT.wallX : PAT.wallY;
+  return role === ROLE.roof ? PAT.roof : role === ROLE.slab ? PAT.slab : role === ROLE.under ? PAT.under : 0;
+}
 const shadeK = (nx, ny, nz) => S.shading !== 'three' || Math.abs(nz) > .3 ? 1 : Math.abs(nx) > Math.abs(ny) ? .9 : .78;
 function meshInto(A, mesh, cols, xf, tint) {
   const np = mesh.numProp, vp = mesh.vertProperties, tv = mesh.triVerts, nTri = tv.length / 3, pos = new Float32Array(nTri * 9);
@@ -1009,6 +1060,7 @@ function meshInto(A, mesh, cols, xf, tint) {
       const cr = lerp(cols[ROLE.accent].r, c.r, tint) * sk, cg = lerp(cols[ROLE.accent].g, c.g, tint) * sk, cb = lerp(cols[ROLE.accent].b, c.b, tint) * sk;
       for (let k = 0; k < 9; k++) A.pos.push(pos[o + k]);
       for (let k = 0; k < 3; k++) A.col.push(cr, cg, cb);
+      const pt = patOf(roleOf(kind, nz), nx, ny); A.pat.push(pt, pt, pt);
     }
   }
   // feature edges only (dihedral > 15°), so the boolean's coplanar triangle seams never show
@@ -1019,14 +1071,15 @@ function meshInto(A, mesh, cols, xf, tint) {
 }
 
 /* accumulating fills and lines for a layer */
-const newAcc = () => ({ pos:[], col:[], vis:[], hid:[], dash:[] });
-function pushTri(A, a, b, c, col, tint, accent) {
+const newAcc = () => ({ pos:[], col:[], pat:[], vis:[], hid:[], dash:[], dl:[] });
+function pushTri(A, a, b, c, col, tint, accent, role) {
   const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
   let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1;
   const sk = shadeK(nx / l, ny / l, nz / l);
   A.pos.push(...a, ...b, ...c);
   const cr = lerp(accent.r, col.r, tint) * sk, cg = lerp(accent.g, col.g, tint) * sk, cb = lerp(accent.b, col.b, tint) * sk;
   A.col.push(cr, cg, cb, cr, cg, cb, cr, cg, cb);
+  const pt = patOf(role, nx / l, ny / l); A.pat.push(pt, pt, pt);
 }
 const BOX_FACES = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]];
 const BOX_EDGES = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
@@ -1035,12 +1088,14 @@ function primsInto(A, el, cols, xf, tint) {
   for (const p of el.prims) {
     if (p.k === 'box') {
       const c = boxCorners(p).map(xf);
-      for (const f of BOX_FACES) { pushTri(A, c[f[0]], c[f[1]], c[f[2]], cols[p.role], tint, acc); pushTri(A, c[f[0]], c[f[2]], c[f[3]], cols[p.role], tint, acc); }
+      for (const f of BOX_FACES) { pushTri(A, c[f[0]], c[f[1]], c[f[2]], cols[p.role], tint, acc, p.role); pushTri(A, c[f[0]], c[f[2]], c[f[3]], cols[p.role], tint, acc, p.role); }
       for (const [i, j] of BOX_EDGES) { A.vis.push(...c[i], ...c[j]); A.hid.push(...c[i], ...c[j]); }
     } else if (p.k === 'quad') {
       const c = p.p.map(xf);
-      pushTri(A, c[0], c[1], c[2], cols[p.role], tint, acc); pushTri(A, c[0], c[2], c[3], cols[p.role], tint, acc);
+      pushTri(A, c[0], c[1], c[2], cols[p.role], tint, acc, p.role); pushTri(A, c[0], c[2], c[3], cols[p.role], tint, acc, p.role);
       for (let i = 0; i < 4; i++) A.vis.push(...c[i], ...c[(i + 1) % 4]);
+    } else if (p.k === 'dash') {
+      A.dl.push(...xf(p.a), ...xf(p.b));
     } else {
       const a = xf(p.a), b = xf(p.b); A.vis.push(...a, ...b); if (!el.visOnly) A.hid.push(...a, ...b);
     }
@@ -1060,15 +1115,38 @@ const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, .1, 3000);
 camera.up.set(0, 0, 1);
 const fillMat = new THREE.MeshBasicMaterial({ vertexColors:true, side:THREE.DoubleSide, polygonOffset:true, polygonOffsetFactor:2, polygonOffsetUnits:2 });
 const visMat = new LineMaterial({ color:0x7a7a80, linewidth:1.5 }); visMat.depthWrite = false;
-const hidMat = new LineMaterial({ color:0x7a7a80, linewidth:1.2, dashed:true, dashSize:1, gapSize:1, transparent:true, opacity:.5 });
+const hidMat = new LineMaterial({ color:0x7a7a80, linewidth:1.2, dashed:true, dashSize:1, gapSize:1, transparent:true, opacity:.42 });
 hidMat.depthWrite = false; hidMat.depthFunc = THREE.GreaterDepth;
 const ghostMat = new LineMaterial({ color:0xffffff, linewidth:1.5, dashed:true, dashSize:1, gapSize:1, transparent:true, opacity:.9 });
 ghostMat.depthWrite = false; ghostMat.depthTest = false;
+// phantom lines: what a cut took away, an overhang's shadow line on the ground; dashed, and hidden behind solids
+const dashLineMat = new LineMaterial({ color:0x7a7a80, linewidth:1, dashed:true, dashSize:1, gapSize:1, transparent:true, opacity:.8 }); dashLineMat.depthWrite = false;
+const patU = { uInk:{ value:new THREE.Color() }, uSp:{ value:8 }, uW:{ value:1 }, uAmt:{ value:0 } };
+fillMat.onBeforeCompile = sh => {
+  Object.assign(sh.uniforms, patU);
+  sh.vertexShader = 'attribute float pat;\nvarying float vPat;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvPat = pat;');
+  sh.fragmentShader = `varying float vPat;
+uniform vec3 uInk; uniform float uSp, uW, uAmt;
+float hatchM(vec2 p, float ang, float sp, float w) { float u = dot(p, vec2(cos(ang), sin(ang))); float d = abs(mod(u, sp) - sp * .5); return 1. - smoothstep(w * .5 - .5, w * .5 + .5, d); }
+float dotsM(vec2 p, float sp, float r) { vec2 q = vec2(p.x + p.y, p.x - p.y) * .7071; vec2 c = mod(q, sp) - sp * .5; return 1. - smoothstep(r - .6, r + .6, length(c)); }
+vec3 patApply(vec3 c, float id) {
+  if (id < .5 || uAmt <= 0.) return c;
+  vec2 p = gl_FragCoord.xy; float m = 0.; int k = int(id + .5);
+  if (k == 1) m = hatchM(p, .7854, uSp, uW);
+  else if (k == 2) m = hatchM(p, -.7854, uSp, uW);
+  else if (k == 3) m = max(hatchM(p, .7854, uSp * 1.4, uW), hatchM(p, -.7854, uSp * 1.4, uW));
+  else if (k == 4) m = dotsM(p, uSp * .85, uW * .95);
+  else if (k == 5) m = hatchM(p, 1.5708, uSp * 1.1, uW);
+  else if (k == 6) m = hatchM(p, .7854, uSp * .42, uW);
+  return mix(c, uInk, m * uAmt);
+}
+` + sh.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = patApply(diffuseColor.rgb, vPat);');
+};
 function makeLayer(order) {
   const L = { mesh:new THREE.Mesh(new THREE.BufferGeometry(), fillMat), vis:new LineSegments2(new LineSegmentsGeometry(), visMat),
-    hid:new LineSegments2(new LineSegmentsGeometry(), hidMat), ghost:new LineSegments2(new LineSegmentsGeometry(), ghostMat) };
-  L.mesh.renderOrder = order; L.vis.renderOrder = 10 + order; L.hid.renderOrder = 20 + order; L.ghost.renderOrder = 30 + order;
-  for (const o of [L.mesh, L.vis, L.hid, L.ghost]) { o.frustumCulled = false; o.visible = false; scene.add(o); }
+    hid:new LineSegments2(new LineSegmentsGeometry(), hidMat), ghost:new LineSegments2(new LineSegmentsGeometry(), ghostMat), dl:new LineSegments2(new LineSegmentsGeometry(), dashLineMat) };
+  L.mesh.renderOrder = order; L.vis.renderOrder = 10 + order; L.hid.renderOrder = 20 + order; L.ghost.renderOrder = 30 + order; L.dl.renderOrder = 15 + order;
+  for (const o of [L.mesh, L.vis, L.hid, L.ghost, L.dl]) { o.frustumCulled = false; o.visible = false; scene.add(o); }
   return L;
 }
 function setLines(obj, arr) {
@@ -1094,8 +1172,9 @@ function setLayer(L, A) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(A.pos), 3));
   g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(A.col), 3));
+  g.setAttribute('pat', new THREE.BufferAttribute(new Float32Array(A.pat.length ? A.pat : A.pos.length / 3), 1));
   L.mesh.geometry = g; L.mesh.visible = A.pos.length > 0;
-  setLines(L.vis, overshoot(A.vis)); setLines(L.hid, A.hid); setLines(L.ghost, A.dash);
+  setLines(L.vis, overshoot(A.vis)); setLines(L.hid, A.hid); setLines(L.ghost, A.dash); setLines(L.dl, A.dl);
 }
 const LAYERS = { solid:makeLayer(0), set:makeLayer(1), live:makeLayer(2) };
 
@@ -1414,17 +1493,23 @@ function renderAt(t, dt) {
   const cy = cycleAt(t);
   if (cy.idx !== lastCy || Math.abs(t - lastT) > .5) { CAM.snap = true; lastCy = cy.idx; }
   lastT = t;
+  PAT = S.hatch > 0 ? cy.pat : null;
   updateSolid(cy, t); updateSettled(cy, t); updateLive(cy, t);
   const P = cy.pal;
   scene.background = new THREE.Color(P.bg); document.body.style.background = P.bg;
   visMat.color.set(P.line); hidMat.color.set(P.line); ghostMat.color.set(P.accent === '#ffffff' ? P.line : P.accent);
   placeCamera(cy, t, dt);
   // pixels per CSS pixel of the preview: lines and dots keep their weight relative to the frame at any export size
-  const bw = canvas.width, bh = canvas.height, dpr = bh / innerHeight, lw = lerp(.75, 3, S.lineW) * dpr, upp = (camera.top - camera.bottom) / bh;
+  const bw = canvas.width, bh = canvas.height, dpr = bh / (innerHeight > 100 ? innerHeight : 900), lw = lerp(.45, 2.6, S.lineW) * dpr, upp = (camera.top - camera.bottom) / bh;
   for (const m of [visMat, hidMat, ghostMat]) m.resolution.set(bw, bh);
-  visMat.linewidth = lw; hidMat.linewidth = lw * .85; ghostMat.linewidth = lw * 1.1;
+  visMat.linewidth = lw; hidMat.linewidth = lw * .75; ghostMat.linewidth = lw;
   hidMat.dashSize = (S.hidden === 'dashed' ? 6 : 1.6) * dpr * upp; hidMat.gapSize = (S.hidden === 'dashed' ? 4 : 3) * dpr * upp;
   ghostMat.dashSize = 5 * dpr * upp; ghostMat.gapSize = 4 * dpr * upp;
+  dashLineMat.resolution.set(bw, bh); dashLineMat.linewidth = lw * .9; dashLineMat.color.set(P.line);
+  dashLineMat.dashSize = 6 * dpr * upp; dashLineMat.gapSize = 4 * dpr * upp;
+  // hatch ink is the line colour pushed a little further from the paper, so fine strokes still read on a mid-tone fill
+  const bgL = new THREE.Color(P.bg).getHSL({}).l, ink = new THREE.Color(P.line).lerp(new THREE.Color(bgL < .35 ? '#ffffff' : '#000000'), .2);
+  patU.uInk.value.copy(ink); patU.uAmt.value = S.hatch * .9; patU.uSp.value = lerp(4, 14, S.hatchSize) * dpr; patU.uW.value = Math.max(1.05, lw * .9);
   for (const L of Object.values(LAYERS)) L.hid.visible = S.hidden !== 'off' && !!L.hid.userData.has;
   renderer.setRenderTarget(rt); renderer.render(scene, camera);
   drawPost(t, cy);
@@ -1541,6 +1626,13 @@ function showProgress(p) {
 }
 function setExportMsg(m) { $('#exp-text').textContent = m; $('#exp-msg').textContent = m; }
 window.exportMP4 = exportMP4;
+// a still at any size: the camera settles over the half second before t, then the frame is grabbed as a JPEG
+async function snapshot(t, w = 1600, h = 900) {
+  EXPORT = { still:true }; setSizes(w, h, 1);
+  for (let k = 12; k >= 0; k--) renderAt(t - k / S.fps, 1 / S.fps);
+  const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', .9));
+  EXPORT = null; resize(); return blob;
+}
 
 /* drag to nudge the view, double-click to reset */
 let drag = null;
@@ -1581,6 +1673,8 @@ addSelect('shading', 'Shading', [['flat', 'Flat'], ['three', 'Three-tone']], () 
 addSelect('hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashed'], ['off', 'Off']], nop);
 addSlider('growth', 'Growth', regen);
 addSlider('lineW', 'Line width', nop);
+addSlider('hatch', 'Hatching & dot screens', () => { SOL.cyc = -1; SET.key = ''; });
+addSlider('hatchSize', 'Hatch spacing', nop);
 addSlider('punch', 'Kick zoom', nop);
 addSlider('margin', 'Margin', nop);
 const seedBtn = document.createElement('button'); seedBtn.textContent = 'New seed'; seedBtn.onclick = () => { S.seed = (S.seed % 9999) + 1; saveSettings(); rebuildAll(); };
@@ -1588,8 +1682,8 @@ vp.appendChild(seedBtn);
 const statsEl = document.createElement('div'); statsEl.className = 'stats'; vp.appendChild(statsEl);
 // the look panel: paper and film
 const LOOKS = {
-  drawing:{ paper:.55, tooth:.6, age:.15, bleed:.3, wobble:.25, wash:.35, overshoot:.35, grain:.3, flicker:.2, dust:.3, scratch:.2, weave:.25, vignette:.45, chroma:.12, halation:.08, saturation:.46, warmth:.56 },
-  archive:{ paper:.8, tooth:.8, age:.4, bleed:.5, wobble:.4, wash:.5, overshoot:.5, grain:.45, flicker:.35, dust:.5, scratch:.4, weave:.4, vignette:.6, chroma:.2, halation:.1, saturation:.35, warmth:.66 },
+  drawing:{ paper:.55, tooth:.6, age:.15, bleed:.12, wobble:.25, wash:.35, overshoot:.35, grain:.3, flicker:.2, dust:.3, scratch:.2, weave:.25, vignette:.45, chroma:.12, halation:.08, saturation:.46, warmth:.56 },
+  archive:{ paper:.8, tooth:.8, age:.4, bleed:.3, wobble:.4, wash:.5, overshoot:.5, grain:.45, flicker:.35, dust:.5, scratch:.4, weave:.4, vignette:.6, chroma:.2, halation:.1, saturation:.35, warmth:.66 },
   film:{ paper:.25, tooth:.3, age:.1, bleed:.1, wobble:.15, wash:.2, overshoot:.15, grain:.55, flicker:.45, dust:.5, scratch:.5, weave:.4, vignette:.55, chroma:.35, halation:.3, saturation:.5, warmth:.5 },
   clean:{ paper:0, tooth:0, age:0, bleed:0, wobble:0, wash:0, overshoot:0, grain:0, flicker:0, dust:0, scratch:0, weave:0, vignette:0, chroma:0, halation:0, saturation:.5, warmth:.5 },
 };
@@ -1653,7 +1747,7 @@ setStatus('');
 updateUI();
 requestAnimationFrame(frame);
 if (pendingLoad) massingLoad(...pendingLoad);
-window.MASSING = { S, get AN() { return AN; }, get CYCLES() { return CYCLES; }, seek, rebuildAll, scene, camera, DEMO };   // for poking at from the console
+window.MASSING = { snapshot, S, get AN() { return AN; }, get CYCLES() { return CYCLES; }, seek, rebuildAll, scene, camera, DEMO };   // for poking at from the console
 </script>
 
 <script src="../../shared/source.js"></script>
