@@ -129,7 +129,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 
 /* ------------------------------------------------------------------ settings */
 const S = {
-  seed:1, growth:.7, actions:2, pitchSens:.5,
+  seed:1, growth:.7, actions:2, unify:.85, pitchSens:.5,
   shots:'4', view:'iso', punch:.5, margin:.12,
   palette:'generated', variety:.5, shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.35, flash:true, look:'drawing',
   // old drawing
@@ -552,7 +552,7 @@ function assignPalettes() {
     const c = k => new THREE.Color(cy.pal[k]);
     // role colours, in the order the geometry stores them: wall, roof, slab, underside, element, window, accent
     if (!cy.pal.struct) cy.pal = { ...cy.pal, struct:new THREE.Color(cy.pal.wall).lerp(new THREE.Color(cy.pal.line), .45).getStyle() };
-    cy.cols = [c('wall'), c('roof'), c('slab'), c('wall').multiplyScalar(.82), c('elem'), c('window'), c('accent'), c('struct')];
+    cy.cols = [c('wall'), c('roof'), c('slab'), c('wall').multiplyScalar(.82), c('elem'), c('window'), c('accent'), c('struct'), c('line').lerp(c('bg'), .22)];   // last: the one surface a unifying cut leaves on every block
     // colour variety: how many programs (0–5) and how many volumes belong to one
     const n = Math.round(S.variety * 5), dark = new THREE.Color(cy.pal.bg).getHSL({}).l < .35;
     cy.prog = { n, frac:n ? lerp(.3, .85, S.variety) : 0, cols:programColours(rp, cy.pal).map(hex => {
@@ -589,7 +589,7 @@ function facades(v) {
 }
 
 /* element primitives: plan-oriented boxes, window quads and line segments, all in metres */
-const ROLE = { wall:0, roof:1, slab:2, under:3, elem:4, window:5, accent:6, struct:7 };
+const ROLE = { wall:0, roof:1, slab:2, under:3, elem:4, window:5, accent:6, struct:7, unify:8 };
 const box = (o, u, lu, ln, z0, z1, role = ROLE.elem) => ({ k:'box', o, u, lu, ln, z0, z1, role });   // o: a plan corner; extends lu along u and ln to its left
 const boxC = (cx, cy, sx, sy, z0, z1, role) => box([cx - sx / 2, cy - sy / 2], [1, 0], sx, sy, z0, z1, role);
 const seg = (a, b) => ({ k:'seg', a, b });
@@ -964,6 +964,57 @@ function genCycle(cy) {
       }
     }
   }
+  // late in the cycle one big move ties the blocks into a single form: a roof plane, a datum or a gash through everything
+  const ur = rngFor(S.seed * 13 + cy.idx, 91), willUnify = ur() < S.unify, unifyAt = .62 + ur() * .12;
+  let unified = false;
+  function unify(s) {
+    unified = true;
+    const kind = pickW(ur, { plane:3, datum:1.3, gash:1.3 });
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const v of vols) { x0 = Math.min(x0, v.rect[0]); y0 = Math.min(y0, v.rect[1]); x1 = Math.max(x1, v.rect[2]); y1 = Math.max(y1, v.rect[3]); }
+    const alongX = x1 - x0 >= y1 - y0, L = (alongX ? x1 - x0 : y1 - y0) * M, cxm = (x0 + x1) / 2, cym = (y0 + y1) / 2;
+    const tops = vols.map(v => v.top).sort((a, b) => a - b), q = f => tops[Math.min(tops.length - 1, Math.floor(f * tops.length))];
+    const dsh = (a, b) => ({ k:'dash', a, b });
+    const pushCut = spec => {
+      const P = spec.poly.map(([x, y]) => [x * M, y * M]);
+      const inside = p => inPoly(P, p[0], p[1]) && p[2] >= spec.z0 * F && p[2] <= spec.z1 * F;
+      const test = spec.slice ? p => inside(p) && (p[0] - spec.pt[0]) * spec.n[0] + (p[1] - spec.pt[1]) * spec.n[1] + (p[2] - spec.pt[2]) * spec.n[2] > 0 : inside;
+      const [bx0, by0, bx1, by1] = polyBB(spec.poly);
+      geo.push({ type:'cut', t:s.t, settle:s.t, spec, bb:{ min:[bx0 * M, by0 * M, 0], max:[bx1 * M, by1 * M, q(1)] }, lead:bl });
+      cuts.push({ t:s.t, test });
+      for (const el of els) if (!el.keep && el.t1 === Infinity && test(bbCenter(el.bb))) el.t1 = s.t;
+      lastCut = s.t;
+    };
+    if (kind === 'gash') {   // a long diagonal void through every block
+      const ang = (alongX ? 0 : 90) + (ur() < .5 ? -1 : 1) * (18 + ur() * 20), u = [Math.cos(ang * D2R), Math.sin(ang * D2R)], nn = [-u[1], u[0]];
+      const hl = Math.hypot(x1 - x0, y1 - y0) / 2 + 1.5, hw = .4 + ur() * .35;
+      const poly = [[-hl, -hw], [hl, -hw], [hl, hw], [-hl, hw]].map(([a, b]) => [cxm + u[0] * a + nn[0] * b, cym + u[1] * a + nn[1] * b]);
+      pushCut({ poly, z0:-.01, z1:80, kind:'gash' });
+      const pr2 = []; poly.forEach((a, i) => { const b = poly[(i + 1) % 4]; pr2.push(dsh([a[0] * M, a[1] * M, .02], [b[0] * M, b[1] * M, .02])); });
+      addEl(s.t + bl * .25, 'phantom', { prims:pr2 }, true);
+      return;
+    }
+    // a plane over everything: tilted along the long axis (a roof plane) or level (a datum)
+    let pt, n, tilt = 0, dir = '+x';
+    if (kind === 'datum') { pt = [cxm * M, cym * M, Math.max(F * 1.5, q(.75))]; n = [0, 0, 1]; }
+    else {
+      const zh = Math.max(F * 2, q(1) - .6), zl = Math.max(F * 1.2, q(.6));   // shave the tops, tallest most; never gut the blocks
+      tilt = clamp(Math.atan(Math.max(2, zh - zl) / L) / D2R, 3, 25);
+      dir = alongX ? (ur() < .5 ? '+x' : '-x') : (ur() < .5 ? '+y' : '-y');
+      const sn = Math.sin(tilt * D2R), cs = Math.cos(tilt * D2R);
+      pt = [(dir === '+x' ? x0 : dir === '-x' ? x1 : cxm) * M, (dir === '+y' ? y0 : dir === '-y' ? y1 : cym) * M, zh];
+      n = dir === '+x' ? [sn, 0, cs] : dir === '-x' ? [-sn, 0, cs] : dir === '+y' ? [0, sn, cs] : [0, -sn, cs];
+    }
+    const zAt = (x, y) => pt[2] - (n[0] * (x - pt[0]) + n[1] * (y - pt[1])) / n[2];
+    pushCut({ slice:true, poly:rect(x0 - 1.05, y0 - 1.05, x1 - x0 + 2.1, y1 - y0 + 2.1), z0:-.01, z1:80, pt, n, tilt, dir, kind });
+    const ph = [];   // every shaved block keeps its old top as a dashed phantom
+    for (const v of vols) {
+      const P = v.poly.map(([x, y]) => [x * M, y * M]), zs = P.map(([x, y]) => zAt(x, y));
+      if (zs.every(z => z >= v.top - 1)) continue;
+      P.forEach((a, i) => { const b = P[(i + 1) % P.length]; ph.push(dsh([a[0], a[1], v.top], [b[0], b[1], v.top])); if (zs[i] < v.top - .05) ph.push(dsh([a[0], a[1], Math.max(v.z0 * F, zs[i])], [a[0], a[1], v.top])); });
+    }
+    if (ph.length) addEl(s.t + bl * .25, 'phantom', { prims:ph }, true);
+  }
   const chans = { hat:{ kind:voc.hat }, snare:{ kind:voc.snare }, note:{ kind:voc.note }, line:{ kind:voc.line[0], kinds:voc.line, rt:0 }, struct:{ kind:voc.struct[0], kinds:voc.struct, rt:0 } };
   for (const k in chans) chans[k].r = r;
   function retarget(ch) {
@@ -1003,9 +1054,10 @@ function genCycle(cy) {
     if (!vols.length) { if ((s.kick || 0) > kThr * .5 || (s.snare || 0) > sThr * .5 || s.down) placeVol(s, p, loose, 'first'); continue; }
     while (bi < BIG.length && BIG[bi].t < s.t - bl * .26) bi++;
     if (bi < BIG.length && Math.abs(BIG[bi].t - s.t) <= bl * .26) { if (p > .12 && s.t < cy.end - 2 * bl) explode(s); bi++; }
+    if (willUnify && !unified && s.down && p >= unifyAt && vols.length >= 3 && s.t < cy.end - 4 * bl) unify(s);
     if ((s.kick || 0) > kThr) {
-      if (vols.length < maxVol && s.t - lastVol >= bl * (p < .45 ? (g > .6 ? 1 : 2) : 3)) for (let a = 0; a < vActs && vols.length < maxVol; a++) placeVol(a ? { ...s, t:s.t + a * bl / 4 } : s, p, loose);
-      else if (s.kick > .55 && s.t - lastStack >= 4 * bl && r() < .4) growTower(s);
+      if (!unified && vols.length < maxVol && s.t - lastVol >= bl * (p < .45 ? (g > .6 ? 1 : 2) : 3)) for (let a = 0; a < vActs && vols.length < maxVol; a++) placeVol(a ? { ...s, t:s.t + a * bl / 4 } : s, p, loose);
+      else if (!unified && s.kick > .55 && s.t - lastStack >= 4 * bl && r() < .4) growTower(s);
     }
     if ((s.snare || 0) > sThr) {
       if (p > .18 && s.t - lastCut >= bl * (loose > .5 ? 2 : 4) && r() < lerp(.2, .65, loose)) for (let a = 0; a < vActs; a++) makeCut(a ? { ...s, t:s.t + a * bl / 4 } : s, loose);
@@ -1133,7 +1185,8 @@ function updateSolid(cy, t) {
       if (piece.isEmpty()) { piece.delete(); continue; }
       SOL.pieces.push({ m:piece, v:op.v, acc:null });
     } else {
-      const c = tag(cutterOf(op.spec), op.spec.slice ? 'slice' : 'cut');
+      // a unifying cut tags its faces 'unify': every block it passes through gets the same surface, so the shared plane is implied
+      const c = tag(cutterOf(op.spec), ['plane', 'datum', 'gash'].includes(op.spec.kind) ? 'unify' : op.spec.slice ? 'slice' : 'cut');
       if (!c.isEmpty()) {
         const cb = c.boundingBox();
         for (const pc of SOL.pieces) {
@@ -1160,6 +1213,7 @@ function updateSolid(cy, t) {
 // role of a triangle from its normal and what made it: a slice leaves a sloped roof, other cuts reveal floor slabs
 function roleOf(kind, nz) {
   if (nz < -.3) return ROLE.under;
+  if (kind === 'unify') return ROLE.unify;
   if (nz > .3) return kind === 'cut' ? ROLE.slab : ROLE.roof;
   return ROLE.wall;
 }
@@ -1876,6 +1930,7 @@ addSlider('variety', 'Colour variety', recolour);
 addSelect('shading', 'Shading', [['flat', 'Flat'], ['three', 'Three-tone']], () => { SOL.cyc = -1; SET.key = ''; });
 addSelect('hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashed'], ['off', 'Off']], nop);
 addSlider('growth', 'Growth', regen);
+addSlider('unify', 'Late unifying cuts', regen);
 addSelect('actions', 'Actions per hit', [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']], () => { S.actions = +S.actions; regen(); });
 addSlider('lineW', 'Line width', nop);
 addSlider('hatch', 'Hatching & dot screens', () => { SOL.cyc = -1; SET.key = ''; });
