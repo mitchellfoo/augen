@@ -1213,7 +1213,7 @@ function rebuildAll() {
   buildBigHits(); buildPunches();
   for (const cy of CYCLES) genCycle(cy);
   buildShots();
-  SOL.cyc = -1; SOL.live.clear(); SET.key = '';
+  SOL.cyc = -1; SOL.live.clear(); SOURCES.clear(); SET.key = '';
   const ticks = $('#ticks'); ticks.innerHTML = '';
   for (const cy of CYCLES.slice(1)) { const i = document.createElement('i'); i.className = 'tick'; i.style.left = `${cy.t0 / AN.dur * 100}%`; ticks.appendChild(i); }
   const nv = CYCLES.reduce((s, c) => s + c.vols.length, 0), ne = CYCLES.reduce((s, c) => s + c.els.length, 0), nc = CYCLES.reduce((s, c) => s + c.geo.filter(o => o.type === 'cut').length, 0);
@@ -1260,7 +1260,7 @@ const elEx = (el, t) => { const ex = exOn(el.ex); return ex && ex.t <= t ? ex : 
 function updateSolid(cy, t) {
   const n = upperBound(cy.geoSettle, t), t0 = performance.now();
   if (SOL.cyc !== cy.idx || n < SOL.n) {
-    for (const pc of SOL.pieces) pc.m.delete(); SOL.pieces = []; SOL.n = 0; SOL.cyc = cy.idx; SOL.key = ''; SOURCES.clear();
+    for (const pc of SOL.pieces) pc.m.delete(); SOL.pieces = []; SOL.n = 0; SOL.cyc = cy.idx; SOL.key = '';   // SOURCES stays: cached growing blocks still point into it
   }
   for (let i = SOL.n; i < n; i++) {
     const op = cy.geo[i];
@@ -1449,7 +1449,7 @@ function setLayer(L, A) {
   L.mesh.geometry = g; L.mesh.visible = L.mesh.userData.has = A.pos.length > 0;
   setLines(L.vis, overshoot(A.vis)); setLines(L.hid, A.hid); setLines(L.ghost, A.dash); setLines(L.dl, A.dl); setLines(L.mark, A.mark); setLines(L.lin, overshoot(A.lin));
 }
-const FILLS = { solid:fillFor(8), set:fillFor(4), live:fillFor(1), ex:fillFor(4) };
+const FILLS = { solid:fillFor(24), set:fillFor(12), live:fillFor(2), ex:fillFor(12) };
 const LAYERS = { solid:makeLayer(0, FILLS.solid), set:makeLayer(1, FILLS.set), live:makeLayer(2, FILLS.live), ex:makeLayer(3, FILLS.ex) };
 
 // optional hard shadows: a sun casts every fill onto a ground plane that shows only the shadow, solid or hatched
@@ -1544,10 +1544,18 @@ function updateSettled(cy, t) {
   setLayer(LAYERS.set, A);
 }
 // live: volumes extruding, elements popping in, and the dotted ghosts of what is about to arrive
+function liveInset(m, v) {
+  const sh = section(v.shape || v.poly), inner = sh.offset(-.02, 'Miter'); sh.delete();
+  if (inner.isEmpty()) { inner.delete(); return m; }
+  const col = inner.extrude(400).translate([0, 0, -200]); inner.delete();
+  const out = m.intersect(col).translate([0, 0, .01]); m.delete(); col.delete();
+  return out.isEmpty() ? (out.delete(), volPiece(v)) : out;
+}
 function liveVolGeom(op) {
   let c = SOL.live.get(op);
   if (!c) {
-    const m = tag(volPiece(op.v), 'vol', op.v), mesh = m.getMesh(); m.delete();
+    // while a block is growing it is drawn 2 cm inset and 1 cm up: invisible, but two growing blocks can never share a plane
+    const m0 = volPiece(op.v), m = tag(liveInset(m0, op.v), 'vol', op.v), mesh = m.getMesh(); m.delete();
     c = { mesh }; SOL.live.set(op, c);
     if (SOL.live.size > 64) SOL.live.delete(SOL.live.keys().next().value);
   }
@@ -2101,10 +2109,10 @@ function showProgress(p) {
 function setExportMsg(m) { $('#exp-text').textContent = m; $('#exp-msg').textContent = m; }
 window.exportMP4 = exportMP4;
 // a still at any size: the camera settles over the half second before t, then the frame is grabbed as a JPEG
-async function snapshot(t, w = 1600, h = 900) {
+async function snapshot(t, w = 1600, h = 900, type = 'image/jpeg') {
   EXPORT = { still:true }; setSizes(w, h, 1);
   for (let k = 12; k >= 0; k--) renderAt(t - k / S.fps, 1 / S.fps);
-  const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', .9));
+  const blob = await new Promise(r => canvas.toBlob(r, type, .9));
   EXPORT = null; resize(); return blob;
 }
 
@@ -2273,7 +2281,7 @@ setStatus('');
 updateUI();
 requestAnimationFrame(frame);
 if (pendingLoad) massingLoad(...pendingLoad);
-window.MASSING = { snapshot, get BIG() { return BIG; }, get SHOTS() { return SHOTS; }, S, get AN() { return AN; }, get CYCLES() { return CYCLES; }, seek, rebuildAll, scene, camera, DEMO };   // for poking at from the console
+window.MASSING = { get CAM() { return CAM; }, snapshot, get BIG() { return BIG; }, get SHOTS() { return SHOTS; }, S, get AN() { return AN; }, get CYCLES() { return CYCLES; }, seek, rebuildAll, scene, camera, DEMO };   // for poking at from the console
 </script>
 
 <script src="../../shared/source.js"></script>
