@@ -137,7 +137,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 /* ------------------------------------------------------------------ settings */
 const S = {
   seed:1, curve:.35, growth:.7, actions:2, unify:.85, form:'mixed', camStyle:'mixed', pitchSens:.5,
-  shots:'music', shotSens:.5, view:'iso', punch:0, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:0, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35, silenceFade:.9,
+  shots:'music', shotSens:.5, view:'iso', punch:0, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:0, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35, silenceFade:.9, silenceThr:.09,
   palette:'generated', variety:.5, shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.35, flash:false, look:'drawing',
   // old drawing
   paper:.55, tooth:.6, age:.15, bleed:.12, wobble:.25, wash:.35,
@@ -1682,12 +1682,14 @@ function newestPts(cy, t) {
   for (const e of cy.els) { if (e.t0 > t) break; if (e.t1 > t && e.kind !== 'axes' && e.t0 > bt) { bt = e.t0; best = bbCorners(e.bb); } }
   return best;
 }
-// presence: how much music is sounding. The envelope rises in 0.15 s and lets go over 1.6 s, then maps so that below
-// about 4% of the song's loud level counts as silence (0) and from about 14% it is fully present (1)
+// presence: how much music is sounding. The envelope rises in 0.15 s and lets go over 1.6 s, then maps to 0 (silence)
+// below the threshold and 1 (fully present) a little above it. The silence threshold slider runs from true silence only
+// (about 1% of the song's loud level) up to quiet passages (about 35%); the default is about 4%
 function buildPresence() {
   const n = AN.n, rate = AN.rate, out = new Float32Array(n), att = 1 - Math.exp(-1 / (rate * .15)), rel = 1 - Math.exp(-1 / (rate * 1.6));
+  const lo = lerp(.01, .35, S.silenceThr), hi = lo * 2.5 + .04;
   let e = 0;
-  for (let i = 0; i < n; i++) { const x = AN.rms[i]; e += (x - e) * (x > e ? att : rel); out[i] = smooth(.04, .14, e); }
+  for (let i = 0; i < n; i++) { const x = AN.rms[i]; e += (x - e) * (x > e ? att : rel); out[i] = smooth(lo, hi, e); }
   AN.presence = out;
 }
 const presenceAt = t => AN && AN.presence ? (t < 0 || t > AN.dur ? 0 : AN.presence[fr(AN, t)]) : 1;
@@ -2242,6 +2244,7 @@ addSelect(BP, 'form', 'Form', [['mixed', 'Mixed (one per building)'], ['long', '
 addSlider(BP, 'growth', 'Growth: sparse ↔ dense', regen);
 addSlider(BP, 'curve', 'Curvature: rectilinear ↔ curved', regen);
 addSlider(BP, 'buildSpeed', 'Build speed: slow ↔ fast', regen);
+addSlider(BP, 'silenceThr', 'Silence threshold: true silence ↔ quiet passages', regen);
 addSelect(BP, 'actions', 'Actions per hit', [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']], () => { S.actions = +S.actions; regen(); });
 addSlider(BP, 'unify', 'Late unifying cuts', regen);
 addSelect(BP, 'explodeMode', 'Big beats detach pieces', [['beats', 'On'], ['off', 'Off']]);
