@@ -137,7 +137,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 /* ------------------------------------------------------------------ settings */
 const S = {
   seed:1, growth:.7, actions:2, unify:.85, form:'mixed', camStyle:'mixed', pitchSens:.5,
-  shots:'4', view:'iso', punch:.35, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:.25, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35,
+  shots:'4', view:'iso', punch:0, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:0, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35,
   palette:'generated', variety:.5, shading:'flat', lineW:.2, hatch:.8, hatchSize:.4, shadow:'off', sunAz:.3, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.35, flash:false, look:'drawing',
   // old drawing
   paper:.55, tooth:.6, age:.15, bleed:.12, wobble:.25, wash:.35,
@@ -1157,7 +1157,7 @@ function buildShots() {
         const kind = pickW(r, Object.fromEntries(Object.entries(base).map(([k, w]) => [k, w * sw[SHOT_GROUP[k] || 'axo']])));
         const flat = !!SHOT[kind].flat;
         const az = flat ? 90 * ri(r, 4) : kind === 'dim' ? (r() < .5 ? 30 : 60) + 90 * ri(r, 4) : SHOT_GROUP[kind] === 'persp' ? 20 + r() * 50 + 90 * ri(r, 4) : 45 + 90 * ri(r, 4);
-        SHOTS.push({ t:d, cy, kind, az, drift:flat ? 0 : (r() < .5 ? -1 : 1) * (1.5 + r() * 4), ratchet:kind === 'iso' && r() < .35 });
+        SHOTS.push({ t:d, cy, kind, az, drift:flat ? 0 : (r() < .5 ? -1 : 1) * (1.5 + r() * 4) });
       }
     }
     const tp = cy.end - 2 * bar;
@@ -1557,7 +1557,7 @@ const bbCorners = b => Array.from({ length:8 }, (_, i) => [i & 1 ? b.max[0] : b.
 const opPts = op => op.type === 'vol' ? op.v.poly.flatMap(([x, y]) => [[x * M, y * M, op.v.z0 * F], [x * M, y * M, op.bb.max[2]]]) : bbCorners(op.bb);
 function visiblePts(cy, t) {
   const pts = [];
-  for (const op of cy.geo) if (op.type === 'vol' && op.t - op.lead <= t) pts.push(...opPts(op));
+  for (const op of cy.geo) if (op.type === 'vol' && op.t <= t) pts.push(...opPts(op));
   for (const e of cy.els) { if (e.t0 > t) break; if (e.t1 > t && e.kind !== 'axes') pts.push(...bbCorners(e.bb)); }
   return pts;
 }
@@ -1601,7 +1601,7 @@ function placeCamera(cy, t, dt) {
     const age = t - sh.t, K = SHOT[sh.kind], bar = AN.beatLen * 4, tk = lerp(0, 2.2, S.turnSpeed);
     if (K.flat || S.turn === 'still') az = sh.az;
     else if (S.turn === 'pingpong') az = sh.az + Math.sin(age * .6) * lerp(8, 45, S.turnSpeed);
-    else if (S.turn === 'ratchet' || sh.ratchet) { const per = S.turn === 'ratchet' ? bar : 2 * bar, k = Math.floor(age / per), f = clamp((age - k * per) / (AN.beatLen * .9), 0, 1); az = sh.az + 90 * (k + easeOutCubic(f)); }
+    else if (S.turn === 'ratchet') { const per = bar, k = Math.floor(age / per), f = clamp((age - k * per) / (AN.beatLen * .9), 0, 1); az = sh.az + 90 * (k + easeOutCubic(f)); }
     else az = sh.az + sh.drift * tk * age * (S.turn === 'loud' ? .3 + 1.7 * AN.rms[fr(AN, sh.t)] : 1);
     el = K.flat ? K.el : K.el + (S.elev - .5) * 40;
     if (si !== CAM.shot) {
@@ -1624,7 +1624,7 @@ function placeCamera(cy, t, dt) {
   if (K.mode) return placeEye(cy, t, dt, K, sh, asp, use);
   if (K.persp) return placePersp(cy, t, dt, K, sh, dir, use, fin, asp);
   VIEW = camera;
-  const f0 = fitPts(K.fit === 'final' ? fin : K.fit === 'newest' ? newestPts(cy, t) || use : use, asp, K.shear);
+  const f0 = fitPts(K.fit === 'final' ? fin : K.fit === 'newest' ? sh.lockPts || (sh.lockPts = newestPts(cy, sh.t + .05) || use) : use, asp, K.shear);   // a close-up keeps the piece it opened on
   let half = f0.half * (K.m || 1), cen = f0.c;
   const fullH = fitPts(fin, asp, K.shear).half;
   half = Math.max(half, fullH * .38);   // the first block of a cycle never fills the screen
@@ -1641,12 +1641,15 @@ function placeCamera(cy, t, dt) {
   half *= (1 + S.margin) * (1 + .18 * EXP) * lerp(.65, 1.5, S.dist);   // room for detached pieces, and the distance slider
   // punch-in scales with how wide the frame is: full strength on the whole building, next to nothing on a close-up
   const zf = clamp(half / (fullH * (1 + S.margin) * lerp(.65, 1.5, S.dist)), 0, 1);
-  half *= 1 - .07 * S.punch * punchAt(t) * zf * zf;
   const target = cen;
   if (CAM.snap) { CAM.c.copy(target); CAM.half = half; CAM.snap = false; }
-  else { const k = 1 - Math.exp(-dt * 3); CAM.c.lerp(target, k); CAM.half = lerp(CAM.half, half, k); }
+  else {   // within a shot the frame eases slowly and only ever widens, so it never breathes as pieces arrive
+    const k = 1 - Math.exp(-dt * (K.fit === 'dolly' ? 3 : 1.1));
+    CAM.c.lerp(target, k); CAM.half = lerp(CAM.half, Math.max(half, CAM.half), k);
+  }
+  const hp = CAM.half * (1 - .07 * S.punch * punchAt(t) * zf * zf);
   camera.position.copy(CAM.c).addScaledVector(dir, R); camera.lookAt(CAM.c);
-  camera.left = -CAM.half * asp; camera.right = CAM.half * asp; camera.top = CAM.half; camera.bottom = -CAM.half;
+  camera.left = -hp * asp; camera.right = hp * asp; camera.top = hp; camera.bottom = -hp;
   camera.updateProjectionMatrix(); camera.updateMatrixWorld();
   if (K.shear) {   // oblique: shear x and y by depth about the target, so verticals (or depth) project on a diagonal
     const [kx, ky] = K.shear;
@@ -1694,7 +1697,7 @@ function placeEye(cy, t, dt, K, sh, asp, use) {
   else { const k = 1 - Math.exp(-dt * 4); CAM.ep.lerp(P, k); CAM.el3.lerp(L, k); }
   pcam.fov = clamp(K.persp * lerp(.75, 1.25, S.fov), 30, 110); pcam.aspect = asp; pcam.near = .1; pcam.far = 3000;
   pcam.position.copy(CAM.ep); pcam.lookAt(CAM.el3); pcam.updateProjectionMatrix(); pcam.updateMatrixWorld();
-  CAM.D = CAM.ep.distanceTo(CAM.el3);
+  CAM.D = CAM.Dv = CAM.ep.distanceTo(CAM.el3);
 }
 // perspective shots: frame the building's bounding sphere, push in slowly over the shot
 function placePersp(cy, t, dt, K, sh, dir, use, fin, asp) {
@@ -1706,17 +1709,17 @@ function placePersp(cy, t, dt, K, sh, dir, use, fin, asp) {
   const zf = clamp(rad / radF, 0, 1);
   const fov0 = clamp(K.persp * lerp(.55, 1.5, S.fov), 4, 110), vf = fov0 * D2R, hf = 2 * Math.atan(Math.tan(vf / 2) * asp), f = Math.min(vf, hf);
   let D = rad / Math.sin(f / 2) * (1 + S.margin) * (K.low ? .8 : .95) * lerp(.6, 1.5, S.dist);
-  D *= lerp(1, .86, clamp((t - sh.t) / (AN.beatLen * 16), 0, 1)) * (1 + .18 * EXP);
-  let fov = fov0;
-  const pk = S.punch * punchAt(t) * zf * zf;
-  if (S.dollyZoom) { fov = fov0 * (1 - .3 * pk); D *= Math.tan(fov0 * D2R / 2) / Math.tan(fov * D2R / 2); }   // vertigo: lens punches in, camera pulls back
-  else D *= 1 - .05 * pk;
   if (S.follow > 0) { const np = newestPts(cy, t); if (np) { const nb = bbNew(); for (const q of np) bbAdd(nb, q); const nc = bbCenter(nb); for (let i = 0; i < 3; i++) c[i] = lerp(c[i], nc[i], S.follow * .35); } }
   const target = new THREE.Vector3(...c);
-  if (CAM.snap) { CAM.c.copy(target); CAM.D = D; CAM.snap = false; }
-  else { const k = 1 - Math.exp(-dt * 3); CAM.c.lerp(target, k); CAM.D = lerp(CAM.D || D, D, k); }
-  pcam.fov = fov; pcam.aspect = asp; pcam.near = Math.max(.3, CAM.D * .02); pcam.far = CAM.D * 6;
-  pcam.position.copy(CAM.c).addScaledVector(dir, CAM.D); pcam.lookAt(CAM.c);
+  if (CAM.snap || !CAM.D) { CAM.c.copy(target); CAM.D = D; CAM.snap = false; }
+  else { const k = 1 - Math.exp(-dt * 1.1); CAM.c.lerp(target, k); CAM.D = lerp(CAM.D, Math.max(D, CAM.D), k); }   // calm, widen-only, like the axo shots
+  let Dv = CAM.D * lerp(1, .86, clamp((t - sh.t) / (AN.beatLen * 16), 0, 1)) * (1 + .18 * EXP), fov = fov0;   // a slow push-in over the shot
+  const pk = S.punch * punchAt(t) * zf * zf;
+  if (S.dollyZoom) { fov = fov0 * (1 - .3 * pk); Dv *= Math.tan(fov0 * D2R / 2) / Math.tan(fov * D2R / 2); }   // vertigo: lens punches in, camera pulls back
+  else Dv *= 1 - .05 * pk;
+  CAM.Dv = Dv;
+  pcam.fov = fov; pcam.aspect = asp; pcam.near = Math.max(.3, Dv * .02); pcam.far = Dv * 6;
+  pcam.position.copy(CAM.c).addScaledVector(dir, Dv); pcam.lookAt(CAM.c);
   pcam.updateProjectionMatrix(); pcam.updateMatrixWorld();
 }
 
@@ -1882,7 +1885,7 @@ function drawPost(t, cy) {
   u.res.value.set(bw, bh); u.gsize.value = Math.max(1, bw / 1500);
   u.weave.value.set(S.weave * (.0011 * Math.sin(fi * .37 + 1.3) + .0007 * Math.sin(fi * 1.13 + 4.1) + (hash01(fi, 11) - .5) * .0008),
     S.weave * (.0016 * Math.sin(fi * .29 + .4) + .0009 * Math.sin(fi * .97 + 2.2) + (hash01(fi, 13) - .5) * .0012 + (hash01(Math.floor(fi / 3), 17) < .01 ? (hash01(fi, 19) - .5) * .006 : 0)));
-  u.flick.value = 1 + (hash01(fi, 7) - .5) * .14 * S.flicker + Math.sin(fi / S.fps * 13) * .015 * S.flicker + punchAt(t) * .04 * S.flicker;
+  u.flick.value = 1 + (hash01(fi, 7) - .5) * .14 * S.flicker + Math.sin(fi / S.fps * 13) * .015 * S.flicker;
   u.seed.value = hash01(fi, 23) * 100; u.grain.value = S.grain; u.vign.value = S.vignette; u.chroma.value = S.chroma; u.hal.value = S.halation;
   u.roll.value = cut.roll; u.sat.value = S.saturation * 2; u.temp.value = S.warmth * 2 - 1;
   u.boil.value = hash01(Math.floor(fi / 3), 29) * 10;   // the wobble redraws on threes, like hand-drawn animation
@@ -1918,7 +1921,7 @@ function renderAt(t, dt) {
   visMat.color.set(P.line); hidMat.color.set(P.line); ghostMat.color.set(P.accent === '#ffffff' ? P.line : P.accent);
   placeCamera(cy, t, dt);
   // pixels per CSS pixel of the preview: lines and dots keep their weight relative to the frame at any export size
-  const bw = canvas.width, bh = canvas.height, dpr = bh / (innerHeight > 100 ? innerHeight : 900), lw = lerp(.6, 2.6, S.lineW) * dpr, upp = VIEW === pcam ? 2 * (CAM.D || 50) * Math.tan(pcam.fov * D2R / 2) / bh : (camera.top - camera.bottom) / bh;
+  const bw = canvas.width, bh = canvas.height, dpr = bh / (innerHeight > 100 ? innerHeight : 900), lw = lerp(.6, 2.6, S.lineW) * dpr, upp = VIEW === pcam ? 2 * (CAM.Dv || CAM.D || 50) * Math.tan(pcam.fov * D2R / 2) / bh : (camera.top - camera.bottom) / bh;
   for (const m of [visMat, hidMat, ghostMat, markMat, linMat]) m.resolution.set(bw, bh);
   visMat.linewidth = lw; hidMat.linewidth = lw * .75; ghostMat.linewidth = lw; markMat.linewidth = lw * .8; linMat.linewidth = lw;
   const inks = S.lineInks === 'diverse' ? cy.inks : { mark:P.line, dash:P.line, lin:P.line };
