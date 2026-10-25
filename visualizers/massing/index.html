@@ -11,8 +11,6 @@
   canvas#view { position:fixed; inset:0; width:100%; height:100%; display:block; cursor:grab; touch-action:none; }
   canvas#view.drag { cursor:grabbing; }
   body.idle canvas#view { cursor:none; }
-  #grain { position:fixed; inset:-64px; pointer-events:none; mix-blend-mode:multiply; }
-  #flash { position:fixed; inset:0; pointer-events:none; background:#fff; opacity:0; }
   .ui { position:fixed; left:16px; right:16px; bottom:16px; display:flex; flex-direction:column; gap:8px; transition:opacity .5s; }
   body.idle .ui, body.idle #status { opacity:0; pointer-events:none; }
   .bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; background:var(--panel); backdrop-filter:blur(8px);
@@ -40,11 +38,10 @@
 </head>
 <body>
 <canvas id="view"></canvas>
-<div id="grain"></div>
-<div id="flash"></div>
 <div id="status">building…</div>
 
 <div class="ui">
+  <div class="settings bar" id="lookPanel"></div>
   <div class="settings bar" id="viewPanel"></div>
   <div class="bar">
     <button id="loadBtn">Load</button>
@@ -53,6 +50,7 @@
     <div class="seekwrap"><input type="range" id="seek" min="0" max="1000" value="0"><div id="ticks"></div></div>
     <span class="time" id="time">0:00</span>
     <span class="name hide-sm" id="name">Demo pattern</span>
+    <button id="lookBtn">Look</button>
     <button id="viewBtn">Settings</button>
   </div>
 </div>
@@ -104,7 +102,11 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 const S = {
   seed:1, growth:.55, pitchSens:.5,
   shots:'4', view:'iso', punch:.5, margin:.12,
-  palette:'generated', shading:'flat', lineW:.3, hidden:'dotted', grain:.35, flash:true,
+  palette:'generated', shading:'flat', lineW:.3, hidden:'dotted', overshoot:.35, flash:true, look:'drawing',
+  // old drawing
+  paper:.55, tooth:.6, age:.15, bleed:.3, wobble:.25, wash:.35,
+  // film print (the Sculpture Machine's stock)
+  fps:24, grain:.3, flicker:.2, dust:.3, scratch:.2, weave:.25, vignette:.45, chroma:.12, halation:.08, saturation:.46, warmth:.56, splices:false,
 };
 try { Object.assign(S, JSON.parse(localStorage.getItem('massing-settings') || '{}')); } catch (e) {}
 const saveSettings = () => { try { localStorage.setItem('massing-settings', JSON.stringify(S)); } catch (e) {} };
@@ -1046,13 +1048,24 @@ function setLines(obj, arr) {
   obj.geometry = new LineSegmentsGeometry().setPositions(new Float32Array(arr));
   if (obj.material.dashed) obj.computeLineDistances();
 }
+// drafting habit: visible edges run a little past their corners, like construction lines
+function overshoot(arr) {
+  const e = S.overshoot * .9; if (e <= 0) return arr;
+  const out = new Array(arr.length);
+  for (let i = 0; i < arr.length; i += 6) {
+    const dx = arr[i + 3] - arr[i], dy = arr[i + 4] - arr[i + 1], dz = arr[i + 5] - arr[i + 2], L = Math.hypot(dx, dy, dz), k = L > .6 ? e / L : 0;
+    out[i] = arr[i] - dx * k; out[i + 1] = arr[i + 1] - dy * k; out[i + 2] = arr[i + 2] - dz * k;
+    out[i + 3] = arr[i + 3] + dx * k; out[i + 4] = arr[i + 4] + dy * k; out[i + 5] = arr[i + 5] + dz * k;
+  }
+  return out;
+}
 function setLayer(L, A) {
   L.mesh.geometry.dispose();
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(A.pos), 3));
   g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(A.col), 3));
   L.mesh.geometry = g; L.mesh.visible = A.pos.length > 0;
-  setLines(L.vis, A.vis); setLines(L.hid, A.hid); setLines(L.ghost, A.dash);
+  setLines(L.vis, overshoot(A.vis)); setLines(L.hid, A.hid); setLines(L.ghost, A.dash);
 }
 const LAYERS = { solid:makeLayer(0), set:makeLayer(1), live:makeLayer(2) };
 
@@ -1183,16 +1196,186 @@ function placeCamera(cy, t, dt) {
   camera.updateProjectionMatrix(); camera.updateMatrixWorld();
 }
 
-/* ------------------------------------------------------------------ paper grain */
-const grainTex = (() => {
-  const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d'), d = g.createImageData(256, 256), r = rngFor(7, 7);
-  for (let i = 0; i < d.data.length; i += 4) { const v = 200 + r() * 55; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; d.data[i + 3] = 255; }
-  g.putImageData(d, 0, 0); return c.toDataURL();
+/* ------------------------------------------------------------------ the look: an old architectural drawing, then a film print
+   The scene renders into an offscreen target; one post pass draws it onto paper (a fine fibrous tooth, a little
+   yellowing, ink bleed, pooled washes, a hand-drawn wobble) and then through the Sculpture Machine's film stock
+   (gate weave, fringe, halation, S-curve, grain, flicker, vignette, splice roll), with its dust and scratches on top. */
+const PAPER_N = 1024;
+const paperTex = (() => {
+  // one sheet, tileable: faint mottling, thousands of fine fibres, a few specks
+  const c = document.createElement('canvas'); c.width = c.height = PAPER_N; const g = c.getContext('2d'), r = rngFor(11, 5), N = PAPER_N;
+  g.fillStyle = '#fff'; g.fillRect(0, 0, N, N);
+  const wrapDraw = (x, y, m, fn) => { for (const dx of [-N, 0, N]) for (const dy of [-N, 0, N]) if (x + dx > -m && x + dx < N + m && y + dy > -m && y + dy < N + m) fn(x + dx, y + dy); };
+  for (let i = 0; i < 700; i++) {
+    const x = r() * N, y = r() * N, rad = 6 + r() * 30, a = r() * .03, dark = r() < .55;
+    wrapDraw(x, y, rad, (px, py) => { const gr = g.createRadialGradient(px, py, 0, px, py, rad); gr.addColorStop(0, dark ? `rgba(70,55,30,${a})` : `rgba(255,255,255,${a * 2})`); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(px - rad, py - rad, rad * 2, rad * 2); });
+  }
+  for (let i = 0; i < 9000; i++) {
+    const x = r() * N, y = r() * N, l = 3 + r() * r() * 30, ang = r() * TAU, bend = (r() - .5) * l * .6, dark = r() < .7;
+    g.strokeStyle = dark ? `rgba(60,45,25,${.03 + r() * .06})` : `rgba(255,255,255,${.2 + r() * .25})`; g.lineWidth = .4 + r() * .6;
+    wrapDraw(x, y, l, (px, py) => { g.beginPath(); g.moveTo(px, py); g.quadraticCurveTo(px + Math.cos(ang) * l / 2 - Math.sin(ang) * bend, py + Math.sin(ang) * l / 2 + Math.cos(ang) * bend, px + Math.cos(ang) * l, py + Math.sin(ang) * l); g.stroke(); });
+  }
+  for (let i = 0; i < 500; i++) { g.fillStyle = `rgba(50,35,20,${.05 + r() * .18})`; const s = .4 + r() * r() * 2; g.fillRect(r() * N, r() * N, s, s); }
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.NoColorSpace; t.flipY = false;
+  return t;
 })();
-$('#grain').style.backgroundImage = `url(${grainTex})`;
+
+const dmgC = document.createElement('canvas'), dg = dmgC.getContext('2d');
+const dmgTex = new THREE.CanvasTexture(dmgC); dmgTex.colorSpace = THREE.NoColorSpace; dmgTex.minFilter = THREE.LinearFilter; dmgTex.generateMipmaps = false;
+const rt = new THREE.WebGLRenderTarget(4, 4, { samples:4, type:THREE.HalfFloatType });
+const POST_FS = `precision highp float;
+in vec2 vUv; out vec4 o;
+uniform sampler2D tex, dmg, paper; uniform vec2 res, weave, sheet;
+uniform float seed, grain, gsize, flick, vign, chroma, hal, roll, sat, temp, boil;
+uniform float pPaper, pAge, pBleed, pWobble, pWash, pTooth, dark;
+float hash(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3. - 2. * f);
+  return mix(mix(hash(i), hash(i + vec2(1., 0.)), f.x), mix(hash(i + vec2(0., 1.)), hash(i + 1.), f.x), f.y); }
+float fbm(vec2 p){ float s = 0., a = .5; for (int i = 0; i < 5; i++) { s += a * vnoise(p); p = p * 2.03 + 17.1; a *= .5; } return s; }
+vec3 smp(vec2 uv){ return pow(max(texture(tex, uv).rgb, 0.), vec3(1. / 2.2)); }
+float lum(vec3 c){ return dot(c, vec3(.299, .587, .114)); }
+void main(){
+  vec2 v = gl_FragCoord.xy / res, asp = vec2(res.x / res.y, 1.), q = v * asp;
+  vec2 uv = v + weave; uv.y = fract(uv.y + roll);
+  // the hand that drew it: a slow wobble, redrawn a few times a second like boiling line animation
+  uv += (vec2(vnoise(q * 5. + boil * 13.1), vnoise(q * 5. + boil * 7.7 + 40.)) - .5) * pWobble * 4. / res.y;
+  vec2 d = uv - .5; float k = chroma * .012;
+  vec3 c = vec3(smp(uv + d * k).r, smp(uv).g, smp(uv - d * k).b);
+  vec2 pp = gl_FragCoord.xy / gsize / ${PAPER_N}. + sheet;
+  float fib = texture(paper, pp).r;
+  // ink creeps along the fibres: dark lines spread unevenly; washes pool darker at their edges
+  if (pBleed + pWash > 0.) {
+    vec3 mn = c, avg = vec3(0.); float r = (1. + 1.8 * pBleed * (1.4 - fib)) * gsize;
+    for (int i = 0; i < 8; i++) {
+      float a = float(i) * .785398 + fib * 3.;
+      vec2 off = vec2(cos(a), sin(a)) * r / res; vec3 s = smp(uv + off);
+      if (lum(s) < lum(mn)) mn = s;
+      avg += smp(uv + off * 3.5);
+    }
+    avg /= 8.;
+    c = mix(c, mn, .6 * pBleed * (dark > .5 ? 0. : 1.));
+    c *= 1. - clamp(length(c - avg), 0., 1.) * pWash * .5;
+  }
+  c *= 1. + (fbm(q * 2.6 + sheet * 9.) - .5) * pWash * .24;   // an uneven, hand-laid wash
+  // the sheet: a fine fibrous tooth and a little yellowing
+  float tooth = texture(paper, gl_FragCoord.xy / gsize / 173. + sheet * 3.).r * .5 + hash(floor(gl_FragCoord.xy / gsize)) * .5;
+  float pt = mix(1., fib * mix(1., .9 + .1 * tooth, pTooth), pPaper), L = lum(c);
+  c = mix(c * pt, c + (1. - pt) * .45, (1. - smoothstep(.12, .5, L)) * dark);
+  vec3 aged = c * vec3(1., .95, .83) + vec3(.025, .018, 0.);
+  c = mix(c, aged, pAge);
+  c *= mix(vec3(1.), vec3(.93, .88, .80), smoothstep(.35, .85, length((v - .5) * vec2(1., 1.15))) * pAge);   // a touch darker towards the edges
+  // film print, from the Sculpture Machine
+  if (hal > 0.) {
+    vec3 h = vec3(0.);
+    for (int i = 0; i < 8; i++) {
+      float a = float(i) * .785398; vec2 off = vec2(cos(a), sin(a) * res.x / res.y) * .006;
+      h += max(smp(uv + off) - .78, 0.) + .6 * max(smp(uv + off * 2.4) - .78, 0.);
+    }
+    c += h / 16. * hal * vec3(1., .45, .3) * 3.;
+  }
+  vec4 dm = texture(dmg, uv); c = mix(c, dm.rgb, dm.a);
+  c = mix(c, c * c * (3. - 2. * c), .3);
+  c = c * .95 + .025; c *= vec3(1., .985, .95);
+  float Lc = lum(c); c = clamp(mix(vec3(Lc), c, sat), 0., 1.);
+  c *= vec3(1. + .16 * temp, 1. + .02 * temp, 1. - .2 * temp);
+  if (abs(roll) > .001) { float fy = v.y + weave.y + roll; float ed = abs(fract(fy + .5) - .5); c *= smoothstep(.0, .03, ed); }
+  vec2 gp = floor(gl_FragCoord.xy / gsize);
+  float n = (hash(gp + seed * vec2(17.3, 91.7)) + .7 * hash(floor(gp * .5) + seed * vec2(5.1, 3.3))) / 1.7 - .5;
+  float l = lum(c);
+  c += n * grain * .34 * (.4 + 2.2 * l * (1. - l));
+  c += (vec3(hash(gp + seed + 1.3), hash(gp + seed + 2.7), hash(gp + seed + 4.1)) - .5) * grain * .05;
+  c *= flick;
+  vec2 qv = (v - .5) * vec2(1.1, 1.25); c *= mix(1., clamp(1. - dot(qv, qv) * 1.7, 0., 1.), vign);
+  o = vec4(clamp(c, 0., 1.), 1.);
+}`;
+const postU = {
+  tex:{ value:rt.texture }, dmg:{ value:dmgTex }, paper:{ value:paperTex }, res:{ value:new THREE.Vector2() }, weave:{ value:new THREE.Vector2() }, sheet:{ value:new THREE.Vector2() },
+  seed:{ value:0 }, grain:{ value:0 }, gsize:{ value:1 }, flick:{ value:1 }, vign:{ value:0 }, chroma:{ value:0 }, hal:{ value:0 }, roll:{ value:0 }, sat:{ value:1 }, temp:{ value:0 }, boil:{ value:0 },
+  pPaper:{ value:0 }, pAge:{ value:0 }, pBleed:{ value:0 }, pWobble:{ value:0 }, pWash:{ value:0 }, pTooth:{ value:0 }, dark:{ value:0 },
+};
+const postMat = new THREE.RawShaderMaterial({ glslVersion:THREE.GLSL3, uniforms:postU, depthTest:false, depthWrite:false,
+  vertexShader:`in vec3 position; out vec2 vUv; void main(){ vUv = position.xy * .5 + .5; gl_Position = vec4(position.xy, 0., 1.); }`, fragmentShader:POST_FS });
+const postGeo = new THREE.BufferGeometry(); postGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), 3));
+const postScene = new THREE.Scene(), postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1), postQuad = new THREE.Mesh(postGeo, postMat);
+postQuad.frustumCulled = false; postScene.add(postQuad);
+
+// splices: every wipe to a new building, and (optionally) every shot change, with the Sculpture Machine's roll and tape
+const hash01 = (a, b) => hashInt(a | 0, b) / 4294967296;
+const frameOf = t => Math.floor(t * S.fps + 1e-6);
+function cutInfo(t, fi) {
+  const ts = S.splices ? SHOT_T : CYC_T, ci = upperBound(ts, t + 1e-6) - 1;
+  if (ci < 1 && !(ci === 0 && ts[0] > 0)) return { k:-1, roll:0, y:0 };
+  const k = fi - frameOf(ts[ci]);
+  if (k < 0 || k > 12) return { k:-1, roll:0, y:0 };
+  const wipe = CYC_T.some(c => Math.abs(c - ts[ci]) < 1e-3);
+  const r = rngFor(S.seed, 4000037 + ci), roll0 = (r() < .5 ? -1 : 1) * (.12 + r() * .2) * (wipe ? 1 : .6), y = r() * dmgC.height;
+  let roll = roll0 * Math.pow(.62, k); if (Math.abs(roll) < .002) roll = 0;
+  return { k, roll, y, wipe };
+}
+function filmDamage(fi, cut) {
+  const W = dmgC.width, H = dmgC.height, U = Math.max(W, H * .8) / 1280;
+  dg.clearRect(0, 0, W, H);
+  const r = rngFor(S.seed, 1000003 + fi), d = S.dust;
+  for (let i = 0, n = (r() * d * 7) | 0; i < n; i++) {   // dust specks
+    dg.fillStyle = r() < .75 ? 'rgba(10,8,6,.85)' : 'rgba(255,250,235,.85)';
+    const s = (1 + r() * r() * 7) * U;
+    dg.beginPath(); dg.ellipse(r() * W, r() * H, s, s * (.4 + r() * .6), r() * 3, 0, 6.283); dg.fill();
+  }
+  if (r() < d * .12) {   // fibres
+    dg.strokeStyle = r() < .7 ? 'rgba(10,8,6,.8)' : 'rgba(255,250,235,.7)'; dg.lineWidth = (.8 + r()) * U;
+    const x = r() * W, y = r() * H, l = (10 + r() * 40) * U;
+    dg.beginPath(); dg.moveTo(x, y); dg.quadraticCurveTo(x + (r() - .5) * l, y + (r() - .5) * l, x + (r() - .5) * l, y + (r() - .5) * l); dg.stroke();
+  }
+  // long vertical scratches: each is born on some frame and wanders for a while
+  for (let f0 = fi - 70; f0 <= fi; f0++) {
+    const q = rngFor(S.seed, 2000003 + f0); if (q() >= S.scratch * .05) continue;
+    const life = 10 + q() * 60, age = fi - f0; if (age >= life) continue;
+    const a = .25 + q() * .45, w = (.6 + q() * 1.4) * U, darkS = q() < .25, vv = (q() - .5) * 2 * U, ph = q() * 6;
+    if (hash01(f0 * 131 + age, 5) < .1) continue;
+    const x = q() * W + vv * age + Math.sin(age * .7 + ph) * 2 * U;
+    dg.strokeStyle = darkS ? `rgba(10,8,6,${a})` : `rgba(255,250,235,${a})`; dg.lineWidth = w;
+    dg.beginPath(); dg.moveTo(x, 0); dg.bezierCurveTo(x + 3 * U, H * .3, x - 3 * U, H * .7, x + (r() - .5) * 2 * U, H); dg.stroke();
+  }
+  for (let f0 = fi - 11; f0 <= fi; f0++) {   // a hair caught in the gate
+    const q = rngFor(S.seed, 3000017 + f0); if (q() >= S.scratch * .006) continue;
+    const life = 3 + q() * 8, age = fi - f0; if (age >= life) continue;
+    const x = (q() < .5 ? q() * W * .2 : W - q() * W * .2) + (r() - .5) * 3 * U * age, y = q() * H, s = (40 + q() * 120) * U, p = q() * 6;
+    dg.strokeStyle = 'rgba(10,8,6,.9)'; dg.lineWidth = 1.4 * U;
+    dg.beginPath(); dg.moveTo(x, y); dg.bezierCurveTo(x + Math.cos(p) * s, y + Math.sin(p) * s, x - Math.sin(p) * s, y + s, x + s * .3, y + s * 1.3); dg.stroke();
+  }
+  if (cut.k >= 0 && cut.k < 2) {   // splice: tape edge and cement line across the frame
+    dg.fillStyle = 'rgba(255,250,230,.18)'; dg.fillRect(0, cut.y - 30 * U, W, 60 * U);
+    dg.fillStyle = 'rgba(10,8,6,.7)'; dg.fillRect(0, cut.y - 2 * U, W, 4 * U);
+  }
+  if (cut.k === 0 && cut.wipe && S.flash) { dg.fillStyle = 'rgba(255,252,240,.85)'; dg.fillRect(0, 0, W, H); }
+  dmgTex.needsUpdate = true;
+}
+function drawPost(t, cy) {
+  const fi = frameOf(t), cut = cutInfo(t, fi), bw = canvas.width, bh = canvas.height;
+  filmDamage(fi, cut);
+  const u = postU;
+  u.res.value.set(bw, bh); u.gsize.value = Math.max(1, bw / 1500);
+  u.weave.value.set(S.weave * (.0011 * Math.sin(fi * .37 + 1.3) + .0007 * Math.sin(fi * 1.13 + 4.1) + (hash01(fi, 11) - .5) * .0008),
+    S.weave * (.0016 * Math.sin(fi * .29 + .4) + .0009 * Math.sin(fi * .97 + 2.2) + (hash01(fi, 13) - .5) * .0012 + (hash01(Math.floor(fi / 3), 17) < .01 ? (hash01(fi, 19) - .5) * .006 : 0)));
+  u.flick.value = 1 + (hash01(fi, 7) - .5) * .14 * S.flicker + Math.sin(fi / S.fps * 13) * .015 * S.flicker + punchAt(t) * .04 * S.flicker;
+  u.seed.value = hash01(fi, 23) * 100; u.grain.value = S.grain; u.vign.value = S.vignette; u.chroma.value = S.chroma; u.hal.value = S.halation;
+  u.roll.value = cut.roll; u.sat.value = S.saturation * 2; u.temp.value = S.warmth * 2 - 1;
+  u.boil.value = hash01(Math.floor(fi / 3), 29) * 10;   // the wobble redraws on threes, like hand-drawn animation
+  // each building is drawn on a fresh sheet: a different part of the paper
+  u.sheet.value.set(hash01(cy.idx + S.seed * 101, 3), hash01(cy.idx + S.seed * 101, 4));
+  const bgL = new THREE.Color(cy.pal.bg).getHSL({}).l;
+  u.dark.value = bgL < .35 ? 1 : 0;
+  u.pPaper.value = S.paper; u.pAge.value = S.age * (bgL < .35 ? .45 : 1); u.pBleed.value = S.bleed;
+  u.pWobble.value = S.wobble; u.pWash.value = S.wash; u.pTooth.value = S.tooth;
+  renderer.setRenderTarget(null);
+  renderer.render(postScene, postCam);
+}
 
 /* ------------------------------------------------------------------ frame loop */
-function resize() { renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2)); renderer.setSize(innerWidth, innerHeight, false); CAM.snap = true; }
+function resize() {
+  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2)); renderer.setSize(innerWidth, innerHeight, false);
+  rt.setSize(canvas.width, canvas.height); dmgC.width = canvas.width; dmgC.height = canvas.height; CAM.snap = true;
+}
 addEventListener('resize', resize);
 let lastNow = performance.now(), lastCy = -1, lastT = 0;
 function frame(now) {
@@ -1213,12 +1396,8 @@ function frame(now) {
   hidMat.dashSize = (S.hidden === 'dashed' ? 6 : 1.6) * dpr * upp; hidMat.gapSize = (S.hidden === 'dashed' ? 4 : 3) * dpr * upp;
   ghostMat.dashSize = 5 * dpr * upp; ghostMat.gapSize = 4 * dpr * upp;
   for (const L of Object.values(LAYERS)) L.hid.visible = S.hidden !== 'off' && !!L.hid.userData.has;
-  renderer.render(scene, camera);
-  // a wipe to the next building gets a one-frame flash, like a splice
-  const since = t - cy.t0;
-  $('#flash').style.opacity = S.flash && cy.idx > 0 && since >= 0 && since < .12 ? (1 - since / .12) * .85 : 0;
-  const gr = $('#grain').style; gr.opacity = S.grain * (P.scheme === 'night' || P.scheme === 'mono' ? .35 : .7);
-  if (((now / 83) | 0) !== frame.gk) { frame.gk = (now / 83) | 0; gr.transform = `translate(${(Math.random() * 64) | 0}px,${(Math.random() * 64) | 0}px)`; }
+  renderer.setRenderTarget(rt); renderer.render(scene, camera);
+  drawPost(t, cy);
   if (!seeking) $('#seek').value = t / AN.dur * 1000;
   const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
   $('#time').textContent = `${fmt(t)} / ${fmt(AN.dur)}`;
@@ -1233,7 +1412,7 @@ canvas.addEventListener('pointerup', () => { drag = null; canvas.classList.remov
 canvas.addEventListener('dblclick', () => { CAM.dragAz = CAM.dragEl = 0; });
 
 /* ------------------------------------------------------------------ UI */
-const vp = $('#viewPanel');
+let vp = $('#viewPanel');
 function addSelect(key, label, opts, on) {
   const l = document.createElement('label'); l.textContent = label;
   const s = document.createElement('select');
@@ -1265,12 +1444,33 @@ addSelect('hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashed'],
 addSlider('growth', 'Growth', regen);
 addSlider('lineW', 'Line width', nop);
 addSlider('punch', 'Kick zoom', nop);
-addSlider('grain', 'Paper grain', nop);
 addSlider('margin', 'Margin', nop);
-addCheck('flash', 'Flash on wipe', nop);
 const seedBtn = document.createElement('button'); seedBtn.textContent = 'New seed'; seedBtn.onclick = () => { S.seed = (S.seed % 9999) + 1; saveSettings(); rebuildAll(); };
 vp.appendChild(seedBtn);
 const statsEl = document.createElement('div'); statsEl.className = 'stats'; vp.appendChild(statsEl);
+// the look panel: paper and film
+const LOOKS = {
+  drawing:{ paper:.55, tooth:.6, age:.15, bleed:.3, wobble:.25, wash:.35, overshoot:.35, grain:.3, flicker:.2, dust:.3, scratch:.2, weave:.25, vignette:.45, chroma:.12, halation:.08, saturation:.46, warmth:.56 },
+  archive:{ paper:.8, tooth:.8, age:.4, bleed:.5, wobble:.4, wash:.5, overshoot:.5, grain:.45, flicker:.35, dust:.5, scratch:.4, weave:.4, vignette:.6, chroma:.2, halation:.1, saturation:.35, warmth:.66 },
+  film:{ paper:.25, tooth:.3, age:.1, bleed:.1, wobble:.15, wash:.2, overshoot:.15, grain:.55, flicker:.45, dust:.5, scratch:.5, weave:.4, vignette:.55, chroma:.35, halation:.3, saturation:.5, warmth:.5 },
+  clean:{ paper:0, tooth:0, age:0, bleed:0, wobble:0, wash:0, overshoot:0, grain:0, flicker:0, dust:0, scratch:0, weave:0, vignette:0, chroma:0, halation:0, saturation:.5, warmth:.5 },
+};
+vp = $('#lookPanel');
+const lookSliders = {};
+const rebuildLines = () => { SOL.cyc = -1; SET.key = ''; };
+addSelect('look', 'Look', [['drawing', 'Old drawing'], ['archive', 'Well-worn drawing'], ['film', 'Film print'], ['clean', 'Clean'], ['custom', 'Custom']], () => {
+  const L = LOOKS[S.look]; if (!L) return; Object.assign(S, L); saveSettings();
+  for (const k in lookSliders) lookSliders[k].value = S[k];
+  rebuildLines();
+});
+const lookSlider = (key, label, on = nop) => { addSlider(key, label, () => { if (S.look !== 'custom') { S.look = 'custom'; vp.querySelector('select').value = 'custom'; saveSettings(); } on(); }); lookSliders[key] = vp.lastChild.querySelector('input'); };
+for (const [k, l] of [['paper', 'Paper texture'], ['tooth', 'Paper tooth'], ['age', 'Yellowing'], ['bleed', 'Ink bleed'], ['wash', 'Uneven wash'], ['wobble', 'Hand wobble']]) lookSlider(k, l);
+lookSlider('overshoot', 'Line overshoot', rebuildLines);
+for (const [k, l] of [['grain', 'Film grain'], ['flicker', 'Flicker'], ['dust', 'Dust & specks'], ['scratch', 'Scratches & hairs'], ['weave', 'Gate weave'], ['vignette', 'Vignette'],
+  ['chroma', 'Colour fringe'], ['halation', 'Halation'], ['saturation', 'B&W ↔ saturated'], ['warmth', 'Cool ↔ warm']]) lookSlider(k, l);
+addCheck('splices', 'Splice on every shot', nop);
+addCheck('flash', 'Flash on wipe', nop);
+$('#lookBtn').onclick = () => { $('#lookPanel').classList.toggle('open'); $('#lookBtn').classList.toggle('on'); };
 $('#viewBtn').onclick = () => { vp.classList.toggle('open'); $('#viewBtn').classList.toggle('on'); };
 $('#playBtn').onclick = () => { if (!A.buffer) { DEMO.paused = !DEMO.paused; if (!DEMO.paused) DEMO.start = performance.now() / 1000 - DEMO.at; updateUI(); } else if (A.playing) pause(); else play(); };
 $('#loadBtn').onclick = () => $('#file').click();
