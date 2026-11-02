@@ -1493,7 +1493,9 @@ async function exportMP4(sizeKey, lengthKey, file) {
   const pad = +S.pad || 0, start = songStart - pad, dur = songDur + 2 * pad;
   const codecs = await pickCodecs(w, h, fps, sr, ch);
   if (!codecs.video) return setExportMsg('This browser cannot encode H.264 at that size.');
-  const stream = file ? await file.createWritable() : null;
+  // some browsers and embedded views hand back a file but refuse to write it: render in memory and download instead
+  let stream = null;
+  if (file) try { stream = await file.createWritable(); } catch (e) { console.warn('cannot write the chosen file, downloading instead', e); file = null; }
   const target = stream ? new Mp4Muxer.FileSystemWritableFileStreamTarget(stream) : new Mp4Muxer.ArrayBufferTarget();
   const muxer = new Mp4Muxer.Muxer({ target, fastStart:stream ? false : 'in-memory', firstTimestampBehavior:'offset',
     video:{ codec:'avc', width:w, height:h, frameRate:fps },

@@ -901,7 +901,9 @@ async function exportMP4(sizeKey, lengthKey, file) {
 
   // silent padding before and after the song
   const pad = +S.pad || 0, span = dur + 2 * pad;
-  const stream = file ? await file.createWritable() : null;
+  // some browsers and embedded views hand back a file but refuse to write it: render in memory and download instead
+  let stream = null;
+  if (file) try { stream = await file.createWritable(); } catch (e) { console.warn('cannot write the chosen file, downloading instead', e); file = null; }
   const target = stream ? new Mp4Muxer.FileSystemWritableFileStreamTarget(stream) : new Mp4Muxer.ArrayBufferTarget();
   const muxer = new Mp4Muxer.Muxer({ target, fastStart:stream ? false : 'in-memory', firstTimestampBehavior:'offset',
     video:{ codec:'avc', width:w, height:h, frameRate:fps },
