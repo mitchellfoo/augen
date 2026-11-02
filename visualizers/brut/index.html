@@ -1761,6 +1761,7 @@ function visiblePts(cy, t) {
   const pts = [];
   for (const op of cy.geo) if (op.type === 'vol' && op.t <= t) pts.push(...opPts(op));
   for (const e of cy.els) { if (e.t0 > t) break; if (e.t1 > t && e.kind !== 'axes') pts.push(...bbCorners(e.bb)); }
+  if (cy.planAt && S.overlay !== 'off') { const [ox, oy] = cy.planAt; for (const op of cy.geo) if (op.type === 'vol' && op.t <= t) pts.push([op.bb.min[0] + ox, op.bb.min[1] + oy, 0], [op.bb.max[0] + ox, op.bb.max[1] + oy, 0]); }   // and the plan beside it
   return pts;
 }
 function newestPts(cy, t) {
@@ -2261,6 +2262,90 @@ function drawOverlay(t, cy) {
   fgTex.needsUpdate = true;
 }
 
+/* the plan on the ground: the floor being built, cut and drawn flat beside the building in heavy poché, the way a
+   drawing sheet carries its plan next to its axo. It sits on the sunny side, where no shadow falls on it. Walls are
+   solid ink (cores thickest, capsules thinnest), columns are black squares, organic shapes are poché in the building's
+   colour (a serpentine wall fills in whole), a big room gets a
+   curved free-standing partition or two (after Corb's free plan), and what overhangs the floor is dashed overhead */
+const planMat = new THREE.MeshBasicMaterial({ vertexColors:true, side:THREE.DoubleSide, depthWrite:false, polygonOffset:true, polygonOffsetFactor:-1, polygonOffsetUnits:-4 });
+const planMesh = new THREE.Mesh(new THREE.BufferGeometry(), planMat); planMesh.renderOrder = -.5; planMesh.frustumCulled = false; scene.add(planMesh);
+const planDash = new LineMaterial({ color:0x151413, linewidth:1, dashed:true, dashSize:1, gapSize:1 }); planDash.depthWrite = false;
+const planLines = new LineSegments2(new LineSegmentsGeometry(), planDash); planLines.renderOrder = -.4; planLines.frustumCulled = false; scene.add(planLines);
+const PLAN = { key:'' };
+const csM = poly => new CrossSection(ccw(poly));   // a cross-section from a polygon already in metres
+// where a building's plan goes: beside it, toward the sun of its opening shot, a module or so clear of it
+function planSpot(cy) {
+  if (cy.planAt) return cy.planAt;
+  const sh = SHOTS.find(s => s.cy === cy), az = ((sh ? sh.az : 45) + lerp(-190, -10, S.sunAz)) * D2R, dx = Math.sin(az), dy = -Math.cos(az), b = cy.bbFinal;
+  const off = Math.abs(dx) > Math.abs(dy) ? [Math.sign(dx) * (b.max[0] - b.min[0] + 4), 0] : [0, Math.sign(dy) * (b.max[1] - b.min[1] + 4)];
+  cy.planAt = off;
+  cy.ptsFinal.push(...[[b.min[0], b.min[1]], [b.max[0], b.max[1]]].map(([x, y]) => [x + off[0], y + off[1], 0]));   // the wide shots take it in
+  return off;
+}
+function updatePlan(cy, t) {
+  const on = S.overlay !== 'off' && !CLIPPED;
+  planMesh.visible = planLines.visible = on;
+  if (!on) return;
+  // the current floor: the level of the newest block to have settled, unless that is only a sliver of the building, then its fullest floor
+  const standing = cy.vols.filter(v => v.t + .01 <= t && !(v.ex && exOn(v.ex) && v.ex.t <= t));
+  if (!standing.length) { planMesh.visible = planLines.visible = false; return; }
+  const newest = standing.filter(v => !v.organic).reduce((a, b) => b.t > a.t ? b : a, standing[0]);
+  const area = l => standing.reduce((s2, v) => s2 + (!v.cage && v.z0 <= l && v.z0 + v.fl >= l ? (v.rect[2] - v.rect[0]) * (v.rect[3] - v.rect[1]) : 0), 0);
+  const top = Math.floor(newest.z0 + .01), levels = Array.from({ length:top + 1 }, (_, i) => i + .5), fullest = levels.reduce((a, b) => area(b) >= area(a) ? b : a, .5);
+  const L = area(top + .5) >= .5 * area(fullest) ? top + .5 : fullest;
+  const cutsNow = cy.geo.filter(o => o.type === 'cut' && o.t <= t && !o.spec.slice && o.spec.z0 <= L && o.spec.z1 >= L);
+  const posts = cy.els.filter(e => (e.kind === 'pilotis' || e.kind === 'cage') && e.t0 + POP <= t && e.t1 > t && e.bb.min[2] <= L * F && e.bb.max[2] >= L * F);
+  const key = `${cy.idx}|${L}|${standing.length}|${cutsNow.length}|${posts.length}|${S.overlay}`;
+  if (key === PLAN.key) return;
+  PLAN.key = key;
+  const [ox, oy] = planSpot(cy), at = standing.filter(v => !v.cage && v.z0 <= L && v.z0 + v.fl >= L), over = standing.filter(v => !v.cage && v.z0 > L);
+  const parts = [], hued = [];
+  for (const v of at) {
+    const P = (v.shape || v.poly).map(([x, y]) => [x * M + ox, y * M + oy]), outer = csM(P), dst = v.organic && cy.pal.hue ? hued : parts;
+    if (v.organic && v.poly.length > 60) { dst.push(outer); continue; }   // a serpentine wall is all wall
+    const th = v.core ? 1.3 : v.capsule ? .45 : v.organic ? 1 : .8, inner = outer.offset(-th, 'Miter');
+    dst.push(outer.subtract(inner)); inner.delete(); outer.delete();
+  }
+  // a curved partition or two through the biggest room, from the building's own seed
+  const big = at.filter(v => v.isRect && !v.core && !v.capsule).sort((a, b) => (b.rect[2] - b.rect[0]) * (b.rect[3] - b.rect[1]) - (a.rect[2] - a.rect[0]) * (a.rect[3] - a.rect[1]))[0];
+  if (big && Math.min(big.rect[2] - big.rect[0], big.rect[3] - big.rect[1]) >= 2) {
+    const r = rngFor(S.seed * 29 + cy.idx * 13 + Math.floor(L), 7), [x0, y0, x1, y1] = big.rect, alongX = x1 - x0 >= y1 - y0, n = 1 + (r() < .5 ? 1 : 0);
+    const room = csM(big.poly.map(([x, y]) => [x * M + ox, y * M + oy])).offset(-1, 'Miter');
+    for (let k = 0; k < n; k++) {
+      const c = Array.from({ length:7 }, () => r() * 2 - 1), Lr = (alongX ? x1 - x0 : y1 - y0) * (.35 + r() * .3), s0 = (alongX ? x0 : y0) + r() * ((alongX ? x1 - x0 : y1 - y0) - Lr), mid = (alongX ? y0 + y1 : x0 + x1) / 2 + (r() - .5) * .6;
+      const sq = squigglePoly(alongX ? [s0, mid] : [mid, s0], alongX ? [1, 0] : [0, 1], Lr, Math.min(.6, (alongX ? y1 - y0 : x1 - x0) / 3), .11, c).map(([x, y]) => [x * M + ox, y * M + oy]);
+      const w = csM(sq), clipped = w.intersect(room); parts.push(clipped); w.delete();
+    }
+    room.delete();
+  }
+  for (const e of posts) for (const p of e.prims) if (p.k === 'box' && Math.abs(p.lu) < .7 && Math.abs(p.ln) < .7) {
+    const c = boxCorners(p).slice(0, 4).map(q => [q[0] + ox, q[1] + oy]); parts.push(csM(c));
+  }
+  const cutCs = cutsNow.length ? CrossSection.union(cutsNow.map(o => csM(o.spec.poly.map(([x, y]) => [x * M + ox, y * M + oy])))) : null;
+  const pos = [], col = [];
+  // ink first, then the coloured shapes a hair above it
+  for (const [list, hex, z] of [[parts, cy.pal.line, .015], [hued, cy.pal.hue, .02]]) {
+    if (!list.length) continue;
+    let plan = CrossSection.union(list); for (const p of list) p.delete();
+    if (cutCs) { const d = plan.subtract(cutCs); plan.delete(); plan = d; }
+    if (!plan.isEmpty()) {
+      const m = plan.extrude(.01), mesh = m.getMesh(), np = mesh.numProp, vp = mesh.vertProperties, tv = mesh.triVerts, c = new THREE.Color(hex);
+      for (let i = 0; i < tv.length; i++) { pos.push(vp[tv[i] * np], vp[tv[i] * np + 1], z); col.push(c.r, c.g, c.b); }
+      m.delete();
+    }
+    plan.delete();
+  }
+  if (cutCs) cutCs.delete();
+  planMesh.geometry.dispose();
+  const g = new THREE.BufferGeometry();
+  if (pos.length) { g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3)); g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(col), 3)); }
+  planMesh.geometry = g;
+  // overhead: what is above this floor, dashed
+  const arr = [];
+  for (const v of over) { const P = (v.shape || v.poly).map(([x, y]) => [x * M + ox, y * M + oy]); P.forEach((a, i) => { const b = P[(i + 1) % P.length]; arr.push(a[0], a[1], .02, b[0], b[1], .02); }); }
+  setLines(planLines, arr);
+}
+
 /* ------------------------------------------------------------------ frame loop */
 function setSizes(w, h, ratio) {
   renderer.setPixelRatio(ratio); renderer.setSize(w, h, false);
@@ -2277,12 +2362,13 @@ function renderAt(t, dt) {
   if (cy.idx !== lastCy || Math.abs(t - lastT) > .5) { CAM.snap = true; lastCy = cy.idx; }
   lastT = t;
   BW = cy.bw; PROG = cy.prog; POP = .22 * buildSlow(); FLASH = .35 * buildSlow();
-  updateSolid(cy, t); updateSettled(cy, t); updateLive(cy, t);
+  updateSolid(cy, t); updateSettled(cy, t); updateLive(cy, t); updatePlan(cy, t);
   const detached = updateExploded(cy, t); EXP = detached ? 1 : 0;
   const P = cy.pal;
   document.body.style.background = P.bg;
   visMat.color.set(P.line); hidMat.color.set(P.line); ghostMat.color.set(P.hue || P.line);
   placeCamera(cy, t, dt); placeSun();
+  if (CLIPPED) planMesh.visible = planLines.visible = false;   // the 2D cuts are plans and sections already
   // pixels per CSS pixel of the preview: lines and dots keep their weight relative to the frame at any export size
   const bw = canvas.width, bh = canvas.height, dpr = bh / (innerHeight > 100 ? innerHeight : 900), lw = lerp(.6, 2.6, S.lineW) * dpr, upp = VIEW === pcam ? 2 * (CAM.Dv || CAM.D || 50) * Math.tan(pcam.fov * D2R / 2) / bh : (camera.top - camera.bottom) / bh;
   for (const m of [visMat, hidMat, ghostMat, markMat, linMat]) m.resolution.set(bw, bh);
@@ -2293,6 +2379,7 @@ function renderAt(t, dt) {
   ghostMat.dashSize = 5 * dpr * upp; ghostMat.gapSize = 4 * dpr * upp;
   dashLineMat.resolution.set(bw, bh); dashLineMat.linewidth = lw * .9; dashLineMat.color.set(inks.dash);
   dashLineMat.dashSize = 6 * dpr * upp; dashLineMat.gapSize = 4 * dpr * upp;
+  planDash.resolution.set(bw, bh); planDash.linewidth = lw * .8; planDash.color.set(P.line); planDash.dashSize = 5 * dpr * upp; planDash.gapSize = 4 * dpr * upp;
   // hatch ink is the line colour pushed a little further from the paper, so fine strokes still read on a mid-tone fill
   const shStyle = S.shadow === 'mixed' ? ovPlan(cy).shadow : S.shadow;   // mixed: each building's shadows its own way, solid, hatched or in coloured bands
   castMat.color.set(shStyle === 'bands' && P.hue ? P.hue : P.line); castMat.visible = S.shadow !== 'off' && !CLIPPED;
