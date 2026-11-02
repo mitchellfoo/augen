@@ -141,7 +141,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 const S = {
   seed:1, curve:.5, growth:.7, actions:2, unify:.5, form:'mixed', camStyle:'mixed', pitchSens:.5,
   shots:'music', shotSens:.5, view:'iso', punch:0, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:0, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35, silenceFade:.9, silenceThr:.09,
-  palette:'generated', variety:.5, shading:'flat', lineW:.35, hatch:1, hatchSize:.35, shadow:'mixed', overlay:'full', sunAz:.7, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.3, flash:false, look:'print',
+  palette:'generated', variety:.5, shading:'flat', lineW:.35, hatch:1, hatchSize:.35, shadow:'mixed', overlay:'full', marks:.5, numbering:'fig', sunAz:.7, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.3, flash:false, look:'print',
   // old drawing
   paper:.35, tooth:.4, age:.03, bleed:.1, wobble:.15, wash:.15,
   // film print (the Sculpture Machine's stock)
@@ -591,10 +591,21 @@ function boxCorners(b) {
   for (const z of [b.z0, b.z1]) for (const [a, l] of [[0, 0], [b.lu, 0], [b.lu, b.ln], [0, b.ln]]) c.push([b.o[0] + b.u[0] * a + n[0] * l, b.o[1] + b.u[1] * a + n[1] * l, z]);
   return c;
 }
+// an oriented box from a point along a 3D axis: len long, across sd0..sd1 to the side (level), up0..up1 square to both.
+// it tilts with its axis, for bridges and fire-escape flights
+function obox(a, b, sd0, sd1, up0, up1, role = ROLE.struct) {
+  const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], L = Math.hypot(...d), u = d.map(q => q / L);
+  let sx = -u[1], sy = u[0]; const sl = Math.hypot(sx, sy) || 1; sx /= sl; sy /= sl;
+  const sv = [sx, sy, 0], up = [u[1] * sv[2] - u[2] * sv[1], u[2] * sv[0] - u[0] * sv[2], u[0] * sv[1] - u[1] * sv[0]];
+  const c = [];
+  for (const h of [up0, up1]) for (const [l, sd] of [[0, sd0], [L, sd0], [L, sd1], [0, sd1]]) c.push([0, 1, 2].map(k => a[k] + u[k] * l + sv[k] * sd + up[k] * h));
+  return { k:'obox', c, role };
+}
 function primsBB(prims) {
   const b = bbNew();
   for (const p of prims) {
     if (p.k === 'box') boxCorners(p).forEach(c => bbAdd(b, c));
+    else if (p.k === 'obox') p.c.forEach(c => bbAdd(b, c));
     else if (p.k === 'quad' || p.k === 'poly') p.p.forEach(c => bbAdd(b, c));
     else { bbAdd(b, p.a); bbAdd(b, p.b); }
   }
@@ -647,15 +658,6 @@ const GEN = {
     for (let k = 1; k < pts.length; k++) prims.push(seg(up(at(pts[k - 1])), up(at(pts[k]))));
     return { prims, grow:'z' };
   } },
-  frames:{ snare:true, line:true, ok:v => thinOk(v), unit(ch) {   // portal frames marching along the long axis and past the end, drawn as double lines like I-sections
-    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), alongX = x1 - x0 >= y1 - y0;
-    const n = Math.round((alongX ? x1 - x0 : y1 - y0) / M) + 3; if (ch.i > n) return null;
-    const a = (alongX ? x0 : y0) - M + ch.i * M, H = v.top + 1.6, lo = (alongX ? y0 : x0) - .8, hi = (alongX ? y1 : x1) + .8, prims = [];
-    const P = (q, w, z) => alongX ? [q, w, z] : [w, q, z];
-    for (const q of [a, a + .35]) prims.push(seg(P(q, lo, 0), P(q, lo, H)), seg(P(q, hi, 0), P(q, hi, H)), seg(P(q, lo, H), P(q, hi, H)));
-    prims.push(seg(P(a, lo, H), P(a + .35, lo, H)), seg(P(a, hi, H), P(a + .35, hi, H)));
-    return { prims, grow:'z' };
-  } },
   pergola:{ snare:true, line:true, ok:v => thinOk(v) && v.z0 === 0 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // open bays of posts, beams and slats against a facade
     const f = ch.f, s = ch.i * M, D = 2 * M, h = 3; if (s + M > f.L + .01) return null;
     const p = (q, o, z) => P3(f, q, o, z), prims = [];
@@ -680,7 +682,7 @@ const GEN = {
       let gx = Math.round((x0 + x1) / 24) * 12, gy = side > 0 ? Math.ceil((y1 + 4) / 12) * 12 : Math.floor((y0 - 4) / 12) * 12;
       while (pts.has(`${gx},${gy}`)) gx += 12 * (r() < .5 ? 1 : -1);
       pts.add(`${gx},${gy}`);
-      const frags = ['grid', 'cell', 'stair', 'cell', 'cyl', 'canopy', 'cell', 'ramp', 'wheel'];
+      const frags = ['grid', 'cell', 'cell', 'cyl', 'cell', 'wheel'];
       for (let k = frags.length - 1; k > 0; k--) { const j = ri(r, k + 1); [frags[k], frags[j]] = [frags[j], frags[k]]; }
       ch.fol = { c:[gx, gy], frags, side };
     }
@@ -702,30 +704,10 @@ const GEN = {
     else { const oz = H + 2.6, oy = cy, R = 2.6; for (let k = 0; k < 20; k++) { const t0 = k / 20 * TAU, t1 = (k + 1) / 20 * TAU; prims.push(seg([X + 10.8, oy + Math.cos(t0) * R, oz + Math.sin(t0) * R], [X + 10.8, oy + Math.cos(t1) * R, oz + Math.sin(t1) * R])); if (k % 5 === 0) prims.push(seg([X + 10.8, oy, oz], [X + 10.8, oy + Math.cos(t0) * R, oz + Math.sin(t0) * R])); } }
     return { prims, grow:f === 'wheel' || f === 'cyl' ? 'all' : 'z' };
   } },
-  colonnade:{ struct:true, ok:v => thinOk(v) && v.isRect && v.z0 === 0, unit(ch) {   // a gallery: thin columns under an undulating canopy, running past both ends
-    const v = ch.v, r = ch.r, [x0, y0, x1, y1] = v.rect.map(q => q * M), alongX = x1 - x0 >= y1 - y0;
-    if (ch.side == null) { ch.side = r() < .5 ? 1 : -1; ch.ph = r() * TAU; }
-    const len = (alongX ? x1 - x0 : y1 - y0) + 4 * M, n = Math.floor(len / 2.4); if (ch.i > n) return null;
-    const q = (alongX ? x0 : y0) - 2 * M + ch.i * 2.4, line = ch.side > 0 ? (alongX ? y1 : x1) + 4.4 : (alongX ? y0 : x0) - 4.4;
-    const h = 4.4 + .9 * Math.sin(ch.i * .7 + ch.ph), inner = line - ch.side * 3.2, w0 = Math.min(line, inner), prims = [];
-    const B = (a, b, wa, wb, z0, z1, role) => alongX ? box([a, wa], [1, 0], b - a, wb - wa, z0, z1, role) : box([wa, a], [1, 0], wb - wa, b - a, z0, z1, role);
-    prims.push(B(q - .14, q + .14, line - .14, line + .14, 0, h, ROLE.struct));
-    if (ch.i % 2 === 0) prims.push(B(q - .14, q + .14, inner - .14, inner + .14, 0, h, ROLE.struct));
-    prims.push(B(q, q + 2.4, w0 - .3, w0 + 3.5, h, h + .12, ROLE.elem));
-    return { prims, grow:'z' };
-  } },
   fins:{ hat:true, ok:v => plainWall(v) && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // brise-soleil: thin vertical plates along a facade
     const v = ch.v, f = ch.f, s = (ch.i + 1) * .5 * M;
     if (s > f.L - .3 * M) return null;
     return { prims:[box(P3(f, s - .06, .85, 0), f.u, .12, .85, v.z0 * F, v.top)], grow:'z' };
-  } },
-  stairs:{ hat:true, ok:v => plainWall(v) && v.z0 === 0 && v.fl >= 2 && v.facades.some(f => f.L >= 3 * M), unit(ch) {   // an external stair, two steps a hit
-    const v = ch.v, f = ch.f, rise = .45, run = .55, prims = [];
-    for (const j of [ch.i * 2, ch.i * 2 + 1]) {
-      if (j * rise >= v.top - .1 || (j + 1) * run > f.L) break;
-      prims.push(box(P3(f, j * run, 1.3, 0), f.u, run, 1.3, 0, Math.min(v.top, (j + 1) * rise)));
-    }
-    return prims.length ? { prims, grow:'z' } : null;
   } },
   dims:{ line:true, ok:v => plainWall(v) && v.z0 === 0 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // a dimension string on the ground, a tick per module
     const f = ch.f, off = 2.6, n = Math.round(f.L / M); if (ch.i > n) return null;
@@ -791,6 +773,18 @@ const GEN = {
     const s = clamp(ch.i * M, .3, f.L - .3);
     return { prims:[box(P3(f, s - .14, 2.2, 0), f.u, .28, .28, 0, ch.h, ROLE.struct)], grow:'z' };
   } },
+  egress:{ hat:true, ok:v => plainWall(v) && v.top >= 2 * F - .01 && v.facades.some(f => f.L >= M - .01), unit(ch) {   // a fire escape from the ground up a facade: a landing and a steep flight per hit, stopping at a floor of its own
+    const v = ch.v, f = ch.f, W = M, D = 1.5, z0 = 0, fl = Math.round(v.top / F);
+    if (ch.slot == null) { ch.slot = ri(ch.r, Math.max(1, Math.floor(f.L / M))) * M; ch.max = 2 + ri(ch.r, Math.max(1, fl - 1)); }
+    const k = ch.i; if (k >= ch.max) return null;
+    const s = Math.min(ch.slot, f.L - W), za = z0 + k * F, zb = za + F, dir = k % 2, prims = [];
+    if (k === 0) for (const q of [s + .06, s + W - .06]) prims.push(box(P3(f, q - .06, D, 0), f.u, .12, .12, z0, z0 + ch.max * F + 1.1));   // the two outer posts
+    prims.push(box(P3(f, s, D, 0), f.u, W, D, zb - .14, zb));   // the landing
+    const pa = P3(f, s + (dir ? W - .25 : .25), D * .62, za), pb = P3(f, s + (dir ? .25 : W - .25), D * .62, zb - .14);
+    prims.push(obox(pa, pb, -.42, .42, -.1, 0));   // the flight
+    prims.push(seg(P3(f, s, D, zb + 1), P3(f, s + W, D, zb + 1)));   // its rail
+    return { prims, grow:'z' };
+  } },
   eggcrate:{ hat:true, ok:v => plainWall(v) && !v.core && v.fl >= 2 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // brise-soleil egg-crate: a bay of deep fins and shelves per hit
     const v = ch.v, f = ch.f, s = ch.i * M; if (s + M > f.L + .01) return null;
     const z0 = v.z0 * F, D = .7, prims = [box(P3(f, s, D, 0), f.u, .2, D, z0, v.top)];
@@ -802,8 +796,8 @@ const GEN = {
 function pickVocab(r, prev) {
   const w = (o, k) => { if (prev && prev[k] in o) o[prev[k]] *= .15; return o; };   // the next building rarely repeats the last one's features
   const two = o => { const a = pickW(r, o), b = pickW(r, { ...o, [a]:0 }); return [a, b]; };
-  return { hat:pickW(r, w({ fins:2, eggcrate:2, stairs:.6, railings:1.2, spaceframe:.4 }, 'hat')), snare:'cubes', note:pickW(r, { windows:3, trusses:1 }),
-    struct:two({ stilts:3, tallcols:3, colonnade:1.5, folie:1.5, frames:.7 }), axes:r() < .7, line:r() < .5 ? ['dims'] : [] };
+  return { hat:pickW(r, w({ fins:2, eggcrate:2, egress:2.4, railings:1, spaceframe:.4 }, 'hat')), snare:'cubes', note:pickW(r, { windows:3, trusses:1 }),
+    struct:two({ stilts:3, tallcols:3, folie:1.5 }), axes:r() < .7, line:r() < .5 ? ['dims'] : [] };
 }
 
 /* the melody as a shape: the pitch line over a few bars, smoothed, centred and scaled to ±1. Organic bodies take it as
@@ -854,7 +848,7 @@ function genCycle(cy) {
   const kThr = lerp(.6, .12, g), sThr = lerp(.65, .15, g), hThr = lerp(.6, .12, g);
   const acts = clamp(Math.round(S.actions), 1, 4);
   const maxVol = Math.round(lerp(10, 26, g) * clamp((cy.end - cy.t0) / 30, .7, 1.5)) + (form === 'capsule' ? 8 : 0), slow = buildSlow(), grow = clamp(bl * .75, .22, .6) * slow, lead = bl * Math.max(1, slow * .6);
-  let lastVol = -1e9, lastCut = -1e9, lastHat = -1e9, lastNote = -1e9, lastLine = -1e9, lastCant = -1e9, lastSn = -1e9, lastStruct = -1e9, vid = 0, runId = 0, bi = upperBound(BIG.ts, cy.t0 - 1), nKick = 0;
+  let lastVol = -1e9, lastCut = -1e9, lastHat = -1e9, lastNote = -1e9, lastLine = -1e9, lastCant = -1e9, lastSn = -1e9, lastStruct = -1e9, lastBridge = -1e9, vid = 0, runId = 0, bi = upperBound(BIG.ts, cy.t0 - 1), nKick = 0;
   const inCut = p => cuts.some(c => c.t <= p[3] && c.test(p));
 
   function addEl(t, kind, res, keep = false, ch = null, v = ch && ch.v) {
@@ -864,7 +858,7 @@ function genCycle(cy) {
     // a nudge of its own (±3 mm per axis, 1 mm steps): neighbouring elements always differ, where a random one could tie
     const hn = k => ((els.length * [3, 5, 2][k] + k * 2) % 7 - 3) * .001;
     els.push({ eps:[hn(0), hn(1), hn(2)], t0:t, t1:Infinity, kind, prims:res.prims, bb, keep, visOnly:!!res.visOnly, grow:res.grow || 'all',
-      anchor:res.grow === 'z' ? [c[0], c[1], bb.min[2]] : c,
+      anchor:res.anchor || (res.grow === 'z' ? [c[0], c[1], bb.min[2]] : c),
       vid:v ? v.id : null, run:ch ? ch.run : null, ex:v ? v.ex || null : null });   // added to a detached volume: it rides along
     return true;
   }
@@ -998,6 +992,28 @@ function genCycle(cy) {
       },
     },
   };
+  // a bridge: a U-section channel (a deck and two upstands) from the top of one block to another, tilting by however
+  // much their heights differ; with nothing to reach, it climbs or dips off the roof edge at a tilt of its own
+  function bridge(s) {
+    const hosts = vols.filter(v => v.isRect && !v.organic && !v.capsule && v.top >= F);
+    if (!hosts.length) return false;
+    const A = pickR(r, hosts), ca = [(A.rect[0] + A.rect[2]) / 2 * M, (A.rect[1] + A.rect[3]) / 2 * M];
+    const others = hosts.filter(B => B !== A && !B.cage && Math.hypot((B.rect[0] + B.rect[2]) / 2 * M - ca[0], (B.rect[1] + B.rect[3]) / 2 * M - ca[1]) > 3 * M);
+    const edgeToward = (v, q) => { const [x0, y0, x1, y1] = v.rect.map(z => z * M), c = [(x0 + x1) / 2, (y0 + y1) / 2], dx = q[0] - c[0], dy = q[1] - c[1];
+      return Math.abs(dx) / (x1 - x0) > Math.abs(dy) / (y1 - y0) ? [dx > 0 ? x1 : x0, clamp(q[1], y0 + 1.5, y1 - 1.5)] : [clamp(q[0], x0 + 1.5, x1 - 1.5), dy > 0 ? y1 : y0]; };
+    let a, b;
+    if (others.length && r() < .7) {
+      const B = pickR(r, others), cb = [(B.rect[0] + B.rect[2]) / 2 * M, (B.rect[1] + B.rect[3]) / 2 * M];
+      const pa = edgeToward(A, cb), pb = edgeToward(B, ca), zb = Math.max(B.z0 * F + F, B.top - F * ri(r, Math.max(1, Math.round(B.fl))));
+      a = [pa[0], pa[1], A.top]; b = [pb[0], pb[1], zb];
+    } else {
+      const ang = (r() < .5 ? 1 : -1) * (8 + r() * 28) * D2R, L = (4 + ri(r, 4)) * M, side = pickR(r, [[1, 0], [-1, 0], [0, 1], [0, -1]]);
+      const pa = edgeToward(A, [ca[0] + side[0] * 999, ca[1] + side[1] * 999]);
+      a = [pa[0], pa[1], A.top]; b = [a[0] + side[0] * L * Math.cos(ang), a[1] + side[1] * L * Math.cos(ang), Math.max(F, a[2] + L * Math.sin(ang))];
+    }
+    const w = 1.3, prims = [obox(a, b, -w, w, 0, .32), obox(a, b, -w, -w + .26, .32, 1.5), obox(a, b, w - .26, w, .32, 1.5)];
+    return addEl(s.t, 'bridge', { prims, grow:'all', anchor:a }, false, null, A);
+  }
   // any type, on the strongest kicks: a long bar thrown off the top of a tall block, hanging well past its edge
   function cantilever(s) {
     const hosts = vols.filter(v => v.isRect && !v.organic && !v.capsule && !v.cage && v.fl >= 2).sort((a, b) => b.z0 + b.fl - a.z0 - a.fl).slice(0, 3);
@@ -1168,7 +1184,7 @@ function genCycle(cy) {
     const c = vols.filter(v => G.ok(v) && !v.used.has(ch.kind)), pool = c.length ? c : vols.filter(v => G.ok(v));
     if (!pool.length) { ch.v = null; return; }
     ch.v = r() < .7 ? pool[pool.length - 1] : pickR(r, pool);
-    ch.v.used.add(ch.kind); ch.run = runId++; ch.i = 0; ch.done = false; ch.used = null; ch.fol = null; ch.side = null; ch.cells = null; ch.pts = null; ch.h = null;
+    ch.v.used.add(ch.kind); ch.run = runId++; ch.i = 0; ch.done = false; ch.used = null; ch.fol = null; ch.side = null; ch.cells = null; ch.pts = null; ch.h = null; ch.slot = null;
     const fs = ch.v.facades.filter(f => f.L >= 2 * M);
     ch.f = fs.length ? fs.reduce((a, b) => (b.L * (.6 + r()) > a.L * (.6 + r()) ? b : a), fs[0]) : ch.v.facades[0];
     if (ch.kind === 'trusses') {
@@ -1206,7 +1222,9 @@ function genCycle(cy) {
     if ((s.kick || 0) > kThr && !unified && vols.length < maxVol && s.t - lastVol >= bl * (form === 'capsule' ? .5 : p < .45 ? 1 : 2)) {
       let v = null;
       if (s.kick > .85 && s.t - lastCant >= 8 * bl && p > .3 && r() < .5) { v = cantilever(s); if (v) lastCant = s.t; }
-      if (!v) v = TY.add(s);
+      let bridged = false;
+      if (!v && vols.length >= 3 && s.t - lastBridge >= 6 * bl && p > .25 && r() < .22 && bridge(s)) { lastBridge = s.t; bridged = true; }
+      if (!v && !bridged) v = TY.add(s);
       if (v) {
         nKick++;
         if (v.isRect && !v.core && !v.capsule && !v.base && r() < (form === 'bars' ? .3 : .26)) toCage(v, s.t);   // some modules stay open frames
@@ -1492,6 +1510,10 @@ function primsInto(A, el, cols, xf0, tint) {
       const c = p.p.map(xf);
       pushTri(A, c[0], c[1], c[2], cols[p.role], tint, acc, p.role); pushTri(A, c[0], c[2], c[3], cols[p.role], tint, acc, p.role);
       for (let i = 0; i < 4; i++) A.vis.push(...c[i], ...c[(i + 1) % 4]);
+    } else if (p.k === 'obox') {
+      const c = p.c.map(xf);
+      for (const f of BOX_FACES) { pushTri(A, c[f[0]], c[f[1]], c[f[2]], cols[p.role], tint, acc, p.role); pushTri(A, c[f[0]], c[f[2]], c[f[3]], cols[p.role], tint, acc, p.role); }
+      for (const [i, j] of BOX_EDGES) { A.vis.push(...c[i], ...c[j]); A.hid.push(...c[i], ...c[j]); }
     } else if (p.k === 'poly') {   // a flat convex shape (a porthole), as a fan
       const c = p.p.map(xf);
       for (let i = 1; i < c.length - 1; i++) pushTri(A, c[0], c[i], c[i + 1], cols[p.role], tint, acc, p.role);
@@ -2160,9 +2182,9 @@ function drawPost(t, cy) {
 /* ------------------------------------------------------------------ the drawing overlay, after Bryan Cantley
    Two flat 2D layers on the sheet, drawn from the song time alone so the export matches the preview.
    Behind the building: big masses in the building's colour and in ink, solid, banded or checkered, sliding in at the
-   start and at its big moments. In front: the drawing apparatus. Registration marks, a big section number and its
-   readout, a margin of arrows ticking down with the elements, circled numbers on new blocks with leader lines,
-   dashed construction lines through every cut, and a heavy coloured arrow on the big hits. */
+   start and at its big moments. In front: the drawing apparatus, lettered in an italic serif. Registration marks,
+   figure numbers on new blocks with leader lines, dashed construction lines through every cut with its name, a
+   caption on the plan; at more marking, crosses, a margin of arrows and a heavy coloured arrow on the big hits. */
 const ovBg = document.createElement('canvas'), ovFg = document.createElement('canvas'), bgCtx = ovBg.getContext('2d'), fgCtx = ovFg.getContext('2d');
 const bgTex = new THREE.CanvasTexture(ovBg), fgTex = new THREE.CanvasTexture(ovFg);
 for (const tx of [bgTex, fgTex]) { tx.colorSpace = THREE.SRGBColorSpace; tx.minFilter = THREE.LinearFilter; tx.generateMipmaps = false; }
@@ -2170,7 +2192,6 @@ const fgScene = new THREE.Scene(), fgCam = new THREE.OrthographicCamera(-1, 1, 1
 fgScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ map:fgTex, transparent:true, depthTest:false, depthWrite:false })));
 function sizeOverlay(w, h) { for (const c of [ovBg, ovFg]) { c.width = w; c.height = h; } bgTex.dispose(); fgTex.dispose(); OV.bgKey = ''; }
 const OV = { bgKey:'' };
-const ovFont = (px, w = 700) => `${w} ${px}px Futura, "Avenir Next", "Helvetica Neue", Arial, sans-serif`;
 
 // what the overlay knows about a building, worked out once
 function ovPlan(cy) {
@@ -2185,9 +2206,9 @@ function ovPlan(cy) {
     if (fill === 'ink') { inked = true; big[0] *= .7; big[1] *= .7; }
     return { t, kind, w:big[0], h:big[1], x:.12 + r() * .76, y:.15 + r() * .7, rot:r() < .6 ? 0 : (r() - .5) * .5, fill, from:pickR(r, ['l', 'r', 't', 'b']), seed:r() * 1e4 };
   });
-  const corner = pickR(r, [[.05, .1], [.05, .82]]), crosses = Array.from({ length:3 + ri(r, 4) }, () => [.06 + r() * .88, .08 + r() * .84, r() < .5]);
+  const crosses = Array.from({ length:3 + ri(r, 4) }, () => [.06 + r() * .88, .08 + r() * .84, r() < .5]);
   const shadow = pickW(r, { solid:3, bands:hue ? 1.4 : 0, hatched:1 });
-  return cy.ov = { masses, corner, crosses, shadow, rot:r() < .5 ? -.12 : .12 };
+  return cy.ov = { masses, crosses, shadow, rot:r() < .5 ? -.12 : .12 };
 }
 // a mass's outline as a path, in pixels
 function massPath(g, m, W, H, k) {
@@ -2229,66 +2250,70 @@ function drawOverlay(t, cy) {
     for (const m of live) { massPath(bgCtx, m, W, H, clamp((t - m.t) / .6, 0, 1)); fillMass(bgCtx, m, W, H, ink, paper, hue, u); bgCtx.restore(); }
     bgTex.needsUpdate = true;
   }
-  // in front: the drawing apparatus
+  // in front: the drawing apparatus, as much of it as the page-marks setting asks for, lettered in an italic serif
   const g = fgCtx; g.clearRect(0, 0, W, H);
-  if (S.overlay === 'off') { fgTex.needsUpdate = true; return; }
+  const amt = S.overlay === 'off' ? 0 : S.marks;
+  if (amt <= 0) { fgTex.needsUpdate = true; return; }
   const fade = (t0, dur) => { const a = t - t0; return a < 0 ? 0 : a < .15 ? a / .15 : a > dur ? Math.max(0, 1 - (a - dur) / (bar * .5)) : 1; };
-  g.lineCap = 'butt'; g.strokeStyle = ink; g.fillStyle = ink;
-  const inA = clamp((t - cy.t0) / .5, 0, 1);
-  g.globalAlpha = inA;
+  const it = px => `italic 400 ${px * u}px "Times New Roman", Times, Georgia, serif`;
+  g.lineCap = 'butt'; g.strokeStyle = ink; g.fillStyle = ink; g.textBaseline = 'middle';
+  g.globalAlpha = clamp((t - cy.t0) / .5, 0, 1);
   // registration marks in the corners
   for (const [x, y] of [[.035, .05], [.965, .05], [.035, .95], [.965, .95]]) {
-    const X = x * W, Y = y * H, R = 9 * u; g.lineWidth = 1.2 * u;
+    const X = x * W, Y = y * H, R = 9 * u; g.lineWidth = 1.1 * u;
     g.beginPath(); g.arc(X, Y, R, 0, TAU); g.stroke(); g.beginPath(); g.moveTo(X - R * 1.8, Y); g.lineTo(X + R * 1.8, Y); g.moveTo(X, Y - R * 1.8); g.lineTo(X, Y + R * 1.8); g.stroke();
   }
-  // the section number, big, with its readout
-  { const [x, y] = ov.corner, X = x * W, Y = y * H, n = String(cy.idx + 1).padStart(2, '0'), bi = Math.max(0, upperBound(AN.downbeats, t) - 1);
-    g.font = ovFont(78 * u, 800); g.textBaseline = 'top'; const tw = g.measureText(n).width;
-    if (hue) { g.fillStyle = hue; g.fillRect(X - 8 * u, Y + 10 * u, tw + 16 * u, 66 * u); g.fillStyle = ink; }
-    g.fillText(n, X, Y); g.lineWidth = 2 * u; g.strokeRect(X - 8 * u, Y - 4 * u, tw + 16 * u, 86 * u);
-    g.font = ovFont(11 * u, 500); const lines = [`BRUT / ${({ capsule:'CAPSULE TOWER', bars:'CROSSING BARS', slab:'SLAB ON PILOTIS', stepped:'STEPPED STACKS' })[cy.form] || ''}`, `BAR ${String(bi + 1).padStart(3, '0')}   T ${t.toFixed(2)}`, `${cy.vols.filter(v => v.t <= t).length} BLOCKS / ${cy.geo.filter(o => o.type === 'cut' && o.t <= t).length} CUTS`];
-    lines.forEach((s, i) => g.fillText(s, X + tw + 26 * u, Y + 8 * u + i * 16 * u)); }
-  // a margin of arrows ticking down with the elements as they arrive
-  { const ticks = cy.els.filter(e => !e.keep && e.t0 <= t), n = Math.min(16, ticks.length), X = W * .93;
-    g.lineWidth = 1.6 * u;
-    for (let i = 0; i < n; i++) { const Y = H * (.14 + i * .045), last = i === n - 1; g.strokeStyle = g.fillStyle = last && hue ? hue : ink; arrow(g, X + 26 * u, Y, X, Y, u, 7); g.beginPath(); g.arc(X + 34 * u, Y, 3 * u, 0, TAU); g.stroke(); }
-    g.strokeStyle = g.fillStyle = ink; }
   // crosses dotted about the sheet
-  g.lineWidth = 2.4 * u;
-  for (const [x, y, h] of ov.crosses) { const X = x * W, Y = y * H, R = 10 * u; g.strokeStyle = h && hue ? hue : '#8a8784'; g.beginPath(); g.moveTo(X - R, Y); g.lineTo(X + R, Y); g.moveTo(X, Y - R); g.lineTo(X, Y + R); g.stroke(); }
-  g.strokeStyle = ink;
+  if (amt >= .6) { g.lineWidth = 2 * u;
+    for (const [x, y, h] of ov.crosses) { const X = x * W, Y = y * H, R = 9 * u; g.strokeStyle = h && hue ? hue : '#8a8784'; g.beginPath(); g.moveTo(X - R, Y); g.lineTo(X + R, Y); g.moveTo(X, Y - R); g.lineTo(X, Y + R); g.stroke(); }
+    g.strokeStyle = ink; }
+  // a margin of arrows ticking down with the elements as they arrive
+  if (amt >= .75) { const ticks = cy.els.filter(e => !e.keep && e.t0 <= t), n = Math.min(16, ticks.length), X = W * .93;
+    g.lineWidth = 1.4 * u;
+    for (let i = 0; i < n; i++) { const Y = H * (.14 + i * .045), last = i === n - 1; g.strokeStyle = g.fillStyle = last && hue ? hue : ink; arrow(g, X + 26 * u, Y, X, Y, u, 7); }
+    g.strokeStyle = g.fillStyle = ink; }
   g.globalAlpha = 1;
-  // circled numbers on new blocks, with leader lines, for two bars
-  let k = 0;
-  for (const op of cy.geo) {
-    if (op.type !== 'vol') continue; k++;
-    const a = fade(op.t, bar * 2); if (a <= 0) continue;
-    const p = toPx([op.bb.max[0], op.bb.max[1], op.bb.max[2]], W, H); if (!p) continue;
-    const R = 13 * u, cx = p[0] + 46 * u, cyy = p[1] - 46 * u;
-    g.globalAlpha = a; g.lineWidth = 1.4 * u;
-    g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(cx - R * .7, cyy + R * .7); g.stroke();
-    g.beginPath(); g.arc(p[0], p[1], 2.5 * u, 0, TAU); g.fill();
-    g.beginPath(); g.arc(cx, cyy, R, 0, TAU); g.fillStyle = paper; g.fill(); g.stroke(); g.fillStyle = ink;
-    g.font = ovFont(13 * u, 700); g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(String(k), cx, cyy + u); g.textAlign = 'left';
+  // the plan's caption, under its corner
+  if (amt >= .15 && PLAN.at && planMesh.visible) { const p = toPx(PLAN.at, W, H); if (p) { g.font = it(24); g.fillText(`plan at +${PLAN.z.toFixed(1)}`, p[0], p[1] + 16 * u); } }
+  // new blocks get their numbers for two bars: "fig. 4" on a leader, or a circled figure
+  if (amt >= .15 && S.numbering !== 'off') {
+    let k = 0;
+    for (const op of cy.geo) {
+      if (op.type !== 'vol') continue; k++;
+      const a = fade(op.t, bar * 2); if (a <= 0) continue;
+      const p = toPx([op.bb.max[0], op.bb.max[1], op.bb.max[2]], W, H); if (!p) continue;
+      const cx = p[0] + 42 * u, cyy = p[1] - 38 * u;
+      g.globalAlpha = a; g.lineWidth = 1 * u;
+      g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(cx - 4 * u, cyy + 4 * u); g.stroke();
+      g.beginPath(); g.arc(p[0], p[1], 2.2 * u, 0, TAU); g.fill();
+      if (S.numbering === 'circled') {
+        const R = 12 * u; g.beginPath(); g.arc(cx + R * .6, cyy - R * .6, R, 0, TAU); g.fillStyle = paper; g.fill(); g.stroke(); g.fillStyle = ink;
+        g.font = it(20); g.textAlign = 'center'; g.fillText(String(k), cx + R * .6, cyy - R * .6); g.textAlign = 'left';
+      } else { g.font = it(26); g.fillText(`fig. ${k}`, cx, cyy - 4 * u); }
+    }
   }
-  // dashed construction lines through each cut, for a bar and a half
-  g.setLineDash([10 * u, 6 * u]);
-  for (const op of cy.geo) {
-    if (op.type !== 'cut') continue;
-    const a = fade(op.t, bar * 1.5); if (a <= 0) continue;
-    const p = toPx(bbCenter(op.bb), W, H); if (!p) continue;
-    const ang = (op.t * 7.3 % 3 | 0) - 1, dy = Math.tan(ang * .52) * W;
-    g.globalAlpha = a * .9; g.lineWidth = 1.2 * u; g.strokeStyle = hue || ink;
-    g.beginPath(); g.moveTo(0, p[1] - dy * p[0] / W); g.lineTo(W, p[1] + dy * (1 - p[0] / W)); g.stroke();
-    g.setLineDash([]); g.lineWidth = 2 * u; g.beginPath(); g.arc(p[0], p[1], 7 * u, 0, TAU); g.stroke(); g.setLineDash([10 * u, 6 * u]);
+  // dashed construction lines through each cut, with its name, for a bar and a half
+  if (amt >= .3) {
+    g.setLineDash([10 * u, 6 * u]);
+    for (const op of cy.geo) {
+      if (op.type !== 'cut') continue;
+      const a = fade(op.t, bar * 1.5); if (a <= 0) continue;
+      const p = toPx(bbCenter(op.bb), W, H); if (!p) continue;
+      const ang = (op.t * 7.3 % 3 | 0) - 1, dy = Math.tan(ang * .52) * W;
+      g.globalAlpha = a * .85; g.lineWidth = 1 * u; g.strokeStyle = hue || ink;
+      g.beginPath(); g.moveTo(0, p[1] - dy * p[0] / W); g.lineTo(W, p[1] + dy * (1 - p[0] / W)); g.stroke();
+      g.setLineDash([]); g.lineWidth = 1.6 * u; g.beginPath(); g.arc(p[0], p[1], 6 * u, 0, TAU); g.stroke();
+      g.globalAlpha = a; g.font = it(22); g.fillStyle = ink; g.fillText(({ blob:'free cut', gash:'gash', void:'void', notch:'notch', terrace:'terrace', under:'undercut', chamfer:'chamfer', split:'split', slice:'raked' })[op.spec.kind] || 'cut', p[0] + 12 * u, p[1] - 12 * u);
+      g.setLineDash([10 * u, 6 * u]);
+    }
+    g.setLineDash([]); g.strokeStyle = ink;
   }
-  g.setLineDash([]); g.strokeStyle = ink;
   // big hits: a heavy coloured arrow driven across the sheet
-  for (const bt of BIG.ts) {
+  if (amt >= .9) for (const bt of BIG.ts) {
     if (bt < cy.t0 || bt >= cy.end) continue;
     const a = fade(bt, bar); if (a <= 0) continue;
     const k2 = easeOutCubic(clamp((t - bt) / .35, 0, 1)), Y = H * (.2 + (hash01(Math.round(bt * 10), 3) * .6)), dir = hash01(Math.round(bt * 10), 5) < .5 ? 1 : -1;
-    g.globalAlpha = a; g.lineWidth = 14 * u; g.strokeStyle = g.fillStyle = hue || ink;
+    g.globalAlpha = a; g.lineWidth = 12 * u; g.strokeStyle = g.fillStyle = hue || ink;
     const x0 = dir > 0 ? -20 * u : W + 20 * u, x1 = dir > 0 ? lerp(-20 * u, W * .62, k2) : lerp(W + 20 * u, W * .38, k2);
     arrow(g, x0, Y, x1, Y, u, 3.4);
     g.strokeStyle = g.fillStyle = ink;
@@ -2333,7 +2358,9 @@ function updatePlan(cy, t) {
   const key = `${cy.idx}|${L}|${standing.length}|${cutsNow.length}|${posts.length}|${S.overlay}`;
   if (key === PLAN.key) return;
   PLAN.key = key;
-  const [ox, oy] = planSpot(cy), at = standing.filter(v => !v.cage && v.z0 <= L && v.z0 + v.fl >= L), over = standing.filter(v => !v.cage && v.z0 > L);
+  const [ox, oy] = planSpot(cy);
+  PLAN.at = [cy.bbFinal.min[0] + ox, cy.bbFinal.min[1] + oy, 0]; PLAN.z = Math.floor(L) * F;
+  const at = standing.filter(v => !v.cage && v.z0 <= L && v.z0 + v.fl >= L), over = standing.filter(v => !v.cage && v.z0 > L);
   const parts = [], hued = [];
   for (const v of at) {
     const P = (v.shape || v.poly).map(([x, y]) => [x * M + ox, y * M + oy]), outer = csM(P), dst = v.organic && cy.pal.hue ? hued : parts;
@@ -2643,6 +2670,8 @@ addSelect(KP, 'hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashe
 addSlider(KP, 'lineW', 'Line weight');
 addSelect(KP, 'shadow', 'Hard shadows', [['mixed', 'Each building its own way'], ['solid', 'Solid'], ['hatched', 'Hatched'], ['bands', 'Coloured bands'], ['off', 'Off']], rebuildLines);
 addSelect(KP, 'overlay', 'Drawing overlay', [['full', 'Colour masses and marks'], ['marks', 'Marks only'], ['off', 'Off']]);
+addSlider(KP, 'marks', 'Page markings: corner marks only ↔ everything');
+addSelect(KP, 'numbering', 'Numbering', [['fig', 'fig. 1, fig. 2 (italic)'], ['circled', 'Circled figures'], ['off', 'None']]);
 addSlider(KP, 'sunAz', 'Sun: from behind ↔ from in front');
 const swatchBox = document.createElement('label'); swatchBox.innerHTML = '<span>Colours at the playhead</span><div class="swatches"></div>'; $(KP).appendChild(swatchBox);
 addButton(KP, 'Shuffle colours', () => { S.palShuffle = (S.palShuffle || 0) + 1; saveSettings(); recolour(); showSwatches(); });
