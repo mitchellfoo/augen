@@ -139,7 +139,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 
 /* ------------------------------------------------------------------ settings */
 const S = {
-  seed:1, curve:.35, growth:.7, actions:2, unify:.85, form:'mixed', camStyle:'mixed', pitchSens:.5,
+  seed:1, curve:.5, growth:.7, actions:2, unify:.5, form:'mixed', camStyle:'mixed', pitchSens:.5,
   shots:'music', shotSens:.5, view:'iso', punch:0, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:0, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35, silenceFade:.9, silenceThr:.09,
   palette:'generated', variety:.5, shading:'flat', lineW:.35, hatch:1, hatchSize:.35, shadow:'solid', sunAz:.7, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.3, flash:false, look:'print',
   // old drawing
@@ -595,26 +595,21 @@ function primsBB(prims) {
   const b = bbNew();
   for (const p of prims) {
     if (p.k === 'box') boxCorners(p).forEach(c => bbAdd(b, c));
-    else if (p.k === 'quad') p.p.forEach(c => bbAdd(b, c));
+    else if (p.k === 'quad' || p.k === 'poly') p.p.forEach(c => bbAdd(b, c));
     else { bbAdd(b, p.a); bbAdd(b, p.b); }
   }
   return b;
 }
 
 /* the feature library: each kind adds one unit per hit to its current target, and returns null once that target is full */
+const plainWall = v => !v.organic && !v.capsule;
 const GEN = {
-  joists:{ hat:true, ok:v => v.isRect && !v.roof && !v.capped, unit(ch) {   // rafters across a flat roof, tails past the eaves
-    const v = ch.v, [x0, y0, x1, y1] = v.rect, alongX = x1 - x0 >= y1 - y0, L = alongX ? x1 - x0 : y1 - y0;
-    if (ch.i > L * 2) return null;
-    const a = ((alongX ? x0 : y0) + ch.i * .5) * M, mid = ((alongX ? y0 + y1 : x0 + x1) / 2) * M, span = (alongX ? y1 - y0 : x1 - x0) * M + 1.1;
-    return { prims:[alongX ? boxC(a, mid, .12, span, v.top, v.top + .2) : boxC(mid, a, span, .12, v.top, v.top + .2)] };
-  } },
-  fins:{ hat:true, ok:v => v.facades.some(f => f.L >= 2 * M), unit(ch) {   // brise-soleil: thin vertical plates along a facade
+  fins:{ hat:true, ok:v => plainWall(v) && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // brise-soleil: thin vertical plates along a facade
     const v = ch.v, f = ch.f, s = (ch.i + 1) * .5 * M;
     if (s > f.L - .3 * M) return null;
     return { prims:[box(P3(f, s - .06, .85, 0), f.u, .12, .85, v.z0 * F, v.top)], grow:'z' };
   } },
-  stairs:{ hat:true, ok:v => v.z0 === 0 && v.fl >= 2 && v.facades.some(f => f.L >= 3 * M), unit(ch) {   // an external stair, two steps a hit
+  stairs:{ hat:true, ok:v => plainWall(v) && v.z0 === 0 && v.fl >= 2 && v.facades.some(f => f.L >= 3 * M), unit(ch) {   // an external stair, two steps a hit
     const v = ch.v, f = ch.f, rise = .45, run = .55, prims = [];
     for (const j of [ch.i * 2, ch.i * 2 + 1]) {
       if (j * rise >= v.top - .1 || (j + 1) * run > f.L) break;
@@ -622,82 +617,7 @@ const GEN = {
     }
     return prims.length ? { prims, grow:'z' } : null;
   } },
-  spaceframe:{ hat:true, line:true, ok:v => v.isRect && !v.roof && !v.capped && v.rect[2] - v.rect[0] >= 2 && v.rect[3] - v.rect[1] >= 2, unit(ch) {
-    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), g = 1.5, nx = Math.floor((x1 - x0) / g), ny = Math.floor((y1 - y0) / g);
-    const i = ch.i; if (i > nx) return null;
-    const zt = v.top + 2.2, zb = v.top + 1.2, T = (a, b) => [x0 + a * g, y0 + b * g, zt], Bn = (a, b) => [x0 + (a + .5) * g, y0 + (b + .5) * g, zb], prims = [];
-    prims.push(seg(T(i, 0), T(i, ny)));
-    if (i > 0) for (let j = 0; j <= ny; j++) prims.push(seg(T(i - 1, j), T(i, j)));
-    if (i > 0) for (let j = 0; j < ny; j++) {
-      const b = Bn(i - 1, j);
-      prims.push(seg(b, T(i - 1, j)), seg(b, T(i, j)), seg(b, T(i - 1, j + 1)), seg(b, T(i, j + 1)));
-      if (j > 0) prims.push(seg(Bn(i - 1, j - 1), b));
-      if (i > 1) prims.push(seg(Bn(i - 2, j), b));
-    }
-    if (i === 0 || i === nx) prims.push(seg([...T(i, 0).slice(0, 2), v.top], T(i, 0)), seg([...T(i, ny).slice(0, 2), v.top], T(i, ny)));
-    return { prims };
-  } },
-  railings:{ hat:true, line:true, ok:v => !v.roof && v.top >= F, unit(ch) {   // guard rails walking round a roof edge
-    const v = ch.v, fs = v.facades, per = fs.reduce((s, f) => s + f.L, 0), s0 = ch.i * 2;
-    if (s0 >= per) return null;
-    const at = s => { for (const f of fs) { if (s <= f.L) return P3(f, s, 0, v.top); s -= f.L; } return P3(fs[0], 0, 0, v.top); };
-    const up = p => [p[0], p[1], p[2] + 1.1], prims = [];
-    for (const s of [s0, s0 + 1]) if (s < per) prims.push(seg(at(s), up(at(s))));
-    let acc = 0; const pts = [s0];
-    for (const f of fs) { acc += f.L; if (acc > s0 && acc < s0 + 2 && acc < per) pts.push(acc); }
-    pts.push(Math.min(s0 + 2, per));
-    for (let k = 1; k < pts.length; k++) prims.push(seg(up(at(pts[k - 1])), up(at(pts[k]))));
-    return { prims, grow:'z' };
-  } },
-  frames:{ snare:true, line:true, ok:v => true, unit(ch) {   // portal frames marching along the long axis and past the end, drawn as double lines like I-sections
-    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), alongX = x1 - x0 >= y1 - y0;
-    const n = Math.round((alongX ? x1 - x0 : y1 - y0) / M) + 3; if (ch.i > n) return null;
-    const a = (alongX ? x0 : y0) - M + ch.i * M, H = v.top + 1.6, lo = (alongX ? y0 : x0) - .8, hi = (alongX ? y1 : x1) + .8, prims = [];
-    const P = (q, w, z) => alongX ? [q, w, z] : [w, q, z];
-    for (const q of [a, a + .35]) prims.push(seg(P(q, lo, 0), P(q, lo, H)), seg(P(q, hi, 0), P(q, hi, H)), seg(P(q, lo, H), P(q, hi, H)));
-    prims.push(seg(P(a, lo, H), P(a + .35, lo, H)), seg(P(a, hi, H), P(a + .35, hi, H)));
-    return { prims, grow:'z' };
-  } },
-  columns:{ snare:true, ok:v => v.z0 === 0 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // a colonnade standing off a facade, with a beam on top
-    const v = ch.v, f = ch.f, n = Math.floor(f.L / M); if (ch.i > n) return null;
-    const s = clamp(ch.i * M, .3, f.L - .3), h = Math.min(v.top, 2 * F), prims = [box(P3(f, s - .13, 1.65, 0), f.u, .26, .26, 0, h)];
-    if (ch.i > 0) { const sp = clamp((ch.i - 1) * M, .3, f.L - .3); prims.push(box(P3(f, sp - .13, 1.65, 0), f.u, s - sp + .26, .26, h - .25, h)); }
-    return { prims, grow:'z' };
-  } },
-  pergola:{ snare:true, line:true, ok:v => v.z0 === 0 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // open bays of posts, beams and slats against a facade
-    const f = ch.f, s = ch.i * M, D = 2 * M, h = 3; if (s + M > f.L + .01) return null;
-    const p = (q, o, z) => P3(f, q, o, z), prims = [];
-    prims.push(seg(p(s, D, 0), p(s, D, h)), seg(p(s + M, D, 0), p(s + M, D, h)), seg(p(s, D, h), p(s + M, D, h)), seg(p(s, 0, h), p(s, D, h)), seg(p(s + M, 0, h), p(s + M, D, h)));
-    for (const q of [s + M / 3, s + 2 * M / 3]) prims.push(seg(p(q, 0, h + .15), p(q, D + .3, h + .15)));
-    return { prims, grow:'z' };
-  } },
-  trusses:{ note:true, line:true, ok:v => v.top >= F && v.isRect, unit(ch) {   // a Warren truss cantilevering off the end of the spine, a bay per note
-    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), i = ch.i; if (i >= 6) return null;
-    const dir = ch.dir || 1, xs = (dir > 0 ? x1 : x0) + dir * i * 1.6, xe = xs + dir * 1.6, zt = v.top - .05, zb = zt - 1.5, ym = (y0 + y1) / 2, prims = [];
-    for (const y of [ym - 1, ym + 1]) {
-      prims.push(seg([xs, y, zt], [xe, y, zt]), seg([xs, y, zb], [xe, y, zb]), seg([xe, y, zt], [xe, y, zb]));
-      prims.push(i % 2 ? seg([xs, y, zt], [xe, y, zb]) : seg([xs, y, zb], [xe, y, zt]));
-    }
-    prims.push(seg([xe, ym - 1, zt], [xe, ym + 1, zt]), seg([xe, ym - 1, zb], [xe, ym + 1, zb]));
-    return { prims };
-  } },
-  mullions:{ line:true, ok:v => v.facades.some(f => f.L >= 2 * M), unit(ch) {   // a curtain-wall grid: a mullion per hit, transoms on the first
-    const v = ch.v, f = ch.f, s = (ch.i + 1) * .5 * M, z0 = v.z0 * F;
-    if (s > f.L - .2 * M) return null;
-    const prims = [seg(P3(f, s, .03, z0), P3(f, s, .03, v.top))];
-    if (ch.i === 0) for (let k = 0; k < v.fl; k++) for (const dz of [.9, F]) { const z = (v.z0 + k) * F + dz; if (z < v.top - .05) prims.push(seg(P3(f, 0, .03, z), P3(f, f.L, .03, z))); }
-    return { prims, grow:'z' };
-  } },
-  hatch:{ line:true, ok:v => v.isRect && !v.roof && !v.capped, unit(ch) {   // 45° hatching across a flat roof, two strokes a hit
-    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), z = v.top + .02, sp = .7, prims = [];
-    for (const k of [ch.i * 2, ch.i * 2 + 1]) {
-      const c = x0 + y0 + (k + 1) * sp; if (c >= x1 + y1) break;
-      const xa = Math.max(x0, c - y1), xb = Math.min(x1, c - y0);
-      if (xb > xa) prims.push(seg([xa, c - xa, z], [xb, c - xb, z]));
-    }
-    return prims.length ? { prims, visOnly:true } : null;
-  } },
-  dims:{ line:true, ok:v => v.z0 === 0 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // a dimension string on the ground, a tick per module
+  dims:{ line:true, ok:v => plainWall(v) && v.z0 === 0 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // a dimension string on the ground, a tick per module
     const f = ch.f, off = 2.6, n = Math.round(f.L / M); if (ch.i > n) return null;
     const p = (s, o) => P3(f, s, o, 0), prims = [];
     if (ch.i === 0) prims.push(seg(p(0, .4), p(0, off + .5)), seg(p(f.L, .4), p(f.L, off + .5)), seg(p(-.4, off), p(f.L + .4, off)));
@@ -705,55 +625,7 @@ const GEN = {
     prims.push(seg([...p(s, off).slice(0, 2).map((q, j) => q - (f.u[j] + f.n[j]) * t), 0], [...p(s, off).slice(0, 2).map((q, j) => q + (f.u[j] + f.n[j]) * t), 0]));
     return { prims, visOnly:true };
   } },
-  folie:{ struct:true, ok:v => true, unit(ch) {   // Tschumi folies on a 12 m point grid: a 10.8 m cubic frame, then a fragment per hit
-    const v = ch.v, r = ch.r;
-    if (!ch.fol) {
-      const [x0, y0, x1, y1] = v.rect.map(q => q * M), side = r() < .5 ? 1 : -1, pts = ch.folPts || (ch.folPts = new Set());
-      let gx = Math.round((x0 + x1) / 24) * 12, gy = side > 0 ? Math.ceil((y1 + 4) / 12) * 12 : Math.floor((y0 - 4) / 12) * 12;
-      while (pts.has(`${gx},${gy}`)) gx += 12 * (r() < .5 ? 1 : -1);
-      pts.add(`${gx},${gy}`);
-      const frags = ['grid', 'cell', 'stair', 'cell', 'cyl', 'canopy', 'cell', 'ramp', 'wheel'];
-      for (let k = frags.length - 1; k > 0; k--) { const j = ri(r, k + 1); [frags[k], frags[j]] = [frags[j], frags[k]]; }
-      ch.fol = { c:[gx, gy], frags, side };
-    }
-    const { c:[cx, cy], frags } = ch.fol, H = 10.8, h = 5.4, a = 3.6, X = cx - h, Y = cy - h, i = ch.i, prims = [];
-    if (i > frags.length) return null;
-    const P = (x, y, z) => [X + x, Y + y, z];
-    if (i === 0) {   // the cube frame
-      for (const z of [0, H]) prims.push(seg(P(0, 0, z), P(10.8, 0, z)), seg(P(10.8, 0, z), P(10.8, 10.8, z)), seg(P(10.8, 10.8, z), P(0, 10.8, z)), seg(P(0, 10.8, z), P(0, 0, z)));
-      for (const [x, y] of [[0, 0], [10.8, 0], [10.8, 10.8], [0, 10.8]]) prims.push(seg(P(x, y, 0), P(x, y, H)));
-      return { prims, grow:'z' };
-    }
-    const f = frags[i - 1], q = () => ri(r, 3) * a;
-    if (f === 'grid') for (const k of [a, 2 * a]) prims.push(seg(P(k, 0, 0), P(k, 0, H)), seg(P(0, 0, k), P(10.8, 0, k)), seg(P(10.8, k, 0), P(10.8, k, H)), seg(P(10.8, 0, k), P(10.8, 10.8, k)), seg(P(0, 0, k), P(0, 10.8, k)), seg(P(k, 0, H), P(k, 10.8, H)));
-    else if (f === 'cell') { const x = q(), y = q(), z = q(); prims.push(box([X + x, Y + y], [1, 0], a, a, z, z + a, ROLE.struct)); }
-    else if (f === 'stair') { const y = q(); for (let j = 0; j < 12; j++) prims.push(box([X + j * .9, Y + y], [1, 0], .9, 1.2, 0, (j + 1) * .6, ROLE.struct)); }
-    else if (f === 'cyl') { const ox = X + q() + a / 2, oy = Y + q() + a / 2, R = 1.5; for (let k = 0; k < 14; k++) { const t0 = k / 14 * TAU, t1 = (k + 1) / 14 * TAU, p0 = [ox + Math.cos(t0) * R, oy + Math.sin(t0) * R], p1 = [ox + Math.cos(t1) * R, oy + Math.sin(t1) * R]; prims.push(seg([...p0, 0], [...p1, 0]), seg([...p0, 7.2], [...p1, 7.2])); if (k % 2 === 0) prims.push(seg([...p0, 0], [...p0, 7.2])); } }
-    else if (f === 'canopy') { const s = r() < .5, o = q(); prims.push(box(s ? [X - a, Y + o] : [X + o, Y - a], [1, 0], s ? 2 * a : a, s ? a : 2 * a, H - .2, H, ROLE.struct)); }   // a slab cantilevering one cell out
-    else if (f === 'ramp') prims.push({ k:'quad', p:[P(-7.2, 1, 0), P(0, 1, a), P(0, 2.6, a), P(-7.2, 2.6, 0)], role:ROLE.struct });
-    else { const oz = H + 2.6, oy = cy, R = 2.6; for (let k = 0; k < 20; k++) { const t0 = k / 20 * TAU, t1 = (k + 1) / 20 * TAU; prims.push(seg([X + 10.8, oy + Math.cos(t0) * R, oz + Math.sin(t0) * R], [X + 10.8, oy + Math.cos(t1) * R, oz + Math.sin(t1) * R])); if (k % 5 === 0) prims.push(seg([X + 10.8, oy, oz], [X + 10.8, oy + Math.cos(t0) * R, oz + Math.sin(t0) * R])); } }
-    return { prims, grow:f === 'wheel' || f === 'cyl' ? 'all' : 'z' };
-  } },
-  ibeams:{ struct:true, ok:v => v.isRect && !v.roof && !v.capped, unit(ch) {   // a grillage of I-beams across a roof, overhanging both sides
-    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), alongX = x1 - x0 >= y1 - y0, L = alongX ? x1 - x0 : y1 - y0;
-    const q = (alongX ? x0 : y0) + .6 + ch.i * 1.5; if (q > (alongX ? x1 : y1) - .3) return null;
-    const mid = (alongX ? y0 + y1 : x0 + x1) / 2, span = (alongX ? y1 - y0 : x1 - x0) + 3.2, z = v.top + .25;
-    const I = (w, z0, z1) => alongX ? boxC(q, mid, w, span, z0, z1, ROLE.struct) : boxC(mid, q, span, w, z0, z1, ROLE.struct);
-    return { prims:[I(.32, z, z + .07), I(.06, z + .07, z + .48), I(.32, z + .48, z + .55)] };
-  } },
-  colonnade:{ struct:true, ok:v => v.isRect && v.z0 === 0, unit(ch) {   // a gallery: thin columns under an undulating canopy, running past both ends
-    const v = ch.v, r = ch.r, [x0, y0, x1, y1] = v.rect.map(q => q * M), alongX = x1 - x0 >= y1 - y0;
-    if (ch.side == null) { ch.side = r() < .5 ? 1 : -1; ch.ph = r() * TAU; }
-    const len = (alongX ? x1 - x0 : y1 - y0) + 4 * M, n = Math.floor(len / 2.4); if (ch.i > n) return null;
-    const q = (alongX ? x0 : y0) - 2 * M + ch.i * 2.4, line = ch.side > 0 ? (alongX ? y1 : x1) + 4.4 : (alongX ? y0 : x0) - 4.4;
-    const h = 4.4 + .9 * Math.sin(ch.i * .7 + ch.ph), inner = line - ch.side * 3.2, w0 = Math.min(line, inner), prims = [];
-    const B = (a, b, wa, wb, z0, z1, role) => alongX ? box([a, wa], [1, 0], b - a, wb - wa, z0, z1, role) : box([wa, a], [1, 0], wb - wa, b - a, z0, z1, role);
-    prims.push(B(q - .14, q + .14, line - .14, line + .14, 0, h, ROLE.struct));
-    if (ch.i % 2 === 0) prims.push(B(q - .14, q + .14, inner - .14, inner + .14, 0, h, ROLE.struct));
-    prims.push(B(q, q + 2.4, w0 - .3, w0 + 3.5, h, h + .12, ROLE.elem));
-    return { prims, grow:'z' };
-  } },
-  windows:{ note:true, ok:v => v.facades.some(f => f.L >= M), unit(ch, s) {   // pitch class picks the facade, octave the floor; held notes draw ribbons
+  windows:{ note:true, ok:v => plainWall(v) && v.facades.some(f => f.L >= M), unit(ch, s) {   // pitch class picks the facade, octave the floor; held notes draw ribbons
     const v = ch.v, nt = s.note, fs = v.facades.filter(f => f.L >= M); if (!fs.length) return null;
     const pc = ((nt.midi % 12) + 12) % 12, f = fs[pc % fs.length];
     const k = clamp(Math.floor(nt.midi / 12) - 4, 0, v.fl - 1), slots = Math.floor(f.L / (.5 * M)) - 1; if (slots < 1) return null;
@@ -770,44 +642,71 @@ const GEN = {
     }
     return null;
   } },
+  eggcrate:{ hat:true, ok:v => plainWall(v) && !v.core && v.fl >= 2 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // brise-soleil egg-crate: a bay of deep fins and shelves per hit
+    const v = ch.v, f = ch.f, s = ch.i * M; if (s + M > f.L + .01) return null;
+    const z0 = v.z0 * F, D = .7, prims = [box(P3(f, s, D, 0), f.u, .2, D, z0, v.top)];
+    for (let k = 1; k <= Math.round(v.fl); k++) prims.push(box(P3(f, s + .2, D, 0), f.u, M - .2, D, z0 + k * F - .2, z0 + k * F));
+    if (s + 2 * M > f.L + .01) prims.push(box(P3(f, f.L - .2, D, 0), f.u, .2, D, z0, v.top));
+    return { prims, grow:'z' };
+  } },
 };
-const LINE_KINDS = Object.keys(GEN).filter(k => GEN[k].line);
-
 function pickVocab(r, prev) {
   const w = (o, k) => { if (prev && prev[k] in o) o[prev[k]] *= .15; return o; };   // the next building rarely repeats the last one's features
-  const V = {
-    hat:pickW(r, w({ joists:3, fins:2, stairs:1.5, spaceframe:2, railings:1.5 }, 'hat')),
-    snare:pickW(r, w({ frames:3, columns:2, pergola:1.5 }, 'snare')),
-    note:pickW(r, { windows:3, trusses:1.2 }),
-    pitched:r() < .5, axes:r() < .65,
-    struct:(() => { const a = pickW(r, { folie:3, ibeams:2.5, colonnade:2.5 }), b = pickW(r, { folie:3, ibeams:2.5, colonnade:2.5, [a]:0 }); return [a, b]; })(),
-    line:(() => { const a = pickW(r, { mullions:3, hatch:2.5, dims:2 }), b = pickW(r, { mullions:3, hatch:2.5, dims:2, railings:1.5, spaceframe:1, [a]:0 }); return [a, b]; })(),
-  };
-  // line-only elements are part of the look: every cycle gets at least one, usually two
-  const lines = [V.hat, V.snare, V.note].filter(k => GEN[k].line).length + (V.axes ? 1 : 0);
-  if (lines === 0) V.snare = 'frames';
-  if (lines <= 1 && r() < .5) V.hat = pickR(r, ['spaceframe', 'railings']);
-  return V;
+  return { hat:pickW(r, w({ fins:2.5, eggcrate:2.5, stairs:.8 }, 'hat')), note:'windows', axes:r() < .7, line:r() < .5 ? ['dims'] : [] };
 }
 
+/* the melody as a shape: the pitch line over a few bars, smoothed, centred and scaled to ±1. Organic bodies take it as
+   their outline (a closed blob, the contour wrapped round a circle) or their path (a serpentine wall) */
+function melodyContour(t0, t1, n) {
+  const notes = buildNotes(AN).filter(nt => nt.t >= t0 && nt.t < t1);
+  let raw;
+  if (notes.length >= 3) {
+    raw = Array.from({ length:n }, (_, k) => { const t = t0 + (t1 - t0) * k / n; let m = notes[0].midi; for (const nt of notes) { if (nt.t > t) break; m = nt.midi; } return m; });
+  } else raw = Array.from({ length:n }, (_, k) => AN.cent[fr(AN, t0 + (t1 - t0) * k / n)] * 24 + AN.rms[fr(AN, t0 + (t1 - t0) * k / n)] * 12);
+  const sm = raw.map((_, k) => { let s = 0, w = 0; for (let j = -3; j <= 3; j++) { const q = raw[clamp(k + j, 0, n - 1)], ww = 4 - Math.abs(j); s += q * ww; w += ww; } return s / w; });
+  const mean = sm.reduce((a, b) => a + b, 0) / n, mx = Math.max(1e-3, ...sm.map(q => Math.abs(q - mean)));
+  return sm.map(q => (q - mean) / mx);
+}
+const crPeriodic = (c, k) => { const n = c.length, i = Math.floor(k) % n, f = k - Math.floor(k), p0 = c[(i - 1 + n) % n], p1 = c[i], p2 = c[(i + 1) % n], p3 = c[(i + 2) % n];
+  return .5 * (2 * p1 + (-p0 + p2) * f + (2 * p0 - 5 * p1 + 4 * p2 - p3) * f * f + (-p0 + 3 * p1 - 3 * p2 + p3) * f * f * f); };
+// a closed blob, star-shaped round its centre so it can never cross itself: radius R, stretched sx by sy, wobbled by the contour
+function blobPoly(cx, cy, R, sx, sy, contour, rot = 0) {
+  const ctl = contour.filter((_, k) => k % Math.max(1, Math.floor(contour.length / 9)) === 0).slice(0, 9), N = 56;
+  return Array.from({ length:N }, (_, k) => { const a = k / N * TAU, rr = R * (1 + .3 * crPeriodic(ctl, k / N * ctl.length));
+    const x = Math.cos(a) * rr * sx, y = Math.sin(a) * rr * sy; return [cx + x * Math.cos(rot) - y * Math.sin(rot), cy + x * Math.sin(rot) + y * Math.cos(rot)]; });
+}
+// a serpentine wall: the contour as a path of length L along u from a, swinging A to either side, thickened to th
+function squigglePoly(a, u, L, A, th, contour) {
+  const n = 40, nn = [-u[1], u[0]], ctl = contour.filter((_, k) => k % Math.max(1, Math.floor(contour.length / 7)) === 0).slice(0, 7);
+  const at = q => { const k = q * (ctl.length - 1), i = Math.min(ctl.length - 2, Math.floor(k)), f = k - i; return lerp(ctl[i], ctl[i + 1], ease(f)); };
+  const P = Array.from({ length:n + 1 }, (_, k) => { const q = k / n, off = A * at(q); return [a[0] + u[0] * q * L + nn[0] * off, a[1] + u[1] * q * L + nn[1] * off]; });
+  const L1 = [], R1 = [];
+  P.forEach((p, k) => { const b = P[Math.min(n, k + 1)], c = P[Math.max(0, k - 1)], dx = b[0] - c[0], dy = b[1] - c[1], l = Math.hypot(dx, dy) || 1, nx = -dy / l * th / 2, ny = dx / l * th / 2;
+    L1.push([p[0] + nx, p[1] + ny]); R1.push([p[0] - nx, p[1] - ny]); });
+  return [...L1, ...R1.reverse()];
+}
+
+/* the grammar: brutalist and modular. Everything sits on the 3 m module and the 3.5 m floor. Each building takes one type:
+   capsule  a concrete core or two, kicks plugging capsules into them at every height (Nakagin)
+   bars     two cores, kicks crossing long two-storey bars over them at alternating levels, cantilevering past (Tbilisi)
+   slab     a long block lifted on pilotis, kicks adding roof pieces, drums and a low wing underneath (Corb)
+   stepped  a base, kicks stacking module blocks that step back and overhang the ones below (Habitat, ziggurats)
+   Snares punch modular voids, notches and terraces; hats add fins and egg-crates; notes cut ribbon windows. One or two
+   organic moves per building, on the most melodic bars: a free-form body, a serpentine wall or a free-form cutout,
+   shaped from the melody itself. */
 function genCycle(cy) {
   const an = AN, r = rngFor(S.seed * 1009 + cy.idx * 7919, 3), bl = an.beatLen, g = S.growth;
-  const vols = [], cuts = [], geo = [], els = [], pr = rngFor(S.seed * 7 + cy.idx, 77), cr = rngFor(S.seed * 19 + cy.idx, 71);
-  // form: long (a low spine), clustered (a compact knot) or tall (towers and stacks); mixed picks one per building
-  const formR = rngFor(S.seed * 17 + cy.idx, 61), form = cy.form = S.form === 'mixed' ? pickW(formR, (w => { const pf = cy.idx > 0 && CYCLES[cy.idx - 1].form; if (pf) w[pf] = .25; return w; })({ long:1, cluster:1, tall:1 })) : S.form;   // rarely the same form twice running
-  const FM = {
-    long:{ modes:{ extend:3, link:2.5, branch:.4, stack:.2, skew:1, tri:1 }, flAdd:-1, flMax:3, bounds:[-30, -6, 50, 6], towerMax:4, towerP:.15, towerGap:4, longer:true },
-    cluster:{ modes:{ extend:.35, link:.15, branch:3, stack:1.6, skew:1.2, tri:1.2 }, flAdd:0, flMax:5, bounds:[-9, -10, 15, 10], towerMax:7, towerP:.4, towerGap:4 },
-    tall:{ modes:{ extend:.4, link:.1, branch:1.6, stack:4, skew:.6, tri:.5 }, flAdd:3, flMax:10, bounds:[-7, -7, 12, 7], towerMax:18, towerP:.9, towerGap:1.5, small:true, tall:true },
-  }[form];
+  const vols = [], cuts = [], geo = [], els = [], pr = rngFor(S.seed * 7 + cy.idx, 77), orr = rngFor(S.seed * 19 + cy.idx, 71);
+  const formR = rngFor(S.seed * 17 + cy.idx, 61), TYPES = { capsule:1, bars:1, slab:1, stepped:1 };
+  const form = cy.form = S.form in TYPES ? S.form : pickW(formR, (w => { const pf = cy.idx > 0 && CYCLES[cy.idx - 1].form; if (pf) w[pf] = .1; return w; })({ ...TYPES }));   // rarely the same type twice running
   const voc = cy.voc = pickVocab(r, cy.idx > 0 ? CYCLES[cy.idx - 1].voc : null);
   const kThr = lerp(.6, .12, g), sThr = lerp(.65, .15, g), hThr = lerp(.6, .12, g);
-  const acts = clamp(Math.round(S.actions), 1, 4), vActs = 1 + Math.floor((acts - 1) / 2);   // volumes and cuts scale more gently than elements
-  const maxVol = Math.round(lerp(8, 20, g) * (1 + (acts - 1) * .3) * clamp((cy.end - cy.t0) / 30, .7, 1.5)), slow = buildSlow(), grow = clamp(bl * .75, .22, .6) * slow, lead = bl * Math.max(1, slow * .6);
-  let lastVol = -1e9, lastCut = -1e9, lastHat = -1e9, lastNote = -1e9, lastSn = -1e9, lastStack = -1e9, lastLine = -1e9, lastStruct = -1e9, vid = 0, runId = 0, bi = upperBound(BIG.ts, cy.t0 - 1);
+  const acts = clamp(Math.round(S.actions), 1, 4);
+  const maxVol = Math.round(lerp(10, 26, g) * clamp((cy.end - cy.t0) / 30, .7, 1.5)) + (form === 'capsule' ? 8 : 0), slow = buildSlow(), grow = clamp(bl * .75, .22, .6) * slow, lead = bl * Math.max(1, slow * .6);
+  let lastVol = -1e9, lastCut = -1e9, lastHat = -1e9, lastNote = -1e9, lastLine = -1e9, lastCant = -1e9, vid = 0, runId = 0, bi = upperBound(BIG.ts, cy.t0 - 1), nKick = 0;
   const inCut = p => cuts.some(c => c.t <= p[3] && c.test(p));
 
-  function addEl(t, kind, res, keep = false, ch = null) {
+  function addEl(t, kind, res, keep = false, ch = null, v = ch && ch.v) {
     if (!res || !res.prims || !res.prims.length) return false;
     const bb = primsBB(res.prims), c = bbCenter(bb);
     if (!keep && inCut([...c, t])) return false;
@@ -815,20 +714,20 @@ function genCycle(cy) {
     const hn = k => ((els.length * [3, 5, 2][k] + k * 2) % 7 - 3) * .001;
     els.push({ eps:[hn(0), hn(1), hn(2)], t0:t, t1:Infinity, kind, prims:res.prims, bb, keep, visOnly:!!res.visOnly, grow:res.grow || 'all',
       anchor:res.grow === 'z' ? [c[0], c[1], bb.min[2]] : c,
-      vid:ch ? ch.v.id : null, run:ch ? ch.run : null, ex:ch ? ch.v.ex || null : null });   // added to a detached volume: it rides along
+      vid:v ? v.id : null, run:ch ? ch.run : null, ex:v ? v.ex || null : null });   // added to a detached volume: it rides along
     return true;
   }
-  // a big hit detaches one piece for good: a volume with everything fixed to it, or one run of a series
+  // a big hit detaches one piece for good: a volume with everything fixed to it, or one run of a series. Cores stay
   function explode(s) {
-    const settled = vols.filter(v => !v.ex && s.t - v.t > bl * 2);
+    const settled = vols.filter(v => !v.ex && !v.core && !v.base && s.t - v.t > bl * 2);
     const runs = new Map();
     for (const e of els) if (!e.ex && e.run != null && e.t0 < s.t && e.t1 === Infinity && !FIXED_KINDS.has(e.kind)) { if (!runs.has(e.run)) runs.set(e.run, []); runs.get(e.run).push(e); }
     const groups = [...runs.values()].filter(g => g.length >= 2);
     let cx = 0, cyy = 0; for (const v of vols) { cx += (v.rect[0] + v.rect[2]) / 2 * M; cyy += (v.rect[1] + v.rect[3]) / 2 * M; } cx /= vols.length; cyy /= vols.length;
     const away = (c, z) => { const dx = c[0] - cx, dy = c[1] - cyy, l = Math.hypot(dx, dy) || 1, out = 4 + 5 * r();
-      return [dx / l * out + (r() - .5) * 3, dy / l * out + (r() - .5) * 3, 9 + 6 * r() + z * .5]; };
-    if (settled.length > 1 && (r() < .55 || !groups.length)) {
-      const v = settled.reduce((a, b) => (b.z0 > 0 ? 2 : 0) + b.fl + r() * 2.5 > (a.z0 > 0 ? 2 : 0) + a.fl + r() * 2.5 ? b : a);   // high pieces go first
+      return [dx / l * out + (r() - .5) * 3, dy / l * out + (r() - .5) * 3, 6 + 5 * r() + z * .3]; };
+    if (settled.length > 1 && (r() < .65 || !groups.length)) {
+      const v = settled.reduce((a, b) => b.z0 + b.fl + r() * 3 > a.z0 + a.fl + r() * 3 ? b : a);   // high pieces go first
       v.ex = { t:s.t, off:away([(v.rect[0] + v.rect[2]) / 2 * M, (v.rect[1] + v.rect[3]) / 2 * M], v.z0 * F) };
       for (const e of els) if (!e.ex && e.vid === v.id && e.t0 < s.t) e.ex = v.ex;
     } else if (groups.length) {
@@ -839,215 +738,257 @@ function genCycle(cy) {
   function commitVol(c, t) {
     const v = { id:vid++, t, ...c, rect:polyBB(c.poly), cuts:0, used:new Set(), progRoll:pr(), progPick:pr() };
     v.top = (v.z0 + v.fl) * F; v.facades = facades(v);
-    // curvature: some blocks get filleted plan corners (soft all round, one or two big quarter-rounds, or a stadium end)
-    if (cr() < S.curve * .7) {
-      const [ax, ay, bx, by] = v.rect, w = bx - ax, d = by - ay, mn = Math.min(w, d), P = ccw(v.poly), style = pickW(cr, { soft:1, quarter:1.2, stadium:v.isRect && Math.max(w, d) >= 2 * mn ? 1.2 : 0 });
-      let radii = P.map(() => 0);
-      if (style === 'soft') radii = P.map(() => Math.min(.35 + cr() * .5, mn * .45));
-      else if (style === 'quarter') { const i = ri(cr, P.length); radii[i] = mn * (.5 + cr() * .45); if (cr() < .4) radii[(i + 2) % P.length] = mn * (.4 + cr() * .4); }
-      else { const endX = w >= d, far = cr() < .5; P.forEach(([x, y], i) => { if (endX ? (far ? x === bx : x === ax) : (far ? y === by : y === ay)) radii[i] = mn / 2; }); if (cr() < .35) radii = P.map(() => mn / 2); }
-      v.shape = roundPoly(v.poly, radii, 9);
-    }
-    if (v.isRect && !v.shape && voc.pitched && !v.stacked && v.fl <= 3 && r() < .5) { const rt = r(); v.roof = { type:rt < .3 + .2 * (1 - S.curve) ? 'gable' : rt < .5 + .1 * (1 - S.curve) ? 'shed' : 'barrel', pitch:20 + ri(r, 3) * 10 }; }
-    const [x0, y0, x1, y1] = v.rect, rh = v.roof ? Math.max(x1 - x0, y1 - y0) * M * Math.tan(v.roof.pitch * D2R) : 0;
-    v.bb = { min:[x0 * M, y0 * M, v.z0 * F], max:[x1 * M, y1 * M, v.top + rh] };
-    vols.push(v); geo.push({ type:'vol', t, settle:t + grow, v, bb:v.bb, lead });
-    for (const o of vols) if (o !== v && v.z0 === o.z0 + o.fl && v.rect[0] >= o.rect[0] && v.rect[2] <= o.rect[2] && v.rect[1] >= o.rect[1] && v.rect[3] <= o.rect[3]) o.capped = true;
+    if (v.core) v.progRoll = 1;   // cores stay concrete; the colour goes to what plugs into them
+    if (v.organic) v.progRoll = 0;   // and an organic body always carries it
+    const [x0, y0, x1, y1] = v.rect;
+    v.bb = { min:[x0 * M, y0 * M, v.z0 * F], max:[x1 * M, y1 * M, v.top] };
+    vols.push(v); geo.push({ type:'vol', t, settle:t + grow * (v.core ? 2.5 : v.organic ? 1.8 : 1), v, bb:v.bb, lead });
+    for (const o of vols) if (o !== v && Math.abs(v.z0 - (o.z0 + o.fl)) < .01 && v.rect[0] >= o.rect[0] && v.rect[2] <= o.rect[2] && v.rect[1] >= o.rect[1] && v.rect[3] <= o.rect[3]) o.capped = true;
     lastVol = t;
     return v;
   }
-  const ground = () => vols.filter(v => v.z0 === 0);
-  function candidate(mode, w, d, fl, loose) {
-    const G = ground();
-    if (!vols.length || mode === 'first') return { poly:rect(0, -Math.floor(d / 2), w, d), z0:0, fl, isRect:true };
-    if (mode === 'extend' || mode === 'link') {
-      const side = r() < .62 ? 1 : -1, ext = G.reduce((a, b) => (side > 0 ? b.rect[2] > a.rect[2] : b.rect[0] < a.rect[0]) ? b : a, G[0]);
-      if (mode === 'link') { d = 1; fl = 1; w = 2 + ri(r, 4); }
-      const [ex0, ey0, ex1, ey1] = ext.rect, y0 = Math.round(ey0 - d + 1 + ri(r, Math.max(1, ey1 - ey0 + d - 1)));
-      return { poly:rect(side > 0 ? ex1 : ex0 - w, y0, w, d), z0:0, fl, isRect:true };
+  // overlap in 3D (bounding boxes, a hair of tolerance so blocks may touch); some volumes may pass through others (bars through cores)
+  const hits = (c, v) => { const [x0, y0, x1, y1] = polyBB(c.poly);
+    return Math.min(x1, v.rect[2]) - Math.max(x0, v.rect[0]) > .02 && Math.min(y1, v.rect[3]) - Math.max(y0, v.rect[1]) > .02 && Math.min(c.z0 + c.fl, v.z0 + v.fl) - Math.max(c.z0, v.z0) > .02; };
+  const fits = (c, pass = () => false) => { const [x0, y0, x1, y1] = polyBB(c.poly); return x0 > -24 && x1 < 30 && y0 > -24 && y1 < 24 && vols.every(v => pass(v) || !hits(c, v)); };
+  const blk = (x, y, w, d, z0, fl, extra) => ({ poly:rect(x, y, w, d), z0, fl, isRect:true, ...extra });
+  const cores = () => vols.filter(v => v.core);
+  const tryPlace = (gen, t, n = 12, pass) => { for (let k = 0; k < n; k++) { const c = gen(); if (c && fits(c, pass)) return commitVol(c, t); } return null; };
+  // pilotis: a column a module under a raised block, rippling in a 16th apart
+  function pilotis(v, t) {
+    const [x0, y0, x1, y1] = v.rect; let k = 0;
+    for (let x = x0; x <= x1 + .01; x++) for (const y of y1 - y0 > 2.5 ? [y0, (y0 + y1) / 2, y1] : [y0, y1]) {
+      const cx = clamp(x * M, x0 * M + .35, x1 * M - .35), cyy = clamp(y * M, y0 * M + .35, y1 * M - .35);
+      addEl(t + (k++) * bl / 8, 'pilotis', { prims:[boxC(cx, cyy, .5, .5, 0, v.z0 * F)], grow:'z' }, true);
     }
-    if (mode === 'branch' || mode === 'skew' || mode === 'tri') {
-      const v = pickR(r, G), [vx0, vy0, vx1, vy1] = v.rect, side = r() < .5 ? 1 : -1, yb = side > 0 ? vy1 : vy0;
-      const x0 = Math.round(vx0 - w + 1 + ri(r, Math.max(1, vx1 - vx0 + w - 1)));
-      if (mode === 'branch') return { poly:rect(x0, side > 0 ? yb : yb - d, w, d), z0:0, fl, isRect:true };
-      if (mode === 'skew') {
-        const ang = (1 + ri(r, loose > .6 ? 3 : 2)) * 15 * (r() < .5 ? -1 : 1), off = d * Math.tan(ang * D2R);
-        return { poly:[[x0, yb], [x0 + w, yb], [x0 + w + off, yb + side * d], [x0 + off, yb + side * d]], z0:0, fl, isRect:false };
-      }
-      return { poly:[[x0, yb], [x0 + w, yb], [x0 + (r() < .5 ? 0 : w), yb + side * Math.max(2, d)]], z0:0, fl, isRect:false };
-    }
-    // stack: a smaller block on a flat roof
-    const hosts = vols.filter(v => v.isRect && !v.roof && !v.capped && v.rect[2] - v.rect[0] >= 2 && v.rect[3] - v.rect[1] >= 2 && v.top < (FM.towerMax - 1) * F);
+  }
+  // a capsule's porthole, on its outward face
+  function porthole(v, side, t) {
+    const [x0, y0, x1, y1] = v.rect.map(q => q * M), zc = (v.z0 + v.fl / 2) * F, rad = .62, e = .03, N = 18;
+    const c = side === '+x' ? [x1 + e, (y0 + y1) / 2] : side === '-x' ? [x0 - e, (y0 + y1) / 2] : side === '+y' ? [(x0 + x1) / 2, y1 + e] : [(x0 + x1) / 2, y0 - e];
+    const u = side[1] === 'x' ? [0, 1] : [1, 0];
+    const p = Array.from({ length:N }, (_, k) => { const a = k / N * TAU; return [c[0] + u[0] * Math.cos(a) * rad, c[1] + u[1] * Math.cos(a) * rad, zc + Math.sin(a) * rad]; });
+    addEl(t + bl * .5, 'porthole', { prims:[{ k:'poly', p, role:ROLE.window }] }, true, null, v);
+  }
+
+  /* each type: how a building starts, and what a kick adds */
+  const T = {
+    capsule:{
+      start(s) {
+        const H = 8 + ri(r, 5);
+        commitVol(blk(0, 0, 2, 2, 0, H, { core:true }), s.t);
+        if (r() < .65) { const dx = 4 + ri(r, 2), dy = ri(r, 3) - 1; commitVol(blk(dx, dy, 2, 2, 0, clamp(H - 3 + ri(r, 6), 6, 14), { core:true }), s.t + bl); }
+      },
+      add(s) {
+        const cs = cores(); if (!cs.length) return null;
+        // now and then a bridge between the two cores
+        if (cs.length > 1 && !T.capsule.bridged && r() < .12) {
+          const [a, b] = cs, z = 2 + ri(r, Math.max(1, Math.min(a.fl, b.fl) - 3)), y0 = Math.max(a.rect[1], b.rect[1]), y1 = Math.min(a.rect[3], b.rect[3]);
+          if (y1 - y0 >= 1) { T.capsule.bridged = true; return commitVol(blk(a.rect[2], y0, b.rect[0] - a.rect[2], 1, z, 1, {}), s.t); }
+        }
+        const deep = r() < .2 ? 2 : 1, w = .86, gap = (1 - w) / 2;
+        return tryPlace(() => {
+          const c = pickR(r, cs), [x0, y0, x1, y1] = c.rect, side = pickR(r, ['+x', '-x', '+y', '-y']), slot = ri(r, 2), z = ri(r, c.fl);
+          const zf = z + .07, fl = .86;
+          const q = side === '+x' ? blk(x1, y0 + slot + gap, deep, w, zf, fl) : side === '-x' ? blk(x0 - deep, y0 + slot + gap, deep, w, zf, fl)
+            : side === '+y' ? blk(x0 + slot + gap, y1, w, deep, zf, fl) : blk(x0 + slot + gap, y0 - deep, w, deep, zf, fl);
+          q.capsule = true; q.side = side; return q;
+        }, s.t, 16);
+      },
+      after(v, s) { if (v.capsule) porthole(v, v.side, s.t); },
+    },
+    bars:{
+      start(s) {
+        const H = 9 + ri(r, 4), dx = 6 + ri(r, 3), dy = ri(r, 5) - 2;
+        commitVol(blk(0, 0, 2, 2, 0, H, { core:true }), s.t);
+        commitVol(blk(dx, dy, 2, 2, 0, clamp(H - 2 + ri(r, 5), 7, 14), { core:true }), s.t + bl);
+      },
+      add(s) {
+        const cs = cores(); if (!cs.length) return null;
+        const alongX = nKick % 2 === 0, L = 6 + ri(r, 5), fl = 2;
+        return tryPlace(() => {
+          const c = pickR(r, cs), [x0, y0, x1, y1] = c.rect, z = 2 + ri(r, Math.max(1, c.fl - fl - 2));
+          // over the core and out past it, more on one side
+          const o = -(1 + ri(r, L - 3));
+          return alongX ? blk(x0 + o, y0, L, 2, z, fl, { bar:true }) : blk(x0, y0 + o, 2, L, z, fl, { bar:true });
+        }, s.t, 14, v => v.core);
+      },
+    },
+    slab:{
+      start(s) {
+        const L = 8 + ri(r, 4), D = 2 + ri(r, 2), fl = 3 + ri(r, 3);
+        const v = commitVol(blk(0, -Math.floor(D / 2), L, D, 1, fl, { base:true }), s.t);
+        pilotis(v, s.t + bl);
+      },
+      add(s) {
+        const b = vols.find(v => v.base); if (!b) return null;
+        const [x0, y0, x1, y1] = b.rect, top = b.z0 + b.fl, k = pickW(r, { roof:3, drum:1.2, under:1.4, wing:1, lift:.8 });
+        if (k === 'drum') return tryPlace(() => { const R = .5 + r() * .3, cx = x0 + R + r() * (x1 - x0 - 2 * R), cyy = (y0 + y1) / 2 + (r() - .5) * (y1 - y0 - 2 * R);
+          return { poly:circlePoly(cx, cyy, R, 24), z0:top, fl:1 + ri(r, 2), isRect:false }; }, s.t);
+        if (k === 'under') return tryPlace(() => blk(x0 + ri(r, x1 - x0 - 1), y0 + ri(r, Math.max(1, y1 - y0 - 1)), 1 + ri(r, 2), 1, 0, 1), s.t);
+        if (k === 'wing') return tryPlace(() => { const end = r() < .5, len = 3 + ri(r, 3), up = r() < .5;
+          return blk(end ? x1 - 2 : x0, up ? y1 : y0 - len, 2, len, 0, 1 + ri(r, 2)); }, s.t);
+        if (k === 'lift') return tryPlace(() => { const w = 2 + ri(r, 3), up = r() < .5;   // a block cantilevered off the long side, high up
+          return blk(x0 + ri(r, x1 - x0 - w), up ? y1 : y0 - 1, w, 1, b.z0 + ri(r, b.fl), 1); }, s.t);
+        return tryPlace(() => { const w = 1 + ri(r, 3), d = 1 + ri(r, Math.max(1, y1 - y0 - 1)); return blk(x0 + ri(r, x1 - x0 - w + 1), y0 + ri(r, y1 - y0 - d + 1), w, d, top, 1); }, s.t);
+      },
+    },
+    stepped:{
+      start(s) { commitVol(blk(0, -2, 6, 4, 0, 1, { base:true }), s.t); },
+      add(s) {
+        // on top of something already standing, stepping back, now and then overhanging its host by a module
+        const hosts = vols.filter(v => v.isRect && !v.organic && v.z0 + v.fl < 9);
+        if (!hosts.length) return null;
+        return tryPlace(() => {
+          const h = hosts[hosts.length - 1 - Math.min(hosts.length - 1, ri(r, 4))], [x0, y0, x1, y1] = h.rect, w = 1 + ri(r, 3), d = 1 + ri(r, 2), over = r() < .35 ? 1 : 0;
+          const x = x0 - over + ri(r, Math.max(1, x1 - x0 - w + 1 + 2 * over)), y = y0 - over + ri(r, Math.max(1, y1 - y0 - d + 1 + 2 * over));
+          return blk(x, y, w, d, h.z0 + h.fl, 1);
+        }, s.t, 16);
+      },
+    },
+  };
+  // any type, on the strongest kicks: a long bar thrown off the top of a tall block, hanging well past its edge
+  function cantilever(s) {
+    const hosts = vols.filter(v => v.isRect && !v.organic && !v.capsule && v.fl >= 2).sort((a, b) => b.z0 + b.fl - a.z0 - a.fl).slice(0, 3);
     if (!hosts.length) return null;
-    const v = pickR(r, hosts), [vx0, vy0, vx1, vy1] = v.rect, sw = 1 + ri(r, vx1 - vx0 - 1), sd = 1 + ri(r, vy1 - vy0 - 1);
-    return { poly:rect(vx0 + ri(r, vx1 - vx0 - sw + 1), vy0 + ri(r, vy1 - vy0 - sd + 1), sw, sd), z0:v.z0 + v.fl, fl:1 + ri(r, 2), isRect:true, stacked:true };
+    return tryPlace(() => {
+      const h = pickR(r, hosts), [x0, y0, x1, y1] = h.rect, alongX = r() < .5, L = 4 + ri(r, 4), out = 2 + ri(r, 3), fl = 1 + ri(r, 2), z = h.z0 + h.fl - (r() < .5 ? fl : 0);
+      const fwd = r() < .5;
+      return alongX ? blk(fwd ? x1 - (L - out) : x0 - out, y0 + ri(r, Math.max(1, y1 - y0 - 1)), L, Math.min(2, y1 - y0), z, fl, { bar:true })
+        : blk(x0 + ri(r, Math.max(1, x1 - x0 - 1)), fwd ? y1 - (L - out) : y0 - out, Math.min(2, x1 - x0), L, z, fl, { bar:true });
+    }, s.t, 14, v => hosts.includes(v) || v.core);
   }
-  function fits(c) {
-    const [x0, y0, x1, y1] = polyBB(c.poly), [bx0, by0, bx1, by1] = FM.bounds;
-    if (y0 < by0 || y1 > by1 || x0 < bx0 || x1 > bx1) return false;
-    const area = (x1 - x0) * (y1 - y0);
-    for (const v of vols) {
-      if (v.z0 !== c.z0) continue;
-      const ox = Math.min(x1, v.rect[2]) - Math.max(x0, v.rect[0]), oy = Math.min(y1, v.rect[3]) - Math.max(y0, v.rect[1]);
-      if (ox > 0 && oy > 0 && ox * oy > area * .5) return false;
-    }
-    return true;
+
+  /* snares: modular cuts, a module at a time */
+  function pushCut(spec, t, v, warnLead = lead * .5) {
+    const P = spec.poly.map(([x, y]) => [x * M, y * M]);
+    const test = p => inPoly(P, p[0], p[1]) && p[2] >= spec.z0 * F && p[2] <= spec.z1 * F;
+    const [bx0, by0, bx1, by1] = polyBB(spec.poly);
+    const zTop = v ? v.z0 + v.fl + .5 : Math.max(1, ...vols.map(o => o.z0 + o.fl));   // the gash's cutter is tall, but it only frames what it cuts
+    const bb = { min:[bx0 * M, by0 * M, Math.max(0, spec.z0 * F)], max:[bx1 * M, by1 * M, Math.min(spec.z1, zTop) * F] };
+    geo.push({ type:'cut', t, settle:t, spec, bb, lead:warnLead });
+    cuts.push({ t, test });
+    for (const el of els) if (!el.keep && el.t1 === Infinity && test(bbCenter(el.bb))) el.t1 = t;
+    if (v) v.cuts++;
+    lastCut = t;
+    // what the cut took away stays as a dashed phantom
+    const dsh = (a, b) => ({ k:'dash', a, b }), ph = [], z0 = Math.max(spec.z0, v ? v.z0 : 0) * F, z1 = Math.min(spec.z1, v ? v.z0 + v.fl : zTop) * F;
+    spec.poly.forEach((q, i) => { const b = spec.poly[(i + 1) % spec.poly.length]; ph.push(dsh([q[0] * M, q[1] * M, z1], [b[0] * M, b[1] * M, z1])); });
+    if (spec.poly.length <= 8) for (const [x, y] of spec.poly) ph.push(dsh([x * M, y * M, z0], [x * M, y * M, z1]));
+    addEl(t + bl * .25, 'phantom', { prims:ph }, true);
   }
-  function placeVol(s, p, loose, mode) {
-    const w = FM.small ? 1 + ri(r, 3) : 2 + Math.round((s.kick || .5) * 3 * r() + r() * 1.5) + (FM.longer ? 1 : 0), d = FM.small ? 1 + ri(r, 2) : 1 + ri(r, 3);
-    const fl = clamp(1 + Math.round((s.rms ?? .5) * 3 + r() * 1.2 - .6) + FM.flAdd, 1, FM.flMax);
-    const mw = FM.modes, base = { extend:lerp(5, 1.5, p), link:lerp(2, .5, p), branch:1 + 2 * p, stack:.3 + 1.6 * p, skew:3 * loose, tri:2 * loose };
-    mode = mode || pickW(r, Object.fromEntries(Object.entries(base).map(([k, v]) => [k, v * mw[k]])));
-    for (let k = 0; k < 6; k++) {
-      const c = candidate(mode, w, d, fl, loose);
-      if (c && fits(c)) return commitVol(c, s.t);
-      mode = k < 2 ? 'branch' : k < 4 ? 'extend' : 'stack';
-    }
-    return null;
-  }
-  function growTower(s) {   // a held kick on a young flat block adds a floor; in the tall form any block can keep climbing
-    const ok = v => v && !v.roof && v.isRect && !v.capped && v.top < FM.towerMax * F && !v.ex;
-    let v = vols[vols.length - 1];
-    if (FM.tall) { const c = vols.filter(ok).sort((a, b) => b.top - a.top).slice(0, 3); v = c.length ? pickR(r, c) : null; }
-    if (!ok(v) || (!FM.tall && s.t - v.t > 6 * bl)) return;
-    const piece = { id:vid++, t:s.t, poly:v.poly, z0:v.z0 + v.fl, fl:1, isRect:true, rect:v.rect, facades:v.facades, top:v.top + F, parent:v, shape:v.shape };
-    piece.bb = { min:[v.rect[0] * M, v.rect[1] * M, v.top], max:[v.rect[2] * M, v.rect[3] * M, v.top + F] };
-    geo.push({ type:'vol', t:s.t, settle:s.t + grow, v:piece, bb:piece.bb, lead:lead * .5 });
-    v.fl += 1; v.top += F; v.bb.max[2] = Math.max(v.bb.max[2], v.top); lastStack = s.t;
-  }
-  function makeCut(s, loose) {
-    const targets = vols.filter(v => v.cuts < 2 && s.t - v.t > bl);
+  function makeCut(s) {
+    const targets = vols.filter(v => v.isRect && !v.capsule && !v.organic && v.cuts < 3 && s.t - v.t > bl && Math.max(v.rect[2] - v.rect[0], v.rect[3] - v.rect[1]) >= 2);
     if (!targets.length) return;
-    const v = pickR(r, targets), [x0, y0, x1, y1] = v.rect, w = x1 - x0, d = y1 - y0, e = .03;
-    const kind = !v.isRect ? 'slice' : pickW(r, { notch:1.2, chamfer:.4 + 1.5 * loose, split:1.6 * loose, slice:.3 + 2 * loose,
-      court:w >= 3 && d >= 3 ? 1 : 0, under:v.fl >= 2 && v.z0 === 0 ? 1.1 : 0, drum:w >= 3 && d >= 3 ? 1.4 * S.curve : 0, bite:1.6 * S.curve });
-    const topF = v.z0 + v.fl + 3;
+    const v = pickR(r, targets), [x0, y0, x1, y1] = v.rect, w = x1 - x0, d = y1 - y0, e = .03, fl = Math.round(v.fl);
+    const kind = pickW(r, { void:fl >= 1 ? 3 : 0, notch:1.4, terrace:fl >= 2 && Math.max(w, d) >= 3 ? 1.4 : 0, under:v.z0 === 0 && fl >= 2 && !v.core ? 1 : 0 });
     let spec;
-    if (kind === 'notch') {
-      const nw = w >= 4 ? 2 : 1, cx = r() < .5 ? x0 - e : x1 - nw, cy = r() < .5 ? y0 - e : y1 - 1, k = 1 + ri(r, Math.min(2, v.fl));
-      spec = { poly:rect(cx, cy, nw + e, 1 + e), z0:v.z0 + v.fl - k, z1:topF };
-    } else if (kind === 'chamfer') {
-      const a = Math.min(w - .5, 1 + ri(r, 2)), b = Math.min(d - .5, 1 + ri(r, 2)), sx = r() < .5 ? 1 : -1, sy = r() < .5 ? 1 : -1;
-      const cx = sx > 0 ? x0 - e : x1 + e, cy = sy > 0 ? y0 - e : y1 + e;
-      spec = { poly:[[cx, cy], [cx + sx * (a + e), cy], [cx, cy + sy * (b + e)]], z0:v.z0 - .01, z1:topF };
-    } else if (kind === 'split') {
-      const k = v.fl === 1 ? 1 : 1 + ri(r, v.fl), q = ri(r, 4), C = [[x0 - e, y0 - e], [x1 + e, y0 - e], [x1 + e, y1 + e], [x0 - e, y1 + e]];
-      spec = { poly:[C[q], C[(q + 1) % 4], C[(q + 2) % 4]], z0:k >= v.fl ? v.z0 - .01 : v.z0 + v.fl - k, z1:topF };
-    } else if (kind === 'drum') {   // a round courtyard
-      spec = { poly:circlePoly((x0 + x1) / 2, (y0 + y1) / 2, Math.min(w, d) * (.25 + cr() * .1)), z0:v.z0 + .3 / F, z1:topF };
-    } else if (kind === 'bite') {   // a quarter-circle bitten out of a corner, full height or the top floors
-      const k = cr() < .5 ? v.fl : 1 + ri(cr, Math.max(1, v.fl));
-      spec = { poly:circlePoly(cr() < .5 ? x0 : x1, cr() < .5 ? y0 : y1, Math.min(w, d) * (.45 + cr() * .4)), z0:k >= v.fl ? v.z0 - .01 : v.z0 + v.fl - k, z1:topF };
-    } else if (kind === 'court') {
-      spec = { poly:rect(x0 + 1, y0 + 1, w - 2, d - 2), z0:v.z0 + .3 / F, z1:topF };
-    } else if (kind === 'under') {
-      const half = Math.max(1, Math.floor((w >= d ? w : d) / 2)), left = r() < .5;
-      const pr = w >= d ? rect(left ? x0 - e : x1 - half, y0 - e, half + e, d + 2 * e) : rect(x0 - e, left ? y0 - e : y1 - half, w + 2 * e, half + e);
-      spec = { poly:pr, z0:v.z0 - .01, z1:v.z0 + 1 };
+    if (kind === 'void') {   // a module-square hole right through the block, one floor high
+      const z = v.z0 + ri(r, Math.max(1, fl)), thruY = w >= d ? r() < .75 : r() < .25;
+      spec = thruY ? { poly:rect(x0 + ri(r, w), y0 - e, 1, d + 2 * e), z0:z, z1:z + 1 } : { poly:rect(x0 - e, y0 + ri(r, d), w + 2 * e, 1), z0:z, z1:z + 1 };
+    } else if (kind === 'notch') {
+      const k = 1 + ri(r, Math.min(3, fl)), cx = r() < .5 ? x0 - e : x1 - 1, cyy = r() < .5 ? y0 - e : y1 - 1;
+      spec = { poly:rect(cx, cyy, 1 + e, 1 + e), z0:v.z0 + v.fl - k, z1:v.z0 + v.fl + 1 };
+    } else if (kind === 'terrace') {   // the top floor taken off half the block
+      const half = Math.max(1, Math.floor((w >= d ? w : d) / 2)), lo = r() < .5;
+      const pr2 = w >= d ? rect(lo ? x0 - e : x1 - half, y0 - e, half + e, d + 2 * e) : rect(x0 - e, lo ? y0 - e : y1 - half, w + 2 * e, half + e);
+      spec = { poly:pr2, z0:v.z0 + v.fl - 1, z1:v.z0 + v.fl + 1 };
     } else {
-      const tilt = pickR(r, loose > .6 ? [15, 30, 45] : [15, 30]), dir = pickR(r, ['+x', '-x', '+y', '-y']), f = .15 + .35 * r();
-      const pt = [(dir === '+x' ? x0 + w * f : dir === '-x' ? x1 - w * f : (x0 + x1) / 2) * M, (dir === '+y' ? y0 + d * f : dir === '-y' ? y1 - d * f : (y0 + y1) / 2) * M, v.top];
-      const sn = Math.sin(tilt * D2R), cs = Math.cos(tilt * D2R);
-      const n = dir === '+x' ? [sn, 0, cs] : dir === '-x' ? [-sn, 0, cs] : dir === '+y' ? [0, sn, cs] : [0, -sn, cs];
-      spec = { slice:true, poly:rect(x0 - .05, y0 - .05, w + .1, d + .1), z0:v.z0 - .01, z1:topF + 20, pt, n, tilt, dir };
+      const half = Math.max(1, Math.floor((w >= d ? w : d) / 2)), lo = r() < .5;
+      const pr2 = w >= d ? rect(lo ? x0 - e : x1 - half, y0 - e, half + e, d + 2 * e) : rect(x0 - e, lo ? y0 - e : y1 - half, w + 2 * e, half + e);
+      spec = { poly:pr2, z0:v.z0 - .01, z1:v.z0 + 1 };
     }
     spec.kind = kind;
-    const P = spec.poly.map(([x, y]) => [x * M, y * M]);
-    const inside = p => inPoly(P, p[0], p[1]) && p[2] >= spec.z0 * F && p[2] <= spec.z1 * F;
-    const test = spec.slice ? p => inside(p) && (p[0] - spec.pt[0]) * spec.n[0] + (p[1] - spec.pt[1]) * spec.n[1] + (p[2] - spec.pt[2]) * spec.n[2] > 0 : inside;
-    const [bx0, by0, bx1, by1] = polyBB(spec.poly);
-    const bb = { min:[bx0 * M, by0 * M, Math.max(0, spec.z0 * F)], max:[bx1 * M, by1 * M, spec.slice ? v.top : Math.min(spec.z1, v.z0 + v.fl + 1) * F] };
-    geo.push({ type:'cut', t:s.t, settle:s.t, spec, bb, lead:lead * .5 });
-    cuts.push({ t:s.t, test });
-    for (const el of els) if (!el.keep && el.t1 === Infinity && test(bbCenter(el.bb))) el.t1 = s.t;
-    v.cuts++; lastCut = s.t;
-    {   // the massing the cut took away stays as a dashed phantom; an overhang casts a dashed line on the ground
-      const dsh = (a, b) => ({ k:'dash', a, b }), pr = [], loop = (poly, z) => poly.forEach((q, i) => { const b = poly[(i + 1) % poly.length]; pr.push(dsh([q[0] * M, q[1] * M, z], [b[0] * M, b[1] * M, z])); });
-      if (spec.slice) {
-        const zAt = (x, y) => spec.pt[2] - (spec.n[0] * (x - spec.pt[0]) + spec.n[1] * (y - spec.pt[1])) / spec.n[2];
-        loop(v.poly, v.top);
-        for (const [x, y] of v.poly) { const z = Math.max(v.z0 * F, zAt(x * M, y * M)); if (z < v.top - .05) pr.push(dsh([x * M, y * M, z], [x * M, y * M, v.top])); }
-      } else if (kind === 'under') loop(spec.poly, .02);
-      else {
-        const z0 = Math.max(spec.z0 * F, v.z0 * F), z1 = Math.min(spec.z1 * F, v.top);
-        loop(spec.poly, z1); for (const [x, y] of spec.poly) pr.push(dsh([x * M, y * M, z0], [x * M, y * M, z1]));
-      }
-      addEl(s.t + bl * .25, 'phantom', { prims:pr }, true);
-    }
-    if (kind === 'under') {   // pilotis: columns appear under the new overhang, a few per 16th
+    pushCut(spec, s.t, v);
+    if (kind === 'under') {   // pilotis under the new overhang
       const [ux0, uy0, ux1, uy1] = polyBB(spec.poly).map(q => Math.round(q)); let k = 0;
       for (let x = ux0; x <= ux1; x++) for (let y = uy0; y <= uy1; y++) {
-        const cx = clamp(x * M, x0 * M + .3, x1 * M - .3), cyy = clamp(y * M, y0 * M + .3, y1 * M - .3);
-        addEl(s.t + (k++) * bl / 8, 'pilotis', { prims:[boxC(cx, cyy, .4, .4, 0, (v.z0 + 1) * F)], grow:'z' }, true);
+        const cx = clamp(x * M, x0 * M + .35, x1 * M - .35), cyy = clamp(y * M, y0 * M + .35, y1 * M - .35);
+        addEl(s.t + (k++) * bl / 8, 'pilotis', { prims:[boxC(cx, cyy, .5, .5, 0, (v.z0 + 1) * F)], grow:'z' }, true);
       }
     }
   }
-  // late in the cycle one big move ties the blocks into a single form: a roof plane, a datum or a gash through everything
-  const ur = rngFor(S.seed * 13 + cy.idx, 91), willUnify = ur() < S.unify, unifyAt = .62 + ur() * .12;
+
+  /* the organic moves: on the most melodic bars, shaped by the melody across them */
+  // an organic move that can't find room tries the other kinds before giving up
+  function organic(s) {
+    const order = [pickW(orr, { body:3, wall:2, hole:1.6 })]; for (const k of ['body', 'wall', 'hole']) if (!order.includes(k)) order.push(k);
+    return order.some(k => organicMove(s, k));
+  }
+  function organicMove(s, k) {
+    const bar = bl * 4, cont = melodyContour(s.t - bar, s.t + 3 * bar, 48);
+    const flat = vols.filter(v => v.isRect && !v.capsule && !v.organic && !v.capped && Math.min(v.rect[2] - v.rect[0], v.rect[3] - v.rect[1]) >= 2);
+    const big = vols.filter(v => v.isRect && !v.capsule && !v.organic && Math.min(v.rect[2] - v.rect[0], v.rect[3] - v.rect[1]) >= 3);
+    if (k === 'hole' && !big.length) return false;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const v of vols) { x0 = Math.min(x0, v.rect[0]); y0 = Math.min(y0, v.rect[1]); x1 = Math.max(x1, v.rect[2]); y1 = Math.max(y1, v.rect[3]); }
+    if (k === 'hole') {   // a free-form lightwell down through a big block, or a free-form bite out of its edge
+      const v = pickR(orr, big), [a, b, c, d] = v.rect, R = Math.min(c - a, d - b) * (.22 + orr() * .1), edge = orr() < .4;
+      const cx = edge ? (orr() < .5 ? a : c) : (a + c) / 2 + (orr() - .5) * (c - a - 2.4 * R), cyy = (b + d) / 2;
+      const depth = edge ? v.fl : 1 + ri(orr, Math.max(1, Math.round(v.fl)));
+      pushCut({ poly:blobPoly(cx, cyy, edge ? R * 1.5 : R, 1.25, .9, cont, orr() * TAU), z0:v.z0 + v.fl - depth - (edge ? .01 : 0), z1:v.z0 + v.fl + 1, kind:'blob' }, s.t, v, bl * 2);
+      return true;
+    }
+    if (k === 'wall') {   // a serpentine wall along the long side, on the ground or on a roof
+      const roof = flat.length && orr() < .4 ? pickR(orr, flat) : null;
+      const alongX = roof ? roof.rect[2] - roof.rect[0] >= roof.rect[3] - roof.rect[1] : x1 - x0 >= y1 - y0;
+      const R = roof ? roof.rect : [x0, y0, x1, y1], L = (alongX ? R[2] - R[0] : R[3] - R[1]) + (roof ? -.6 : 4), A = roof ? Math.min(.8, (alongX ? R[3] - R[1] : R[2] - R[0]) / 2 - .4) : 1.3 + orr() * .9;
+      const side = orr() < .5, off = roof ? (alongX ? (R[1] + R[3]) / 2 : (R[0] + R[2]) / 2) : side ? (alongX ? R[3] : R[2]) + 1.6 + A : (alongX ? R[1] : R[0]) - 1.6 - A;
+      const a = alongX ? [R[0] - (roof ? -.3 : 2), off] : [off, R[1] - (roof ? -.3 : 2)];
+      const c = { poly:squigglePoly(a, alongX ? [1, 0] : [0, 1], L, A, .16, cont), z0:roof ? roof.z0 + roof.fl : 0, fl:roof ? 1 : 1.5 + ri(orr, 3) * .5, isRect:false, organic:true };
+      if (!fits(c)) return false;
+      commitVol(c, s.t); return true;
+    }
+    // a free-form body: on a roof (Unité), under a raised block (Savoye), or standing free on the ground
+    const raised = vols.filter(v => v.z0 >= 1 && v.isRect && !v.capsule && Math.min(v.rect[2] - v.rect[0], v.rect[3] - v.rect[1]) >= 2);
+    const where = pickW(orr, { roof:flat.length ? 2 : 0, under:raised.length ? 2 : 0, ground:1.2 });
+    for (let tries = 0; tries < 8; tries++) {
+      let c;
+      if (where === 'roof' || where === 'under') {
+        const h = pickR(orr, where === 'roof' ? flat : raised), [a, b, cc, d] = h.rect, R = Math.min(cc - a, d - b) * .36, sx = clamp((cc - a) / (d - b), .8, 1.8) * .9;
+        c = { poly:blobPoly((a + cc) / 2 + (orr() - .5) * (cc - a) * .3, (b + d) / 2, R, sx, 1, cont, (orr() - .5) * .4), z0:where === 'roof' ? h.z0 + h.fl : 0, fl:where === 'roof' ? 1 + ri(orr, 3) * .5 : Math.min(1, h.z0), isRect:false, organic:true };
+      } else {
+        const R = 1.4 + orr() * 1, side = orr() < .5, alongX = x1 - x0 >= y1 - y0;
+        const cx = alongX ? lerp(x0, x1, orr()) : side ? x1 + R * 1.4 : x0 - R * 1.4, cyy = alongX ? (side ? y1 + R * 1.2 : y0 - R * 1.2) : lerp(y0, y1, orr());
+        c = { poly:blobPoly(cx, cyy, R, 1.3, .85, cont, orr() * TAU), z0:0, fl:2 + ri(orr, 3), isRect:false, organic:true };
+      }
+      if (fits(c)) { commitVol(c, s.t); return true; }
+    }
+    return false;
+  }
+  // the most melodic downbeats in the building: most notes and widest pitch over the next two bars, at least two bars apart
+  const nOrg = S.curve < .05 ? 0 : 1 + Math.floor(S.curve * 2.2);
+  const orgAt = (() => {
+    const bar = bl * 4, notes = buildNotes(AN), cand = AN.downbeats.filter(d => (d - cy.t0) / (cy.end - cy.t0) > .2 && d < cy.end - 2 * bar);
+    const sc = d => { const ns = notes.filter(n => n.t >= d && n.t < d + 2 * bar); if (!ns.length) return orr() * .1; const m = ns.map(n => n.midi); return ns.length * .15 + (Math.max(...m) - Math.min(...m)) * .1 + orr() * .05; };
+    const picks = []; for (const d of cand.map(d => [d, sc(d)]).sort((a, b) => b[1] - a[1]).map(x => x[0])) { if (picks.length >= nOrg) break; if (picks.every(p => Math.abs(p - d) >= 2 * bar)) picks.push(d); }
+    return picks.sort((a, b) => a - b);
+  })();
+  let oi = 0; cy.orgAt = orgAt;
+
+  // late in the cycle, now and then, one gash through everything
+  const ur = rngFor(S.seed * 13 + cy.idx, 91), willUnify = ur() < S.unify * .6, unifyAt = .62 + ur() * .12;
   let unified = false;
   function unify(s) {
     unified = true;
-    const kind = pickW(ur, { plane:3, datum:1.3, gash:1.3 });
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const v of vols) { x0 = Math.min(x0, v.rect[0]); y0 = Math.min(y0, v.rect[1]); x1 = Math.max(x1, v.rect[2]); y1 = Math.max(y1, v.rect[3]); }
-    const alongX = x1 - x0 >= y1 - y0, L = (alongX ? x1 - x0 : y1 - y0) * M, cxm = (x0 + x1) / 2, cym = (y0 + y1) / 2;
-    const tops = vols.map(v => v.top).sort((a, b) => a - b), q = f => tops[Math.min(tops.length - 1, Math.floor(f * tops.length))];
-    const dsh = (a, b) => ({ k:'dash', a, b });
-    const pushCut = spec => {
-      const P = spec.poly.map(([x, y]) => [x * M, y * M]);
-      const inside = p => inPoly(P, p[0], p[1]) && p[2] >= spec.z0 * F && p[2] <= spec.z1 * F;
-      const test = spec.slice ? p => inside(p) && (p[0] - spec.pt[0]) * spec.n[0] + (p[1] - spec.pt[1]) * spec.n[1] + (p[2] - spec.pt[2]) * spec.n[2] > 0 : inside;
-      const [bx0, by0, bx1, by1] = polyBB(spec.poly);
-      geo.push({ type:'cut', t:s.t, settle:s.t, spec, bb:{ min:[bx0 * M, by0 * M, 0], max:[bx1 * M, by1 * M, q(1)] }, lead:bl });
-      cuts.push({ t:s.t, test });
-      for (const el of els) if (!el.keep && el.t1 === Infinity && test(bbCenter(el.bb))) el.t1 = s.t;
-      lastCut = s.t;
-    };
-    if (kind === 'gash') {   // a long diagonal void through every block
-      const ang = (alongX ? 0 : 90) + (ur() < .5 ? -1 : 1) * (18 + ur() * 20), u = [Math.cos(ang * D2R), Math.sin(ang * D2R)], nn = [-u[1], u[0]];
-      const hl = Math.hypot(x1 - x0, y1 - y0) / 2 + 1.5, hw = .4 + ur() * .35;
-      const poly = [[-hl, -hw], [hl, -hw], [hl, hw], [-hl, hw]].map(([a, b]) => [cxm + u[0] * a + nn[0] * b, cym + u[1] * a + nn[1] * b]);
-      pushCut({ poly, z0:-.01, z1:80, kind:'gash' });
-      const pr2 = []; poly.forEach((a, i) => { const b = poly[(i + 1) % 4]; pr2.push(dsh([a[0] * M, a[1] * M, .02], [b[0] * M, b[1] * M, .02])); });
-      addEl(s.t + bl * .25, 'phantom', { prims:pr2 }, true);
-      return;
-    }
-    // a plane over everything: tilted along the long axis (a roof plane) or level (a datum)
-    let pt, n, tilt = 0, dir = '+x';
-    if (kind === 'datum') { pt = [cxm * M, cym * M, Math.max(F * 1.5, q(.75))]; n = [0, 0, 1]; }
-    else {
-      const zh = Math.max(F * 2, q(1) - .6), zl = Math.max(F * 1.2, q(.6));   // shave the tops, tallest most; never gut the blocks
-      tilt = clamp(Math.atan(Math.max(2, zh - zl) / L) / D2R, 3, 25);
-      dir = alongX ? (ur() < .5 ? '+x' : '-x') : (ur() < .5 ? '+y' : '-y');
-      const sn = Math.sin(tilt * D2R), cs = Math.cos(tilt * D2R);
-      pt = [(dir === '+x' ? x0 : dir === '-x' ? x1 : cxm) * M, (dir === '+y' ? y0 : dir === '-y' ? y1 : cym) * M, zh];
-      n = dir === '+x' ? [sn, 0, cs] : dir === '-x' ? [-sn, 0, cs] : dir === '+y' ? [0, sn, cs] : [0, -sn, cs];
-    }
-    const zAt = (x, y) => pt[2] - (n[0] * (x - pt[0]) + n[1] * (y - pt[1])) / n[2];
-    pushCut({ slice:true, poly:rect(x0 - 1.05, y0 - 1.05, x1 - x0 + 2.1, y1 - y0 + 2.1), z0:-.01, z1:80, pt, n, tilt, dir, kind });
-    const ph = [];   // every shaved block keeps its old top as a dashed phantom
-    for (const v of vols) {
-      const P = v.poly.map(([x, y]) => [x * M, y * M]), zs = P.map(([x, y]) => zAt(x, y));
-      if (zs.every(z => z >= v.top - 1)) continue;
-      P.forEach((a, i) => { const b = P[(i + 1) % P.length]; ph.push(dsh([a[0], a[1], v.top], [b[0], b[1], v.top])); if (zs[i] < v.top - .05) ph.push(dsh([a[0], a[1], Math.max(v.z0 * F, zs[i])], [a[0], a[1], v.top])); });
-    }
-    if (ph.length) addEl(s.t + bl * .25, 'phantom', { prims:ph }, true);
+    const alongX = x1 - x0 >= y1 - y0, cxm = (x0 + x1) / 2, cym = (y0 + y1) / 2;
+    const ang = (alongX ? 0 : 90) + (ur() < .5 ? -1 : 1) * (18 + ur() * 20), u = [Math.cos(ang * D2R), Math.sin(ang * D2R)], nn = [-u[1], u[0]];
+    const hl = Math.hypot(x1 - x0, y1 - y0) / 2 + 1.5, hw = .3 + ur() * .25;
+    const poly = [[-hl, -hw], [hl, -hw], [hl, hw], [-hl, hw]].map(([a, b]) => [cxm + u[0] * a + nn[0] * b, cym + u[1] * a + nn[1] * b]);
+    pushCut({ poly, z0:-.01, z1:80, kind:'gash' }, s.t, null, bl);
   }
-  const chans = { hat:{ kind:voc.hat }, snare:{ kind:voc.snare }, note:{ kind:voc.note }, line:{ kind:voc.line[0], kinds:voc.line, rt:0 }, struct:{ kind:voc.struct[0], kinds:voc.struct, rt:0 } };
-  for (const k in chans) chans[k].r = r;
+  const chans = { hat:{ kind:voc.hat }, note:{ kind:voc.note }, line:{ kind:voc.line[0], kinds:voc.line, rt:0 } };
   function retarget(ch) {
-    if (ch.kinds) ch.kind = ch.kinds[ch.rt++ % ch.kinds.length];   // the line channel alternates between its two kinds
-    const G = GEN[ch.kind], c = vols.filter(v => G.ok(v) && !v.used.has(ch.kind));
-    const pool = c.length ? c : vols.filter(v => G.ok(v));
+    if (ch.kinds) ch.kind = ch.kinds[ch.rt++ % ch.kinds.length];
+    const G = GEN[ch.kind]; if (!G) { ch.v = null; return; }
+    const c = vols.filter(v => G.ok(v) && !v.used.has(ch.kind)), pool = c.length ? c : vols.filter(v => G.ok(v));
     if (!pool.length) { ch.v = null; return; }
     ch.v = r() < .7 ? pool[pool.length - 1] : pickR(r, pool);
-    ch.v.used.add(ch.kind); ch.run = runId++; ch.i = 0; ch.done = false; ch.used = null; ch.fol = null; ch.side = null;
+    ch.v.used.add(ch.kind); ch.run = runId++; ch.i = 0; ch.done = false; ch.used = null;
     const fs = ch.v.facades.filter(f => f.L >= 2 * M);
     ch.f = fs.length ? fs.reduce((a, b) => (b.L * (.6 + r()) > a.L * (.6 + r()) ? b : a), fs[0]) : ch.v.facades[0];
-    if (ch.kind === 'trusses') {
-      const xs = vols.map(v => v.rect[2]), xn = vols.map(v => v.rect[0]);
-      ch.dir = ch.v.rect[2] >= Math.max(...xs) ? 1 : ch.v.rect[0] <= Math.min(...xn) ? -1 : (r() < .5 ? 1 : -1);
-    }
   }
   // one hit does `acts` steps of its series, a 16th apart, so a single drum hit ripples across several units
   function series(name, s) {
@@ -1066,28 +1007,26 @@ function genCycle(cy) {
     return made > 0;
   }
 
+  const TY = T[form];
   for (const s of SLOTS) {
     if (s.t < cy.t0 || s.t >= cy.end - bl) continue;   // the last beat stays quiet before the wipe
-    const p = (s.t - cy.t0) / (cy.end - cy.t0), loose = smooth(.25, .85, p);
+    const p = (s.t - cy.t0) / (cy.end - cy.t0);
     if (presenceAt(s.t) < .5) continue;   // silence: the site rests
-    if (!vols.length) { if ((s.kick || 0) > kThr * .5 || (s.snare || 0) > sThr * .5 || s.down) placeVol(s, p, loose, 'first'); continue; }
+    if (!vols.length) { if ((s.kick || 0) > kThr * .5 || (s.snare || 0) > sThr * .5 || s.down) TY.start(s); continue; }
     while (bi < BIG.length && BIG[bi].t < s.t - bl * .26) bi++;
-    if (bi < BIG.length && Math.abs(BIG[bi].t - s.t) <= bl * .26) { if (p > .12 && s.t < cy.end - 2 * bl) explode(s); bi++; }
-    if (willUnify && !unified && s.down && p >= unifyAt && vols.length >= 3 && s.t < cy.end - 4 * bl) unify(s);
-    if ((s.kick || 0) > kThr) {
-      if (!unified && vols.length < maxVol && s.t - lastVol >= bl * (p < .45 ? (g > .6 ? 1 : 2) : 3)) for (let a = 0; a < vActs && vols.length < maxVol; a++) placeVol(a ? { ...s, t:s.t + a * bl / 4 } : s, p, loose);
-      else if (!unified && s.kick > (FM.tall ? .35 : .55) && s.t - lastStack >= FM.towerGap * bl && r() < FM.towerP) growTower(s);
+    if (bi < BIG.length && Math.abs(BIG[bi].t - s.t) <= bl * .26) { if (p > .15 && s.t < cy.end - 2 * bl) explode(s); bi++; }
+    if (oi < orgAt.length && s.t >= orgAt[oi] - 1e-3) { organic(s); oi++; continue; }
+    if (willUnify && !unified && s.down && p >= unifyAt && vols.length >= 4 && s.t < cy.end - 4 * bl) unify(s);
+    if ((s.kick || 0) > kThr && !unified && vols.length < maxVol && s.t - lastVol >= bl * (form === 'capsule' ? .5 : p < .45 ? 1 : 2)) {
+      let v = null;
+      if (s.kick > .85 && s.t - lastCant >= 8 * bl && p > .3 && r() < .5) { v = cantilever(s); if (v) lastCant = s.t; }
+      if (!v) v = TY.add(s);
+      if (v) { nKick++; if (TY.after) TY.after(v, s); }
     }
-    if ((s.snare || 0) > sThr) {
-      if (p > .18 && s.t - lastCut >= bl * (loose > .5 ? 2 : 4) && r() < lerp(.2, .65, loose)) for (let a = 0; a < vActs; a++) makeCut(a ? { ...s, t:s.t + a * bl / 4 } : s, loose);
-      else if (s.t - lastSn >= bl * (g > .6 ? .25 : .5) && p > .1) { if (series('snare', s)) lastSn = s.t; }
-    }
+    if ((s.snare || 0) > sThr && p > .18 && s.t - lastCut >= bl * 4 && r() < .45) makeCut(s);
     if ((s.hat || 0) > hThr && s.t - lastHat >= bl * (g > .65 ? .25 : g > .4 ? .5 : 1) && p > .08) { if (series('hat', s)) lastHat = s.t; }
     if (s.note && s.t - lastNote >= bl * .5 && p > .12) { if (series('note', s)) lastNote = s.t; }
-    // fine linework rides on whatever else is playing, an 8th at a time
-    if (((s.hat || 0) > hThr * .6 || (s.snare || 0) > sThr * .6 || s.note || s.down) && s.t - lastLine >= bl * .5 && p > .05) { if (series('line', s)) lastLine = s.t; }
-    // structure: folies, I-beams and galleries grow on the kicks and downbeats the massing doesn't use
-    if (((s.kick || 0) > kThr * .5 || s.down || (s.snare || 0) > sThr) && s.t - lastStruct >= bl * .5 && p > .08) { if (series('struct', s)) lastStruct = s.t; }
+    if (((s.snare || 0) > sThr * .6 || s.down) && s.t - lastLine >= bl * .5 && p > .05) { if (series('line', s)) lastLine = s.t; }
     if (s.down && s.bar % 4 === 0) for (const k in chans) chans[k].v = null;   // every 4 bars each series moves to a new target
   }
 
@@ -1100,7 +1039,7 @@ function genCycle(cy) {
     const lines = [];
     for (let y = y0 + 1; y < y1; y += 2) lines.push([...ring((x0 - .5) * M, y * M, .8), seg([(x0 - .5) * M + .8, y * M, 0], [x1 * M, y * M, 0])]);
     for (let x = x0 + 1; x < x1; x += 3) lines.push([...ring(x * M, (y0 - .5) * M, .8), seg([x * M, (y0 - .5) * M + .8, 0], [x * M, y1 * M, 0])]);
-    lines.forEach((pr, k) => addEl(cy.t0 + k * bl / 2, 'axes', { prims:pr }, true));
+    lines.forEach((pr2, k) => addEl(cy.t0 + k * bl / 2, 'axes', { prims:pr2 }, true));
   }
 
   geo.sort((a, b) => a.settle - b.settle || a.t - b.t);
@@ -1309,12 +1248,12 @@ const patCode = (pt, tint) => pt >= 20 ? pt + (1 - tint) * .5 : pt;
 function meshInto(A, mesh, cols, xf, tint) {
   const np = mesh.numProp, vp = mesh.vertProperties, tv = mesh.triVerts, nTri = tv.length / 3, pos = new Float32Array(nTri * 9);
   for (let rr = 0; rr < mesh.runOriginalID.length; rr++) {
-    const src = SOURCES.get(mesh.runOriginalID[rr]) || { kind:'vol' }, kind = src.kind, prog = kind === 'vol' ? progOf(src.v) : 0;
+    const src = SOURCES.get(mesh.runOriginalID[rr]) || { kind:'vol' }, kind = src.kind, prog = kind === 'vol' ? progOf(src.v) : 0, solid = !!(src.v && src.v.organic);
     for (let t = mesh.runIndex[rr] / 3; t < mesh.runIndex[rr + 1] / 3; t++) {
       for (let k = 0; k < 3; k++) { const v = tv[t * 3 + k] * np; let p = [vp[v], vp[v + 1], vp[v + 2]]; if (xf) p = xf(p); pos.set(p, t * 9 + k * 3); }
       const o = t * 9, ux = pos[o + 3] - pos[o], uy = pos[o + 4] - pos[o + 1], uz = pos[o + 5] - pos[o + 2], vx = pos[o + 6] - pos[o], vy = pos[o + 7] - pos[o + 1], vz = pos[o + 8] - pos[o + 2];
       let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
-      const role = roleOf(kind, nz), [c, p0] = brutFace(role, nz, prog), pt = patCode(p0, tint);
+      const role = roleOf(kind, nz), [c, p0] = brutFace(role, nz, prog, solid), pt = patCode(p0, tint);   // organic bodies: flat colour, no stripes
       const cr = lerp(cols[ROLE.accent].r, c.r, tint), cg = lerp(cols[ROLE.accent].g, c.g, tint), cb = lerp(cols[ROLE.accent].b, c.b, tint);
       for (let k = 0; k < 9; k++) A.pos.push(pos[o + k]);
       for (let k = 0; k < 3; k++) A.col.push(cr, cg, cb);
@@ -1358,6 +1297,10 @@ function primsInto(A, el, cols, xf0, tint) {
       const c = p.p.map(xf);
       pushTri(A, c[0], c[1], c[2], cols[p.role], tint, acc, p.role); pushTri(A, c[0], c[2], c[3], cols[p.role], tint, acc, p.role);
       for (let i = 0; i < 4; i++) A.vis.push(...c[i], ...c[(i + 1) % 4]);
+    } else if (p.k === 'poly') {   // a flat convex shape (a porthole), as a fan
+      const c = p.p.map(xf);
+      for (let i = 1; i < c.length - 1; i++) pushTri(A, c[0], c[i], c[i + 1], cols[p.role], tint, acc, p.role);
+      for (let i = 0; i < c.length; i++) A.vis.push(...c[i], ...c[(i + 1) % c.length]);
     } else if (p.k === 'dash') {
       A.dl.push(...xf(p.a), ...xf(p.b));
     } else {   // drawing marks (grid, dimensions) and structural linework each go to their own ink
@@ -1512,9 +1455,9 @@ const SUN = patU.uSun.value;   // the sun's direction, shared by the fills and t
 // the sun turns with the camera, like a lamp over a model on a turntable: it stays in front and to the viewer's left, so of the
 // two walls an axo shows one is lit and one in shade, and shadows fall away to the right
 function placeSun() {
-  const az = (CAM.az + lerp(-190, -10, S.sunAz)) * D2R, el = 40 * D2R;
-  SUN.set(Math.cos(el) * Math.sin(az), -Math.cos(el) * Math.cos(az), Math.sin(el));
-  const e = VIEW.matrixWorld.elements; patU.uCamDir.value.set(e[8], e[9], e[10]); patU.uCamPos.value.setFromMatrixPosition(VIEW.matrixWorld); patU.uPersp.value = VIEW === pcam ? 1 : 0;
+  const e = VIEW.matrixWorld.elements, camAz = Math.abs(e[8]) + Math.abs(e[9]) > 1e-3 ? Math.atan2(e[8], -e[9]) / D2R : CAM.az;   // where the camera really looks from (eye shots aim away from the shot's angle)
+  const az = (camAz + lerp(-190, -10, S.sunAz)) * D2R, el = 40 * D2R;
+  SUN.set(Math.cos(el) * Math.sin(az), -Math.cos(el) * Math.cos(az), Math.sin(el)); patU.uCamDir.value.set(e[8], e[9], e[10]); patU.uCamPos.value.setFromMatrixPosition(VIEW.matrixWorld); patU.uPersp.value = VIEW === pcam ? 1 : 0;
 }
 
 // settled elements: rebuilt only when one finishes popping in or a cut removes one
@@ -1531,7 +1474,7 @@ function buildBigHits() {
   for (const k of KICKS) if (k.s >= q && AN.rms[fr(AN, k.t)] > .4 && k.t - last >= 8 * bl) { BIG.push(k); last = k.t; }
   BIG.ts = BIG.map(k => k.t);
 }
-const FIXED_KINDS = new Set(['axes', 'dims', 'phantom', 'pilotis']);   // drawing marks never detach
+const FIXED_KINDS = new Set(['axes', 'dims', 'phantom', 'pilotis', 'porthole']);   // drawing marks never detach
 // detaching flies out at the build speed too: a snap with an overshoot when fast, a long ease when slow
 const exK = (ex, t) => { const sl = buildSlow(), g = clamp((t - ex.t) / (.4 * sl), 0, 1); return (sl > 2 ? ease(g) : easeOutBack(g)) * S.explode / .55; };
 function updateExploded(cy, t) {
@@ -1790,9 +1733,9 @@ function placeEye(cy, t, dt, K, sh, asp, use, shotEnd = cy.end) {
     pos = ax ? [back > 0 ? lerp(a0, a1, u) : lerp(a1, a0, u), (b0 + b1) / 2, v.z0 * F + 1.7] : [(a0 + a1) / 2, back > 0 ? lerp(b0, b1, u) : lerp(b1, b0, u), v.z0 * F + 1.7];
     look = ax ? [pos[0] + back * 20, pos[1], pos[2] + .8] : [pos[0], pos[1] + back * 20, pos[2] + .8];
   } else if (K.mode === 'walk') {
-    const side = back;
-    if (alongX) { pos = [lerp(x0 - 8, x1 + 8, f), side > 0 ? y1 + 4 : y0 - 4, 1.7]; look = [pos[0] + 16, cyy, 1.7 + H * .3]; }
-    else { pos = [side > 0 ? x1 + 4 : x0 - 4, lerp(y0 - 8, y1 + 8, f), 1.7]; look = [cx, pos[1] + 16, 1.7 + H * .3]; }
+    const side = back;   // walking past, the eye stays on the building, so near the end it turns back to it
+    if (alongX) { pos = [lerp(x0 - 8, x1 + 8, f), side > 0 ? y1 + 4 : y0 - 4, 1.7]; look = [clamp(pos[0] + 16, x0, x1), cyy, 1.7 + H * .3]; }
+    else { pos = [side > 0 ? x1 + 4 : x0 - 4, lerp(y0 - 8, y1 + 8, f), 1.7]; look = [cx, clamp(pos[1] + 16, y0, y1), 1.7 + H * .3]; }
   } else {
     // stand out on the plaza, far enough to take the blocks in, with clear ground around you
     const a = (sh.az + age * sh.drift * .5) * D2R; let d = Math.max(x1 - x0, y1 - y0) * .5 + 10, x = cx + Math.sin(a) * d, y = cyy - Math.cos(a) * d;
@@ -2225,16 +2168,16 @@ const reshoot = () => { buildShots(); CAM.snap = true; };
 
 // build: what the song makes
 const BP = '#buildPanel';
-addSelect(BP, 'form', 'Form', [['mixed', 'Mixed (one per building)'], ['long', 'Long'], ['cluster', 'Clustered'], ['tall', 'Tall']], regen);
+addSelect(BP, 'form', 'Building type', [['mixed', 'Mixed (one per building)'], ['capsule', 'Capsule tower'], ['bars', 'Crossing bars'], ['slab', 'Slab on pilotis'], ['stepped', 'Stepped stacks']], regen);
 addSlider(BP, 'growth', 'Growth: sparse ↔ dense', regen);
-addSlider(BP, 'curve', 'Curvature: rectilinear ↔ curved', regen);
+addSlider(BP, 'curve', 'Organic moves: none ↔ three a building', regen);
 addSlider(BP, 'buildSpeed', 'Build speed: slow ↔ fast', regen);
 addSlider(BP, 'silenceThr', 'Silence threshold: true silence ↔ quiet passages', regen);
 addSelect(BP, 'actions', 'Actions per hit', [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']], () => { S.actions = +S.actions; regen(); });
-addSlider(BP, 'unify', 'Late unifying cuts', regen);
+addSlider(BP, 'unify', 'Late gash through everything', regen);
 addSelect(BP, 'explodeMode', 'Big beats detach pieces', [['beats', 'On'], ['off', 'Off']]);
 addSlider(BP, 'explode', 'Detach distance');
-addSlider(BP, 'pitchSens', 'Note sensitivity (windows, trusses)', regen);
+addSlider(BP, 'pitchSens', 'Note sensitivity (windows, organic shapes)', regen);
 // the seed is the whole design: shown and typeable, so a good one can be written down and come back to
 const seedBox = document.createElement('label'); seedBox.className = 'seed';
 seedBox.innerHTML = `Seed <span><button title="Previous seed">‹</button><input type="number" min="1" max="9999" step="1"><button title="Next seed">›</button><button>New seed</button></span>`;
