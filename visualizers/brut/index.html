@@ -141,7 +141,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 const S = {
   seed:1, curve:.5, growth:.7, actions:2, unify:.5, form:'mixed', camStyle:'mixed', pitchSens:.5,
   shots:'music', shotSens:.5, view:'iso', punch:0, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:0, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35, silenceFade:.9, silenceThr:.09,
-  palette:'generated', variety:.5, shading:'flat', lineW:.35, hatch:1, hatchSize:.35, shadow:'mixed', overlay:'full', ground:'field', marks:.5, numbering:'fig', sunAz:.7, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.3, flash:false, look:'print',
+  palette:'generated', variety:.5, shading:'flat', lineW:.35, hatch:1, hatchSize:.35, shadow:'mixed', overlay:'full', ground:'field', marks:.5, words:true, numbering:'fig', sunAz:.7, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.3, flash:false, look:'print',
   // old drawing
   paper:.35, tooth:.4, age:.03, bleed:.1, wobble:.15, wash:.15,
   // film print (the Sculpture Machine's stock)
@@ -2257,9 +2257,9 @@ function drawOverlay(t, cy) {
     g.strokeStyle = g.fillStyle = ink; }
   g.globalAlpha = 1;
   // the plan's caption, under its corner
-  if (amt >= .15 && PLAN.at && planMesh.visible) { const p = toPx(PLAN.at, W, H); if (p) { g.font = it(24); g.fillText(`plan at +${PLAN.z.toFixed(1)}`, p[0], p[1] + 16 * u); } }
+  if (amt >= .15 && S.words && PLAN.at && planMesh.visible) { const p = toPx(PLAN.at, W, H); if (p) { g.font = it(24); g.fillText(`plan at +${PLAN.z.toFixed(1)}`, p[0], p[1] + 16 * u); } }
   // new blocks get their numbers for two bars: "fig. 4" on a leader, or a circled figure
-  if (amt >= .15 && S.numbering !== 'off') {
+  if (amt >= .15 && S.words && S.numbering !== 'off') {
     let k = 0;
     for (const op of cy.geo) {
       if (op.type !== 'vol') continue; k++;
@@ -2286,7 +2286,7 @@ function drawOverlay(t, cy) {
       g.globalAlpha = a * .85; g.lineWidth = 1 * u; g.strokeStyle = hue || ink;
       g.beginPath(); g.moveTo(0, p[1] - dy * p[0] / W); g.lineTo(W, p[1] + dy * (1 - p[0] / W)); g.stroke();
       g.setLineDash([]); g.lineWidth = 1.6 * u; g.beginPath(); g.arc(p[0], p[1], 6 * u, 0, TAU); g.stroke();
-      g.globalAlpha = a; g.font = it(22); g.fillStyle = ink; g.fillText(({ blob:'free cut', gash:'gash', void:'void', notch:'notch', terrace:'terrace', under:'undercut', chamfer:'chamfer', split:'split', slice:'raked' })[op.spec.kind] || 'cut', p[0] + 12 * u, p[1] - 12 * u);
+      g.globalAlpha = a; g.font = it(22); g.fillStyle = ink; if (S.words) g.fillText(({ blob:'free cut', gash:'gash', void:'void', notch:'notch', terrace:'terrace', under:'undercut', chamfer:'chamfer', split:'split', slice:'raked' })[op.spec.kind] || 'cut', p[0] + 12 * u, p[1] - 12 * u);
       g.setLineDash([10 * u, 6 * u]);
     }
     g.setLineDash([]); g.strokeStyle = ink;
@@ -2655,6 +2655,7 @@ addSelect(KP, 'shadow', 'Hard shadows', [['mixed', 'Each building its own way'],
 addSelect(KP, 'overlay', 'Drawing overlay', [['full', 'Colour masses and marks'], ['marks', 'Marks only'], ['off', 'Off']]);
 addSlider(KP, 'marks', 'Page markings: corner marks only ↔ everything');
 addSelect(KP, 'ground', 'Ground', [['field', 'Field of crosses'], ['diagonal', 'Diagonal lattice'], ['datum', 'Datum line'], ['hatch', 'Engraved hatch'], ['none', 'Paper']], regen);
+addCheck(KP, 'words', 'Words and numbers on the page');
 addSelect(KP, 'numbering', 'Numbering', [['fig', 'fig. 1, fig. 2 (italic)'], ['circled', 'Circled figures'], ['off', 'None']]);
 addSlider(KP, 'sunAz', 'Sun: from behind ↔ from in front');
 const swatchBox = document.createElement('label'); swatchBox.innerHTML = '<span>Colours at the playhead</span><div class="swatches"></div>'; $(KP).appendChild(swatchBox);
