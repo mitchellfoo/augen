@@ -1495,7 +1495,7 @@ async function exportMP4(sizeKey, lengthKey, file) {
   if (!codecs.video) return setExportMsg('This browser cannot encode H.264 at that size.');
   // some browsers and embedded views hand back a file but refuse to write it: render in memory and download instead
   let stream = null;
-  if (file) try { stream = await file.createWritable(); } catch (e) { console.warn('cannot write the chosen file, downloading instead', e); file = null; }
+  if (file) try { stream = await file.createWritable(); } catch (e) { console.warn('cannot write the chosen file, downloading instead', e); file = null; try { localStorage.setItem('augen-export-download', '1'); } catch (_) {} }
   const target = stream ? new Mp4Muxer.FileSystemWritableFileStreamTarget(stream) : new Mp4Muxer.ArrayBufferTarget();
   const muxer = new Mp4Muxer.Muxer({ target, fastStart:stream ? false : 'in-memory', firstTimestampBehavior:'offset',
     video:{ codec:'avc', width:w, height:h, frameRate:fps },
@@ -1671,7 +1671,11 @@ $('#exp-go').onclick = async () => {
   if (!A.buffer || EXPORT) return;
   const len = $('#exp-len').value; let file = null;
   // ask where to save first, so the video can stream straight to disk while it renders
-  if (window.showSaveFilePicker) {
+  // the save dialog lets the video stream straight to disk, but only branded Chrome/Edge let a page write the file it
+  // picked; embedded browsers (or one that refused before) render in memory and download once at the end instead
+  let pick = !!window.showSaveFilePicker && !!navigator.userAgentData?.brands?.some(b => !/chromium|brand/i.test(b.brand));
+  try { if (localStorage.getItem('augen-export-download') === '1') pick = false; } catch (e) {}
+  if (pick) {
     try { file = await showSaveFilePicker({ suggestedName:exportName(len), types:[{ description:'MP4 video', accept:{ 'video/mp4':['.mp4'] } }] }); }
     catch (e) { if (e.name === 'AbortError') return; }
   }

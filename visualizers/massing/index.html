@@ -1383,9 +1383,14 @@ const BOX_EDGES = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4
 function primsInto(A, el, cols, xf0, tint) {
   const e = el.eps, xf = e ? p => { const q = xf0(p); return [q[0] + e[0], q[1] + e[1], q[2] + e[2]]; } : xf0;
   const acc = cols[ROLE.accent];
-  for (const p of el.prims) {
+  el.prims.forEach((p, pi) => {
     if (p.k === 'box') {
-      const c = boxCorners(p).map(xf);
+      // an element's own boxes touch (stair steps, flange on web, beam flush with its column): each is shrunk by a
+      // different hair, 1–4 mm in turn, so no two parts of one element ever share a plane and fight
+      const ins = Math.min([.001, .0025, .004][pi % 3], Math.abs(p.lu) * .1, Math.abs(p.ln) * .1, Math.abs(p.z1 - p.z0) * .1), n = [-p.u[1], p.u[0]];
+      const su = Math.sign(p.lu) * ins, sn = Math.sign(p.ln) * ins, sz = Math.sign(p.z1 - p.z0) * ins;
+      const q = { ...p, o:[p.o[0] + p.u[0] * su + n[0] * sn, p.o[1] + p.u[1] * su + n[1] * sn], lu:p.lu - 2 * su, ln:p.ln - 2 * sn, z0:p.z0 + sz, z1:p.z1 - sz };
+      const c = boxCorners(q).map(xf);
       for (const f of BOX_FACES) { pushTri(A, c[f[0]], c[f[1]], c[f[2]], cols[p.role], tint, acc, p.role); pushTri(A, c[f[0]], c[f[2]], c[f[3]], cols[p.role], tint, acc, p.role); }
       for (const [i, j] of BOX_EDGES) { A.vis.push(...c[i], ...c[j]); A.hid.push(...c[i], ...c[j]); }
     } else if (p.k === 'quad') {
@@ -1398,7 +1403,7 @@ function primsInto(A, el, cols, xf0, tint) {
       const a = xf(p.a), b = xf(p.b), dst = MARK_KINDS.has(el.kind) ? A.mark : GEN[el.kind] && GEN[el.kind].line || el.kind === 'folie' ? A.lin : A.vis;
       dst.push(...a, ...b); if (!el.visOnly && dst !== A.mark) A.hid.push(...a, ...b);
     }
-  }
+  });
 }
 const ID = p => p;
 function popXf(el, k) {
@@ -2147,7 +2152,7 @@ async function exportMP4(sizeKey, lengthKey, file) {
   if (!codecs.video) return setExportMsg('This browser cannot encode H.264 at that size.');
   // some browsers and embedded views hand back a file but refuse to write it: render in memory and download instead
   let stream = null;
-  if (file) try { stream = await file.createWritable(); } catch (e) { console.warn('cannot write the chosen file, downloading instead', e); file = null; }
+  if (file) try { stream = await file.createWritable(); } catch (e) { console.warn('cannot write the chosen file, downloading instead', e); file = null; try { localStorage.setItem('augen-export-download', '1'); } catch (_) {} }
   const target = stream ? new Mp4Muxer.FileSystemWritableFileStreamTarget(stream) : new Mp4Muxer.ArrayBufferTarget();
   const muxer = new Mp4Muxer.Muxer({ target, fastStart:stream ? false : 'in-memory', firstTimestampBehavior:'offset',
     video:{ codec:'avc', width:w, height:h, frameRate:fps },
@@ -2352,7 +2357,11 @@ $('#exp-go').onclick = async () => {
   if (!A.buffer) return setExportMsg('load a song first: the demo pattern has no audio to export');
   const len = $('#exp-len').value; let file = null;
   // ask where to save first, so the video can stream straight to disk while it renders
-  if (window.showSaveFilePicker) {
+  // the save dialog lets the video stream straight to disk, but only branded Chrome/Edge let a page write the file it
+  // picked; embedded browsers (or one that refused before) render in memory and download once at the end instead
+  let pick = !!window.showSaveFilePicker && !!navigator.userAgentData?.brands?.some(b => !/chromium|brand/i.test(b.brand));
+  try { if (localStorage.getItem('augen-export-download') === '1') pick = false; } catch (e) {}
+  if (pick) {
     try { file = await showSaveFilePicker({ suggestedName:exportName(len), types:[{ description:'MP4 video', accept:{ 'video/mp4':['.mp4'] } }] }); }
     catch (e) { if (e.name === 'AbortError') return; }
   }
