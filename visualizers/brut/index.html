@@ -603,6 +603,21 @@ function primsBB(prims) {
 
 /* the feature library: each kind adds one unit per hit to its current target, and returns null once that target is full */
 const plainWall = v => !v.organic && !v.capsule && !v.cage;
+// a Sol LeWitt lattice: every edge of every cell, all in one square member, nothing else. nx·ny·nz cells a module wide
+// and a floor high (near enough cubes, and level with the blocks around them) from corner o; members sit inside the cells' outer faces. which: 'x', 'y' or 'z' for the members running that way, at
+// level k only (k = null for all); skip(edgeKey) leaves an edge out, for the incomplete cubes
+const LW = .26;
+function lattice(o, nx, ny, nz, which, k = null, skip = null) {
+  const P = (n, i, a = M) => i === 0 ? LW / 2 : i === n ? n * a - LW / 2 : i * a, a = M, out = [];
+  if (which === 'z') for (let i = 0; i <= nx; i++) for (let j = 0; j <= ny; j++) { if (skip && skip(`z${i},${j}`)) continue; out.push(boxC(o[0] + P(nx, i), o[1] + P(ny, j), LW, LW, o[2], o[2] + nz * F, ROLE.struct)); }
+  for (let kk = 0; kk <= nz; kk++) {
+    if (which === 'z' || k != null && kk !== k) continue;
+    const z = o[2] + P(nz, kk, F);
+    if (which === 'x') for (let j = 0; j <= ny; j++) { if (skip && skip(`x${j},${kk}`)) continue; out.push(box([o[0] + LW, o[1] + P(ny, j) - LW / 2], [1, 0], nx * a - 2 * LW, LW, z - LW / 2, z + LW / 2, ROLE.struct)); }
+    if (which === 'y') for (let i = 0; i <= nx; i++) { if (skip && skip(`y${i},${kk}`)) continue; out.push(box([o[0] + P(nx, i) - LW / 2, o[1] + LW], [1, 0], LW, ny * a - 2 * LW, z - LW / 2 + .004, z + LW / 2 - .004, ROLE.struct)); }
+  }
+  return out;
+}
 const thinOk = v => plainWall(v) && !v.core;   // thin structure goes on the ordinary blocks, not cores or capsules
 const GEN = {
   spaceframe:{ hat:true, line:true, ok:v => thinOk(v) && v.isRect && !v.roof && !v.capped && v.rect[2] - v.rect[0] >= 2 && v.rect[3] - v.rect[1] >= 2, unit(ch) {
@@ -687,13 +702,6 @@ const GEN = {
     else { const oz = H + 2.6, oy = cy, R = 2.6; for (let k = 0; k < 20; k++) { const t0 = k / 20 * TAU, t1 = (k + 1) / 20 * TAU; prims.push(seg([X + 10.8, oy + Math.cos(t0) * R, oz + Math.sin(t0) * R], [X + 10.8, oy + Math.cos(t1) * R, oz + Math.sin(t1) * R])); if (k % 5 === 0) prims.push(seg([X + 10.8, oy, oz], [X + 10.8, oy + Math.cos(t0) * R, oz + Math.sin(t0) * R])); } }
     return { prims, grow:f === 'wheel' || f === 'cyl' ? 'all' : 'z' };
   } },
-  ibeams:{ struct:true, ok:v => thinOk(v) && v.isRect && !v.roof && !v.capped, unit(ch) {   // a grillage of I-beams across a roof, overhanging both sides
-    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), alongX = x1 - x0 >= y1 - y0, L = alongX ? x1 - x0 : y1 - y0;
-    const q = (alongX ? x0 : y0) + .6 + ch.i * 1.5; if (q > (alongX ? x1 : y1) - .3) return null;
-    const mid = (alongX ? y0 + y1 : x0 + x1) / 2, span = (alongX ? y1 - y0 : x1 - x0) + 3.2, z = v.top + .25;
-    const I = (w, z0, z1) => alongX ? boxC(q, mid, w, span, z0, z1, ROLE.struct) : boxC(mid, q, span, w, z0, z1, ROLE.struct);
-    return { prims:[I(.32, z, z + .07), I(.06, z + .07, z + .48), I(.32, z + .48, z + .55)] };
-  } },
   colonnade:{ struct:true, ok:v => thinOk(v) && v.isRect && v.z0 === 0, unit(ch) {   // a gallery: thin columns under an undulating canopy, running past both ends
     const v = ch.v, r = ch.r, [x0, y0, x1, y1] = v.rect.map(q => q * M), alongX = x1 - x0 >= y1 - y0;
     if (ch.side == null) { ch.side = r() < .5 ? 1 : -1; ch.ph = r() * TAU; }
@@ -744,6 +752,45 @@ const GEN = {
     }
     return null;
   } },
+  cubes:{ snare:true, ok:v => thinOk(v) && v.isRect, unit(ch) {   // LeWitt's incomplete open cubes, a cell per hit, wandering off the block
+    const v = ch.v, r = ch.r, a = F;
+    if (!ch.cells) {
+      const [x0, y0, x1, y1] = v.rect, onRoof = !v.capped && r() < .6;
+      const start = onRoof ? [x0 + ri(r, x1 - x0), y0 + ri(r, y1 - y0), v.top] : (() => { const side = ri(r, 4); return side === 0 ? [x1, y0 + ri(r, y1 - y0), v.z0 * F] : side === 1 ? [x0 - 1, y0 + ri(r, y1 - y0), v.z0 * F] : side === 2 ? [x0 + ri(r, x1 - x0), y1, v.z0 * F] : [x0 + ri(r, x1 - x0), y0 - 1, v.z0 * F]; })();
+      ch.cells = new Set(); ch.path = [start]; ch.last = start; ch.max = 3 + ri(r, 5);
+    }
+    if (ch.i >= ch.max) return null;
+    let c = ch.i === 0 ? ch.last : null;
+    if (!c) {
+      const dirs = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, 1]];
+      for (let tries = 0; tries < 10 && !c; tries++) {
+        const from = r() < .7 ? ch.last : pickR(r, ch.path), d = pickR(r, dirs), q = [from[0] + d[0], from[1] + d[1], from[2] + d[2] * a];
+        if (q[2] < 0 || ch.cells.has(q.join())) continue;
+        // never through a solid block
+        if (ch.vols.some(o => !o.cage && q[0] + .5 > o.rect[0] && q[0] + .5 < o.rect[2] && q[1] + .5 > o.rect[1] && q[1] + .5 < o.rect[3] && q[2] + a / 2 > o.z0 * F && q[2] + a / 2 < o.top)) continue;
+        c = q;
+      }
+      if (!c) return null;
+    }
+    ch.cells.add(c.join()); ch.path.push(c); ch.last = c;
+    const gone = new Set(); if (r() < .4) { const keys = ['x0,0', 'x1,0', 'x0,1', 'x1,1', 'y0,0', 'y1,0', 'y0,1', 'y1,1', 'z0,0', 'z1,0', 'z0,1', 'z1,1']; for (let n = 1 + ri(r, 3); n > 0; n--) gone.add(pickR(r, keys)); }
+    const o = [c[0] * M, c[1] * M, c[2]], skip = kk => gone.has(kk);
+    return { prims:[...lattice(o, 1, 1, 1, 'z', null, skip), ...lattice(o, 1, 1, 1, 'x', null, skip), ...lattice(o, 1, 1, 1, 'y', null, skip)], grow:'z' };
+  } },
+  stilts:{ struct:true, ok:v => !v.organic && v.isRect && v.z0 >= 1 && !v.cage, unit(ch) {   // pilotis: thin columns right down to the ground under a raised or cantilevered block, one per hit
+    const v = ch.v, [x0, y0, x1, y1] = v.rect;
+    if (!ch.pts) { ch.pts = []; for (let x = x0; x <= x1 + .01; x++) for (const y of y1 - y0 > 2.5 ? [y0, (y0 + y1) / 2, y1] : [y0, y1]) ch.pts.push([clamp(x * M, x0 * M + .3, x1 * M - .3), clamp(y * M, y0 * M + .3, y1 * M - .3)]); }
+    const p = ch.pts[ch.i]; if (!p) return null;
+    // only where nothing stands below
+    if (ch.vols.some(o => o !== v && !o.cage && o.top <= v.z0 * F + .01 && p[0] / M > o.rect[0] && p[0] / M < o.rect[2] && p[1] / M > o.rect[1] && p[1] / M < o.rect[3])) return { prims:[] };
+    return { prims:[boxC(p[0], p[1], .32, .32, 0, v.z0 * F, ROLE.struct)], grow:'z' };
+  } },
+  tallcols:{ struct:true, ok:v => thinOk(v) && v.isRect && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // a row of tall, slender columns standing off a facade, taller than the block, a column per hit
+    const v = ch.v, f = ch.f, n = Math.floor(f.L / M); if (ch.i > n) return null;
+    if (ch.h == null) ch.h = v.top + F * (.5 + ch.r() * 1.5);
+    const s = clamp(ch.i * M, .3, f.L - .3);
+    return { prims:[box(P3(f, s - .14, 2.2, 0), f.u, .28, .28, 0, ch.h, ROLE.struct)], grow:'z' };
+  } },
   eggcrate:{ hat:true, ok:v => plainWall(v) && !v.core && v.fl >= 2 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // brise-soleil egg-crate: a bay of deep fins and shelves per hit
     const v = ch.v, f = ch.f, s = ch.i * M; if (s + M > f.L + .01) return null;
     const z0 = v.z0 * F, D = .7, prims = [box(P3(f, s, D, 0), f.u, .2, D, z0, v.top)];
@@ -755,8 +802,8 @@ const GEN = {
 function pickVocab(r, prev) {
   const w = (o, k) => { if (prev && prev[k] in o) o[prev[k]] *= .15; return o; };   // the next building rarely repeats the last one's features
   const two = o => { const a = pickW(r, o), b = pickW(r, { ...o, [a]:0 }); return [a, b]; };
-  return { hat:pickW(r, w({ fins:2, eggcrate:2, stairs:.6, railings:1.2, spaceframe:1.2 }, 'hat')), snare:pickW(r, w({ frames:3, pergola:2 }, 'snare')), note:pickW(r, { windows:3, trusses:1 }),
-    struct:two({ folie:2.5, ibeams:2, colonnade:2, spaceframe:1.5 }), axes:r() < .7, line:r() < .5 ? ['dims'] : [] };
+  return { hat:pickW(r, w({ fins:2, eggcrate:2, stairs:.6, railings:1.2, spaceframe:.4 }, 'hat')), snare:'cubes', note:pickW(r, { windows:3, trusses:1 }),
+    struct:two({ stilts:3, tallcols:3, colonnade:1.5, folie:1.5, frames:.7 }), axes:r() < .7, line:r() < .5 ? ['dims'] : [] };
 }
 
 /* the melody as a shape: the pitch line over a few bars, smoothed, centred and scaled to ±1. Organic bodies take it as
@@ -963,26 +1010,14 @@ function genCycle(cy) {
     }, s.t, 14, v => hosts.includes(v) || v.core);
   }
 
-  // an open frame module: the same footprint as a block, built as a cage of thin posts and beams instead of a solid,
-  // posts first, then a floor of beams at a time, a 16th apart, with cross-bracing in a few bays
+  // an open frame module: the same footprint as a block, built instead as a Sol LeWitt lattice of cube cells,
+  // the uprights first, then a level of beams at a time, a 16th apart
   function toCage(v, t) {
     const i = geo.findIndex(o => o.v === v); if (i >= 0) geo.splice(i, 1);
     v.cage = true; v.progRoll = 1;
-    const [x0, y0, x1, y1] = v.rect, z0 = v.z0 * F, top = v.top, m = .2, xs = [], ys = [];
-    for (let x = x0; x <= x1 + .01; x++) xs.push(x * M); for (let y = y0; y <= y1 + .01; y++) ys.push(y * M);
-    const edge = (x, y) => Math.abs(x - x0 * M) < .01 || Math.abs(x - x1 * M) < .01 || Math.abs(y - y0 * M) < .01 || Math.abs(y - y1 * M) < .01;
-    const posts = []; for (const x of xs) for (const y of ys) if (edge(x, y)) posts.push(boxC(clamp(x, x0 * M + m / 2, x1 * M - m / 2), clamp(y, y0 * M + m / 2, y1 * M - m / 2), m, m, z0, top, ROLE.struct));
-    addEl(t, 'cage', { prims:posts, grow:'z' }, true, null, v);
-    const levels = Math.max(1, Math.round(v.fl));
-    for (let k = 1; k <= levels; k++) {
-      const z = Math.min(top, z0 + k * F), pr2 = [];
-      for (const y of [y0 * M, y1 * M]) pr2.push(box([x0 * M, clamp(y, y0 * M + 0, y1 * M - m)], [1, 0], (x1 - x0) * M, m, z - m, z, ROLE.struct));
-      for (const x of [x0 * M, x1 * M]) pr2.push(box([clamp(x, x0 * M, x1 * M - m), y0 * M + m], [1, 0], m, (y1 - y0) * M - 2 * m, z - m * 1.3, z - m * .3, ROLE.struct));
-      // cross-bracing: an X in some bays of one long face
-      const fy = r() < .5 ? y0 * M : y1 * M;
-      for (let j = 0; j + 1 < xs.length; j++) if (r() < .45) pr2.push(seg([xs[j], fy, z - F], [xs[j + 1], fy, z]), seg([xs[j + 1], fy, z - F], [xs[j], fy, z]));
-      addEl(t + k * bl / 4, 'cage', { prims:pr2 }, true, null, v);
-    }
+    const [x0, y0, x1, y1] = v.rect, nx = Math.round(x1 - x0), ny = Math.round(y1 - y0), nz = Math.max(1, Math.round(v.fl)), o = [x0 * M, y0 * M, v.z0 * F];
+    addEl(t, 'cage', { prims:lattice(o, nx, ny, nz, 'z'), grow:'z' }, true, null, v);
+    for (let k = 0; k <= nz; k++) addEl(t + (k + 1) * bl / 4, 'cage', { prims:[...lattice(o, nx, ny, nz, 'x', k), ...lattice(o, nx, ny, nz, 'y', k)] }, true, null, v);
   }
 
   /* snares: modular cuts, a module at a time */
@@ -1126,14 +1161,14 @@ function genCycle(cy) {
     pushCut({ poly, z0:-.01, z1:80, kind:'gash' }, s.t, null, bl);
   }
   const chans = { hat:{ kind:voc.hat }, snare:{ kind:voc.snare }, note:{ kind:voc.note }, line:{ kind:voc.line[0], kinds:voc.line, rt:0 }, struct:{ kind:voc.struct[0], kinds:voc.struct, rt:0 } };
-  for (const k in chans) chans[k].r = r;
+  for (const k in chans) { chans[k].r = r; chans[k].vols = vols; }
   function retarget(ch) {
     if (ch.kinds) ch.kind = ch.kinds[ch.rt++ % ch.kinds.length];
     const G = GEN[ch.kind]; if (!G) { ch.v = null; return; }
     const c = vols.filter(v => G.ok(v) && !v.used.has(ch.kind)), pool = c.length ? c : vols.filter(v => G.ok(v));
     if (!pool.length) { ch.v = null; return; }
     ch.v = r() < .7 ? pool[pool.length - 1] : pickR(r, pool);
-    ch.v.used.add(ch.kind); ch.run = runId++; ch.i = 0; ch.done = false; ch.used = null; ch.fol = null; ch.side = null;
+    ch.v.used.add(ch.kind); ch.run = runId++; ch.i = 0; ch.done = false; ch.used = null; ch.fol = null; ch.side = null; ch.cells = null; ch.pts = null; ch.h = null;
     const fs = ch.v.facades.filter(f => f.L >= 2 * M);
     ch.f = fs.length ? fs.reduce((a, b) => (b.L * (.6 + r()) > a.L * (.6 + r()) ? b : a), fs[0]) : ch.v.facades[0];
     if (ch.kind === 'trusses') {
