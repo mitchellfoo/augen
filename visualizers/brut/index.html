@@ -141,7 +141,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 const S = {
   seed:1, curve:.5, growth:.7, actions:2, unify:.5, form:'mixed', camStyle:'mixed', pitchSens:.5,
   shots:'music', shotSens:.5, view:'iso', punch:0, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:0, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35, silenceFade:.9, silenceThr:.09,
-  palette:'generated', variety:.5, shading:'flat', lineW:.35, hatch:1, hatchSize:.35, shadow:'mixed', overlay:'full', ground:'field', marks:.5, words:true, sheet:'paper', colors:'one', numbering:'fig', sunAz:.7, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.3, flash:false, look:'print',
+  palette:'generated', variety:.5, shading:'flat', lineW:.35, hatch:1, hatchSize:.35, shadow:'mixed', overlay:'full', ground:'field', marks:.5, words:true, sheet:'paper', colors:'bw1', numbering:'fig', sunAz:.7, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.3, flash:false, look:'print',
   // old drawing
   paper:.35, tooth:.4, age:.03, bleed:.1, wobble:.15, wash:.15,
   // film print (the Sculpture Machine's stock)
@@ -516,7 +516,10 @@ const SHEETS = {
   black:{ name:'Black', bg:'#0d0d0d', face:'#d6d3cc', shade:'#262625', shadow:'#232322', rule:'#2a2a29', line:'#f0eee8', mark:'#8a8883', lift:.26 },
 };
 const HUES = [['Cantley orange', '#f05a1a'], ['Signal red', '#e0262b'], ['Cobalt', '#1f45b8'], ['Chrome yellow', '#f4c81b'], ['Fluoro pink', '#ff3d9a'], ['Ministry green', '#16a05a']];
-const FIXED = Object.fromEntries([...HUES.map(([n, h]) => [n.split(' ')[0].toLowerCase(), { name:n, hue:h }]), ['mono', { name:'Black and white', hue:null }]]);
+const FIXED = Object.fromEntries(HUES.map(([n, h]) => [n.split(' ')[0].toLowerCase(), { name:n, hue:h }]));
+// colour is one choice: black and white only, or with one colour a building, or with two
+if (S.colors === 'one') S.colors = 'bw1'; else if (S.colors === 'two') S.colors = 'bw2';
+if (S.palette === 'mono') { S.colors = 'bw'; S.palette = 'generated'; }
 const lift = (hex, k) => hex && k ? '#' + new THREE.Color(hex).lerp(new THREE.Color('#ffffff'), k).getHexString() : hex;
 // a building's palette on the current sheet: one colour, and with two colours on, a partner unlike it
 function brutPal(name, hue, hue2 = null) {
@@ -538,7 +541,7 @@ function assignPalettes() {
   const r = rngFor(S.seed * 31 + (S.palShuffle || 0) * 7919, 31), r2 = rngFor(S.seed * 37 + (S.palShuffle || 0) * 7919, 37); let prev = null;
   for (const cy of CYCLES) {
     const [n, h] = S.palette !== 'generated' ? (FIXED[S.palette] ? [FIXED[S.palette].name, FIXED[S.palette].hue] : HUES[0]) : cy.idx === 0 && !S.palShuffle ? HUES[0] : genPalette(r, prev);
-    cy.pal = brutPal(n, h, h && S.colors === 'two' ? partnerFor(r2, h) : null);
+    cy.pal = S.colors === 'bw' ? brutPal('Black and white', null) : brutPal(n, h, S.colors === 'bw2' ? partnerFor(r2, h) : null);
     prev = cy.pal;
     const c = k => new THREE.Color(cy.pal[k]);
     // role colours, in the order the geometry stores them: wall, roof, slab, underside, element, window, accent, structure, unify
@@ -878,14 +881,16 @@ function genCycle(cy) {
     for (const e of els) if (!e.ex && e.run != null && e.t0 < s.t && e.t1 === Infinity && !FIXED_KINDS.has(e.kind)) { if (!runs.has(e.run)) runs.set(e.run, []); runs.get(e.run).push(e); }
     const groups = [...runs.values()].filter(g => g.length >= 2);
     let cx = 0, cyy = 0; for (const v of vols) { cx += (v.rect[0] + v.rect[2]) / 2 * M; cyy += (v.rect[1] + v.rect[3]) / 2 * M; } cx /= vols.length; cyy /= vols.length;
-    const away = (c, z) => { const dx = c[0] - cx, dy = c[1] - cyy, l = Math.hypot(dx, dy) || 1, out = 4 + 5 * r();
-      return [dx / l * out + (r() - .5) * 3, dy / l * out + (r() - .5) * 3, 6 + 5 * r() + z * .3]; };
+    // a piece slides straight out along one axis, a whole number of modules (or floors, lifting), like a drawer
+    const away = c => { const dx = c[0] - cx, dy = c[1] - cyy;
+      if (r() < .35) return [0, 0, (2 + ri(r, 2)) * F];
+      const out = (2 + ri(r, 3)) * M; return Math.abs(dx) >= Math.abs(dy) ? [Math.sign(dx || 1) * out, 0, 0] : [0, Math.sign(dy || 1) * out, 0]; };
     if (settled.length > 1 && (r() < .65 || !groups.length)) {
       const v = settled.reduce((a, b) => b.z0 + b.fl + r() * 3 > a.z0 + a.fl + r() * 3 ? b : a);   // high pieces go first
-      v.ex = { t:s.t, off:away([(v.rect[0] + v.rect[2]) / 2 * M, (v.rect[1] + v.rect[3]) / 2 * M], v.z0 * F) };
+      v.ex = { t:s.t, off:away([(v.rect[0] + v.rect[2]) / 2 * M, (v.rect[1] + v.rect[3]) / 2 * M]) };
       for (const e of els) if (!e.ex && e.vid === v.id && e.t0 < s.t) e.ex = v.ex;
     } else if (groups.length) {
-      const g = pickR(r, groups), c = bbCenter(g.reduce((b, e) => bbUnion(b, e.bb), bbNew())), ex = { t:s.t, off:away(c, c[2]) };
+      const g = pickR(r, groups), c = bbCenter(g.reduce((b, e) => bbUnion(b, e.bb), bbNew())), ex = { t:s.t, off:away(c) };
       for (const e of g) e.ex = ex;
     }
   }
@@ -1690,8 +1695,8 @@ function buildBigHits() {
   BIG.ts = BIG.map(k => k.t);
 }
 const FIXED_KINDS = new Set(['axes', 'dims', 'phantom', 'pilotis', 'porthole']);   // drawing marks never detach
-// detaching flies out at the build speed too: a snap with an overshoot when fast, a long ease when slow
-const exK = (ex, t) => { const sl = buildSlow(), g = clamp((t - ex.t) / (.4 * sl), 0, 1); return (sl > 2 ? ease(g) : easeOutBack(g)) * S.explode / .55; };
+// detaching slides out at the build speed too
+const exK = (ex, t) => { const g = clamp((t - ex.t) / (.4 * buildSlow()), 0, 1); return easeOutCubic(g) * S.explode / .55; };   // a straight slide that settles, no overshoot
 function updateExploded(cy, t) {
   const A = newAcc(); let any = false;
   for (const pc of SOL.pieces) {
@@ -2662,10 +2667,10 @@ addSelect(CP, 'view', 'Fixed view (picking one holds it)', VIEWS, () => { S.shot
 
 // colour
 const KP = '#colourPanel';
-addSelect(KP, 'palette', 'Colour', [['generated', 'A new colour every building'], ...Object.entries(FIXED).map(([k, v]) => [k, v.name])], recolour);
-addSelect(KP, 'colors', 'Colours', [['one', 'One colour a building'], ['two', 'Two colours a building']], recolour);
-addSelect(KP, 'sheet', 'Sheet', Object.entries(SHEETS).map(([k, v]) => [k, v.name]), () => { recolour(); OV.bgKey = ''; });
+addSelect(KP, 'colors', 'Colour', [['bw', 'BW: black and white only'], ['bw1', 'BW + 1 colour'], ['bw2', 'BW + 2 colours']], () => { recolour(); showSwatches(); });
+addSelect(KP, 'palette', 'Which colour', [['generated', 'A new one every building'], ...Object.entries(FIXED).map(([k, v]) => [k, v.name])], () => { recolour(); showSwatches(); });
 addSlider(KP, 'variety', 'How much colour: a few blocks ↔ half of them', recolour);
+addSelect(KP, 'sheet', 'Sheet', Object.entries(SHEETS).map(([k, v]) => [k, v.name]), () => { recolour(); OV.bgKey = ''; });
 addSlider(KP, 'hatch', 'Ruling, stripes & checkers', rebuildLines);
 addSlider(KP, 'hatchSize', 'Hatch spacing');
 addSelect(KP, 'hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashed'], ['off', 'Off']]);
@@ -2677,12 +2682,12 @@ addSelect(KP, 'ground', 'Ground', [['field', 'Field of crosses'], ['diagonal', '
 addCheck(KP, 'words', 'Words and numbers on the page');
 addSelect(KP, 'numbering', 'Numbering', [['fig', 'fig. 1, fig. 2 (italic)'], ['circled', 'Circled figures'], ['off', 'None']]);
 addSlider(KP, 'sunAz', 'Sun: from behind ↔ from in front');
-const swatchBox = document.createElement('label'); swatchBox.innerHTML = '<span>Colours at the playhead</span><div class="swatches"></div>'; $(KP).appendChild(swatchBox);
+const swatchBox = document.createElement('label'); swatchBox.innerHTML = '<span>This building\'s colours</span><div class="swatches"></div>'; $(KP).appendChild(swatchBox);
 addButton(KP, 'Shuffle colours', () => { S.palShuffle = (S.palShuffle || 0) + 1; saveSettings(); recolour(); showSwatches(); });
 function showSwatches() {
   if (!CYCLES.length) return;
-  const cy = cycleAt(curTime()), P = cy.pal, list = [P.bg, P.wall, P.shade, P.line, ...[P.hue, P.hue2].filter(Boolean)];
-  swatchBox.querySelector('.swatches').innerHTML = list.map(c => `<i style="background:${c}"></i>`).join('');
+  const P = cycleAt(curTime()).pal, list = [P.hue, P.hue2].filter(Boolean);
+  swatchBox.querySelector('.swatches').innerHTML = list.length ? list.map(c => `<i style="background:${c}" title="${c}"></i>`).join('') : '<em style="opacity:.7">black and white</em>';
 }
 setInterval(() => { if ($(KP).classList.contains('open')) showSwatches(); }, 500);
 
