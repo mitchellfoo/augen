@@ -539,7 +539,7 @@ function assignPalettes() {
 
 /* ------------------------------------------------------------------ the grammar: the song designs one building per cycle
    Plan units are modules (3 m), heights are floors (3.5 m). Kicks lay out volumes along a spine, snares cut them,
-   hats add the cycle's series feature, notes punch windows or grow trusses. Everything is precomputed from the
+   hats add the cycle's series feature, notes punch windows. Everything is precomputed from the
    whole song, so the model at any time t is just "every op of this cycle with t0 <= t". */
 const M = 3, F = 3.5;
 const rect = (x, y, w, d) => [[x, y], [x + w, y], [x + w, y + d], [x, y + d]];
@@ -665,16 +665,6 @@ const GEN = {
     for (const q of [s + M / 3, s + 2 * M / 3]) prims.push(seg(p(q, 0, h + .15), p(q, D + .3, h + .15)));
     return { prims, grow:'z' };
   } },
-  trusses:{ note:true, line:true, ok:v => thinOk(v) && v.top >= F && v.isRect, unit(ch) {   // a Warren truss cantilevering off the end of the spine, a bay per note
-    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), i = ch.i; if (i >= 6) return null;
-    const dir = ch.dir || 1, xs = (dir > 0 ? x1 : x0) + dir * i * 1.6, xe = xs + dir * 1.6, zt = v.top - .05, zb = zt - 1.5, ym = (y0 + y1) / 2, prims = [];
-    for (const y of [ym - 1, ym + 1]) {
-      prims.push(seg([xs, y, zt], [xe, y, zt]), seg([xs, y, zb], [xe, y, zb]), seg([xe, y, zt], [xe, y, zb]));
-      prims.push(i % 2 ? seg([xs, y, zt], [xe, y, zb]) : seg([xs, y, zb], [xe, y, zt]));
-    }
-    prims.push(seg([xe, ym - 1, zt], [xe, ym + 1, zt]), seg([xe, ym - 1, zb], [xe, ym + 1, zb]));
-    return { prims };
-  } },
   folie:{ struct:true, ok:v => thinOk(v), unit(ch) {   // Tschumi folies on a 12 m point grid: a 10.8 m cubic frame, then a fragment per hit
     const v = ch.v, r = ch.r;
     if (!ch.fol) {
@@ -796,7 +786,7 @@ const GEN = {
 function pickVocab(r, prev) {
   const w = (o, k) => { if (prev && prev[k] in o) o[prev[k]] *= .15; return o; };   // the next building rarely repeats the last one's features
   const two = o => { const a = pickW(r, o), b = pickW(r, { ...o, [a]:0 }); return [a, b]; };
-  return { hat:pickW(r, w({ fins:2, eggcrate:2, egress:2.4, railings:1, spaceframe:.4 }, 'hat')), snare:'cubes', note:pickW(r, { windows:3, trusses:1 }),
+  return { hat:pickW(r, w({ fins:2, eggcrate:2, egress:2.4, railings:1, spaceframe:.4 }, 'hat')), snare:'cubes', note:'windows',
     struct:two({ stilts:3, tallcols:3, folie:1.5 }), axes:r() < .7, line:r() < .5 ? ['dims'] : [] };
 }
 
@@ -1187,10 +1177,6 @@ function genCycle(cy) {
     ch.v.used.add(ch.kind); ch.run = runId++; ch.i = 0; ch.done = false; ch.used = null; ch.fol = null; ch.side = null; ch.cells = null; ch.pts = null; ch.h = null; ch.slot = null;
     const fs = ch.v.facades.filter(f => f.L >= 2 * M);
     ch.f = fs.length ? fs.reduce((a, b) => (b.L * (.6 + r()) > a.L * (.6 + r()) ? b : a), fs[0]) : ch.v.facades[0];
-    if (ch.kind === 'trusses') {
-      const xs = vols.map(v => v.rect[2]), xn = vols.map(v => v.rect[0]);
-      ch.dir = ch.v.rect[2] >= Math.max(...xs) ? 1 : ch.v.rect[0] <= Math.min(...xn) ? -1 : (r() < .5 ? 1 : -1);
-    }
   }
   // one hit does `acts` steps of its series, a 16th apart, so a single drum hit ripples across several units
   function series(name, s) {
