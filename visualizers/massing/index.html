@@ -857,7 +857,8 @@ function genCycle(cy) {
     if (!res || !res.prims || !res.prims.length) return false;
     const bb = primsBB(res.prims), c = bbCenter(bb);
     if (!keep && inCut([...c, t])) return false;
-    const hn = k => (hashInt(els.length * 3 + k, 97) / 4294967296 - .5) * .006;   // ±3 mm
+    // a nudge of its own (±3 mm per axis, 1 mm steps): neighbouring elements always differ, where a random one could tie
+    const hn = k => ((els.length * [3, 5, 2][k] + k * 2) % 7 - 3) * .001;
     els.push({ eps:[hn(0), hn(1), hn(2)], t0:t, t1:Infinity, kind, prims:res.prims, bb, keep, visOnly:!!res.visOnly, grow:res.grow || 'all',
       anchor:res.grow === 'z' ? [c[0], c[1], bb.min[2]] : c,
       vid:ch ? ch.v.id : null, run:ch ? ch.run : null, ex:ch ? ch.v.ex || null : null });   // added to a detached volume: it rides along
@@ -1615,16 +1616,18 @@ function updateSettled(cy, t) {
 }
 // live: volumes extruding, elements popping in, and the dotted ghosts of what is about to arrive
 function liveInset(m, v) {
-  const sh = section(v.shape || v.poly), inner = sh.offset(-.02, 'Miter'); sh.delete();
+  // each block by its own amount (2–5 cm): blocks on the same footprint growing together would otherwise still share walls
+  const ins = .02 + (v.id % 7) * .005;
+  const sh = section(v.shape || v.poly), inner = sh.offset(-ins, 'Miter'); sh.delete();
   if (inner.isEmpty()) { inner.delete(); return m; }
   const col = inner.extrude(400).translate([0, 0, -200]); inner.delete();
-  const out = m.intersect(col).translate([0, 0, .01]); m.delete(); col.delete();
+  const out = m.intersect(col).translate([0, 0, .01 + (v.id % 7) * .003]); m.delete(); col.delete();
   return out.isEmpty() ? (out.delete(), volPiece(v)) : out;
 }
 function liveVolGeom(op) {
   let c = SOL.live.get(op);
   if (!c) {
-    // while a block is growing it is drawn 2 cm inset and 1 cm up: invisible, but two growing blocks can never share a plane
+    // while a block is growing it is drawn a few cm inset and up, by an amount of its own: invisible, but two growing blocks never share a plane
     const m0 = volPiece(op.v), m = tag(liveInset(m0, op.v), 'vol', op.v), mesh = m.getMesh(); m.delete();
     c = { mesh }; SOL.live.set(op, c);
     if (SOL.live.size > 64) SOL.live.delete(SOL.live.keys().next().value);
