@@ -602,8 +602,110 @@ function primsBB(prims) {
 }
 
 /* the feature library: each kind adds one unit per hit to its current target, and returns null once that target is full */
-const plainWall = v => !v.organic && !v.capsule;
+const plainWall = v => !v.organic && !v.capsule && !v.cage;
+const thinOk = v => plainWall(v) && !v.core;   // thin structure goes on the ordinary blocks, not cores or capsules
 const GEN = {
+  spaceframe:{ hat:true, line:true, ok:v => thinOk(v) && v.isRect && !v.roof && !v.capped && v.rect[2] - v.rect[0] >= 2 && v.rect[3] - v.rect[1] >= 2, unit(ch) {
+    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), g = 1.5, nx = Math.floor((x1 - x0) / g), ny = Math.floor((y1 - y0) / g);
+    const i = ch.i; if (i > nx) return null;
+    const zt = v.top + 2.2, zb = v.top + 1.2, T = (a, b) => [x0 + a * g, y0 + b * g, zt], Bn = (a, b) => [x0 + (a + .5) * g, y0 + (b + .5) * g, zb], prims = [];
+    prims.push(seg(T(i, 0), T(i, ny)));
+    if (i > 0) for (let j = 0; j <= ny; j++) prims.push(seg(T(i - 1, j), T(i, j)));
+    if (i > 0) for (let j = 0; j < ny; j++) {
+      const b = Bn(i - 1, j);
+      prims.push(seg(b, T(i - 1, j)), seg(b, T(i, j)), seg(b, T(i - 1, j + 1)), seg(b, T(i, j + 1)));
+      if (j > 0) prims.push(seg(Bn(i - 1, j - 1), b));
+      if (i > 1) prims.push(seg(Bn(i - 2, j), b));
+    }
+    if (i === 0 || i === nx) prims.push(seg([...T(i, 0).slice(0, 2), v.top], T(i, 0)), seg([...T(i, ny).slice(0, 2), v.top], T(i, ny)));
+    return { prims };
+  } },
+  railings:{ hat:true, line:true, ok:v => thinOk(v) && !v.roof && v.top >= F, unit(ch) {   // guard rails walking round a roof edge
+    const v = ch.v, fs = v.facades, per = fs.reduce((s, f) => s + f.L, 0), s0 = ch.i * 2;
+    if (s0 >= per) return null;
+    const at = s => { for (const f of fs) { if (s <= f.L) return P3(f, s, 0, v.top); s -= f.L; } return P3(fs[0], 0, 0, v.top); };
+    const up = p => [p[0], p[1], p[2] + 1.1], prims = [];
+    for (const s of [s0, s0 + 1]) if (s < per) prims.push(seg(at(s), up(at(s))));
+    let acc = 0; const pts = [s0];
+    for (const f of fs) { acc += f.L; if (acc > s0 && acc < s0 + 2 && acc < per) pts.push(acc); }
+    pts.push(Math.min(s0 + 2, per));
+    for (let k = 1; k < pts.length; k++) prims.push(seg(up(at(pts[k - 1])), up(at(pts[k]))));
+    return { prims, grow:'z' };
+  } },
+  frames:{ snare:true, line:true, ok:v => thinOk(v), unit(ch) {   // portal frames marching along the long axis and past the end, drawn as double lines like I-sections
+    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), alongX = x1 - x0 >= y1 - y0;
+    const n = Math.round((alongX ? x1 - x0 : y1 - y0) / M) + 3; if (ch.i > n) return null;
+    const a = (alongX ? x0 : y0) - M + ch.i * M, H = v.top + 1.6, lo = (alongX ? y0 : x0) - .8, hi = (alongX ? y1 : x1) + .8, prims = [];
+    const P = (q, w, z) => alongX ? [q, w, z] : [w, q, z];
+    for (const q of [a, a + .35]) prims.push(seg(P(q, lo, 0), P(q, lo, H)), seg(P(q, hi, 0), P(q, hi, H)), seg(P(q, lo, H), P(q, hi, H)));
+    prims.push(seg(P(a, lo, H), P(a + .35, lo, H)), seg(P(a, hi, H), P(a + .35, hi, H)));
+    return { prims, grow:'z' };
+  } },
+  pergola:{ snare:true, line:true, ok:v => thinOk(v) && v.z0 === 0 && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // open bays of posts, beams and slats against a facade
+    const f = ch.f, s = ch.i * M, D = 2 * M, h = 3; if (s + M > f.L + .01) return null;
+    const p = (q, o, z) => P3(f, q, o, z), prims = [];
+    prims.push(seg(p(s, D, 0), p(s, D, h)), seg(p(s + M, D, 0), p(s + M, D, h)), seg(p(s, D, h), p(s + M, D, h)), seg(p(s, 0, h), p(s, D, h)), seg(p(s + M, 0, h), p(s + M, D, h)));
+    for (const q of [s + M / 3, s + 2 * M / 3]) prims.push(seg(p(q, 0, h + .15), p(q, D + .3, h + .15)));
+    return { prims, grow:'z' };
+  } },
+  trusses:{ note:true, line:true, ok:v => thinOk(v) && v.top >= F && v.isRect, unit(ch) {   // a Warren truss cantilevering off the end of the spine, a bay per note
+    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), i = ch.i; if (i >= 6) return null;
+    const dir = ch.dir || 1, xs = (dir > 0 ? x1 : x0) + dir * i * 1.6, xe = xs + dir * 1.6, zt = v.top - .05, zb = zt - 1.5, ym = (y0 + y1) / 2, prims = [];
+    for (const y of [ym - 1, ym + 1]) {
+      prims.push(seg([xs, y, zt], [xe, y, zt]), seg([xs, y, zb], [xe, y, zb]), seg([xe, y, zt], [xe, y, zb]));
+      prims.push(i % 2 ? seg([xs, y, zt], [xe, y, zb]) : seg([xs, y, zb], [xe, y, zt]));
+    }
+    prims.push(seg([xe, ym - 1, zt], [xe, ym + 1, zt]), seg([xe, ym - 1, zb], [xe, ym + 1, zb]));
+    return { prims };
+  } },
+  folie:{ struct:true, ok:v => thinOk(v), unit(ch) {   // Tschumi folies on a 12 m point grid: a 10.8 m cubic frame, then a fragment per hit
+    const v = ch.v, r = ch.r;
+    if (!ch.fol) {
+      const [x0, y0, x1, y1] = v.rect.map(q => q * M), side = r() < .5 ? 1 : -1, pts = ch.folPts || (ch.folPts = new Set());
+      let gx = Math.round((x0 + x1) / 24) * 12, gy = side > 0 ? Math.ceil((y1 + 4) / 12) * 12 : Math.floor((y0 - 4) / 12) * 12;
+      while (pts.has(`${gx},${gy}`)) gx += 12 * (r() < .5 ? 1 : -1);
+      pts.add(`${gx},${gy}`);
+      const frags = ['grid', 'cell', 'stair', 'cell', 'cyl', 'canopy', 'cell', 'ramp', 'wheel'];
+      for (let k = frags.length - 1; k > 0; k--) { const j = ri(r, k + 1); [frags[k], frags[j]] = [frags[j], frags[k]]; }
+      ch.fol = { c:[gx, gy], frags, side };
+    }
+    const { c:[cx, cy], frags } = ch.fol, H = 10.8, h = 5.4, a = 3.6, X = cx - h, Y = cy - h, i = ch.i, prims = [];
+    if (i > frags.length) return null;
+    const P = (x, y, z) => [X + x, Y + y, z];
+    if (i === 0) {   // the cube frame
+      for (const z of [0, H]) prims.push(seg(P(0, 0, z), P(10.8, 0, z)), seg(P(10.8, 0, z), P(10.8, 10.8, z)), seg(P(10.8, 10.8, z), P(0, 10.8, z)), seg(P(0, 10.8, z), P(0, 0, z)));
+      for (const [x, y] of [[0, 0], [10.8, 0], [10.8, 10.8], [0, 10.8]]) prims.push(seg(P(x, y, 0), P(x, y, H)));
+      return { prims, grow:'z' };
+    }
+    const f = frags[i - 1], q = () => ri(r, 3) * a;
+    if (f === 'grid') for (const k of [a, 2 * a]) prims.push(seg(P(k, 0, 0), P(k, 0, H)), seg(P(0, 0, k), P(10.8, 0, k)), seg(P(10.8, k, 0), P(10.8, k, H)), seg(P(10.8, 0, k), P(10.8, 10.8, k)), seg(P(0, 0, k), P(0, 10.8, k)), seg(P(k, 0, H), P(k, 10.8, H)));
+    else if (f === 'cell') { const x = q(), y = q(), z = q(); prims.push(box([X + x, Y + y], [1, 0], a, a, z, z + a, ROLE.struct)); }
+    else if (f === 'stair') { const y = q(); for (let j = 0; j < 12; j++) prims.push(box([X + j * .9, Y + y], [1, 0], .9, 1.2, 0, (j + 1) * .6, ROLE.struct)); }
+    else if (f === 'cyl') { const ox = X + q() + a / 2, oy = Y + q() + a / 2, R = 1.5; for (let k = 0; k < 14; k++) { const t0 = k / 14 * TAU, t1 = (k + 1) / 14 * TAU, p0 = [ox + Math.cos(t0) * R, oy + Math.sin(t0) * R], p1 = [ox + Math.cos(t1) * R, oy + Math.sin(t1) * R]; prims.push(seg([...p0, 0], [...p1, 0]), seg([...p0, 7.2], [...p1, 7.2])); if (k % 2 === 0) prims.push(seg([...p0, 0], [...p0, 7.2])); } }
+    else if (f === 'canopy') { const s = r() < .5, o = q(); prims.push(box(s ? [X - a, Y + o] : [X + o, Y - a], [1, 0], s ? 2 * a : a, s ? a : 2 * a, H - .2, H, ROLE.struct)); }   // a slab cantilevering one cell out
+    else if (f === 'ramp') prims.push({ k:'quad', p:[P(-7.2, 1, 0), P(0, 1, a), P(0, 2.6, a), P(-7.2, 2.6, 0)], role:ROLE.struct });
+    else { const oz = H + 2.6, oy = cy, R = 2.6; for (let k = 0; k < 20; k++) { const t0 = k / 20 * TAU, t1 = (k + 1) / 20 * TAU; prims.push(seg([X + 10.8, oy + Math.cos(t0) * R, oz + Math.sin(t0) * R], [X + 10.8, oy + Math.cos(t1) * R, oz + Math.sin(t1) * R])); if (k % 5 === 0) prims.push(seg([X + 10.8, oy, oz], [X + 10.8, oy + Math.cos(t0) * R, oz + Math.sin(t0) * R])); } }
+    return { prims, grow:f === 'wheel' || f === 'cyl' ? 'all' : 'z' };
+  } },
+  ibeams:{ struct:true, ok:v => thinOk(v) && v.isRect && !v.roof && !v.capped, unit(ch) {   // a grillage of I-beams across a roof, overhanging both sides
+    const v = ch.v, [x0, y0, x1, y1] = v.rect.map(q => q * M), alongX = x1 - x0 >= y1 - y0, L = alongX ? x1 - x0 : y1 - y0;
+    const q = (alongX ? x0 : y0) + .6 + ch.i * 1.5; if (q > (alongX ? x1 : y1) - .3) return null;
+    const mid = (alongX ? y0 + y1 : x0 + x1) / 2, span = (alongX ? y1 - y0 : x1 - x0) + 3.2, z = v.top + .25;
+    const I = (w, z0, z1) => alongX ? boxC(q, mid, w, span, z0, z1, ROLE.struct) : boxC(mid, q, span, w, z0, z1, ROLE.struct);
+    return { prims:[I(.32, z, z + .07), I(.06, z + .07, z + .48), I(.32, z + .48, z + .55)] };
+  } },
+  colonnade:{ struct:true, ok:v => thinOk(v) && v.isRect && v.z0 === 0, unit(ch) {   // a gallery: thin columns under an undulating canopy, running past both ends
+    const v = ch.v, r = ch.r, [x0, y0, x1, y1] = v.rect.map(q => q * M), alongX = x1 - x0 >= y1 - y0;
+    if (ch.side == null) { ch.side = r() < .5 ? 1 : -1; ch.ph = r() * TAU; }
+    const len = (alongX ? x1 - x0 : y1 - y0) + 4 * M, n = Math.floor(len / 2.4); if (ch.i > n) return null;
+    const q = (alongX ? x0 : y0) - 2 * M + ch.i * 2.4, line = ch.side > 0 ? (alongX ? y1 : x1) + 4.4 : (alongX ? y0 : x0) - 4.4;
+    const h = 4.4 + .9 * Math.sin(ch.i * .7 + ch.ph), inner = line - ch.side * 3.2, w0 = Math.min(line, inner), prims = [];
+    const B = (a, b, wa, wb, z0, z1, role) => alongX ? box([a, wa], [1, 0], b - a, wb - wa, z0, z1, role) : box([wa, a], [1, 0], wb - wa, b - a, z0, z1, role);
+    prims.push(B(q - .14, q + .14, line - .14, line + .14, 0, h, ROLE.struct));
+    if (ch.i % 2 === 0) prims.push(B(q - .14, q + .14, inner - .14, inner + .14, 0, h, ROLE.struct));
+    prims.push(B(q, q + 2.4, w0 - .3, w0 + 3.5, h, h + .12, ROLE.elem));
+    return { prims, grow:'z' };
+  } },
   fins:{ hat:true, ok:v => plainWall(v) && v.facades.some(f => f.L >= 2 * M), unit(ch) {   // brise-soleil: thin vertical plates along a facade
     const v = ch.v, f = ch.f, s = (ch.i + 1) * .5 * M;
     if (s > f.L - .3 * M) return null;
@@ -652,7 +754,9 @@ const GEN = {
 };
 function pickVocab(r, prev) {
   const w = (o, k) => { if (prev && prev[k] in o) o[prev[k]] *= .15; return o; };   // the next building rarely repeats the last one's features
-  return { hat:pickW(r, w({ fins:2.5, eggcrate:2.5, stairs:.8 }, 'hat')), note:'windows', axes:r() < .7, line:r() < .5 ? ['dims'] : [] };
+  const two = o => { const a = pickW(r, o), b = pickW(r, { ...o, [a]:0 }); return [a, b]; };
+  return { hat:pickW(r, w({ fins:2, eggcrate:2, stairs:.6, railings:1.2, spaceframe:1.2 }, 'hat')), snare:pickW(r, w({ frames:3, pergola:2 }, 'snare')), note:pickW(r, { windows:3, trusses:1 }),
+    struct:two({ folie:2.5, ibeams:2, colonnade:2, spaceframe:1.5 }), axes:r() < .7, line:r() < .5 ? ['dims'] : [] };
 }
 
 /* the melody as a shape: the pitch line over a few bars, smoothed, centred and scaled to ±1. Organic bodies take it as
@@ -703,7 +807,7 @@ function genCycle(cy) {
   const kThr = lerp(.6, .12, g), sThr = lerp(.65, .15, g), hThr = lerp(.6, .12, g);
   const acts = clamp(Math.round(S.actions), 1, 4);
   const maxVol = Math.round(lerp(10, 26, g) * clamp((cy.end - cy.t0) / 30, .7, 1.5)) + (form === 'capsule' ? 8 : 0), slow = buildSlow(), grow = clamp(bl * .75, .22, .6) * slow, lead = bl * Math.max(1, slow * .6);
-  let lastVol = -1e9, lastCut = -1e9, lastHat = -1e9, lastNote = -1e9, lastLine = -1e9, lastCant = -1e9, vid = 0, runId = 0, bi = upperBound(BIG.ts, cy.t0 - 1), nKick = 0;
+  let lastVol = -1e9, lastCut = -1e9, lastHat = -1e9, lastNote = -1e9, lastLine = -1e9, lastCant = -1e9, lastSn = -1e9, lastStruct = -1e9, vid = 0, runId = 0, bi = upperBound(BIG.ts, cy.t0 - 1), nKick = 0;
   const inCut = p => cuts.some(c => c.t <= p[3] && c.test(p));
 
   function addEl(t, kind, res, keep = false, ch = null, v = ch && ch.v) {
@@ -849,7 +953,7 @@ function genCycle(cy) {
   };
   // any type, on the strongest kicks: a long bar thrown off the top of a tall block, hanging well past its edge
   function cantilever(s) {
-    const hosts = vols.filter(v => v.isRect && !v.organic && !v.capsule && v.fl >= 2).sort((a, b) => b.z0 + b.fl - a.z0 - a.fl).slice(0, 3);
+    const hosts = vols.filter(v => v.isRect && !v.organic && !v.capsule && !v.cage && v.fl >= 2).sort((a, b) => b.z0 + b.fl - a.z0 - a.fl).slice(0, 3);
     if (!hosts.length) return null;
     return tryPlace(() => {
       const h = pickR(r, hosts), [x0, y0, x1, y1] = h.rect, alongX = r() < .5, L = 4 + ri(r, 4), out = 2 + ri(r, 3), fl = 1 + ri(r, 2), z = h.z0 + h.fl - (r() < .5 ? fl : 0);
@@ -859,10 +963,33 @@ function genCycle(cy) {
     }, s.t, 14, v => hosts.includes(v) || v.core);
   }
 
+  // an open frame module: the same footprint as a block, built as a cage of thin posts and beams instead of a solid,
+  // posts first, then a floor of beams at a time, a 16th apart, with cross-bracing in a few bays
+  function toCage(v, t) {
+    const i = geo.findIndex(o => o.v === v); if (i >= 0) geo.splice(i, 1);
+    v.cage = true; v.progRoll = 1;
+    const [x0, y0, x1, y1] = v.rect, z0 = v.z0 * F, top = v.top, m = .2, xs = [], ys = [];
+    for (let x = x0; x <= x1 + .01; x++) xs.push(x * M); for (let y = y0; y <= y1 + .01; y++) ys.push(y * M);
+    const edge = (x, y) => Math.abs(x - x0 * M) < .01 || Math.abs(x - x1 * M) < .01 || Math.abs(y - y0 * M) < .01 || Math.abs(y - y1 * M) < .01;
+    const posts = []; for (const x of xs) for (const y of ys) if (edge(x, y)) posts.push(boxC(clamp(x, x0 * M + m / 2, x1 * M - m / 2), clamp(y, y0 * M + m / 2, y1 * M - m / 2), m, m, z0, top, ROLE.struct));
+    addEl(t, 'cage', { prims:posts, grow:'z' }, true, null, v);
+    const levels = Math.max(1, Math.round(v.fl));
+    for (let k = 1; k <= levels; k++) {
+      const z = Math.min(top, z0 + k * F), pr2 = [];
+      for (const y of [y0 * M, y1 * M]) pr2.push(box([x0 * M, clamp(y, y0 * M + 0, y1 * M - m)], [1, 0], (x1 - x0) * M, m, z - m, z, ROLE.struct));
+      for (const x of [x0 * M, x1 * M]) pr2.push(box([clamp(x, x0 * M, x1 * M - m), y0 * M + m], [1, 0], m, (y1 - y0) * M - 2 * m, z - m * 1.3, z - m * .3, ROLE.struct));
+      // cross-bracing: an X in some bays of one long face
+      const fy = r() < .5 ? y0 * M : y1 * M;
+      for (let j = 0; j + 1 < xs.length; j++) if (r() < .45) pr2.push(seg([xs[j], fy, z - F], [xs[j + 1], fy, z]), seg([xs[j + 1], fy, z - F], [xs[j], fy, z]));
+      addEl(t + k * bl / 4, 'cage', { prims:pr2 }, true, null, v);
+    }
+  }
+
   /* snares: modular cuts, a module at a time */
   function pushCut(spec, t, v, warnLead = lead * .5) {
     const P = spec.poly.map(([x, y]) => [x * M, y * M]);
-    const test = p => inPoly(P, p[0], p[1]) && p[2] >= spec.z0 * F && p[2] <= spec.z1 * F;
+    const inside = p => inPoly(P, p[0], p[1]) && p[2] >= spec.z0 * F && p[2] <= spec.z1 * F;
+    const test = spec.slice ? p => inside(p) && (p[0] - spec.pt[0]) * spec.n[0] + (p[1] - spec.pt[1]) * spec.n[1] + (p[2] - spec.pt[2]) * spec.n[2] > 0 : inside;
     const [bx0, by0, bx1, by1] = polyBB(spec.poly);
     const zTop = v ? v.z0 + v.fl + .5 : Math.max(1, ...vols.map(o => o.z0 + o.fl));   // the gash's cutter is tall, but it only frames what it cuts
     const bb = { min:[bx0 * M, by0 * M, Math.max(0, spec.z0 * F)], max:[bx1 * M, by1 * M, Math.min(spec.z1, zTop) * F] };
@@ -873,15 +1000,21 @@ function genCycle(cy) {
     lastCut = t;
     // what the cut took away stays as a dashed phantom
     const dsh = (a, b) => ({ k:'dash', a, b }), ph = [], z0 = Math.max(spec.z0, v ? v.z0 : 0) * F, z1 = Math.min(spec.z1, v ? v.z0 + v.fl : zTop) * F;
+    if (spec.slice) {   // the old top as a phantom, with dashed corners down to where the slope meets them
+      const zAt = (x, y) => spec.pt[2] - (spec.n[0] * (x - spec.pt[0]) + spec.n[1] * (y - spec.pt[1])) / spec.n[2];
+      v.poly.forEach((q, i) => { const b = v.poly[(i + 1) % v.poly.length]; ph.push(dsh([q[0] * M, q[1] * M, v.top], [b[0] * M, b[1] * M, v.top])); const z = Math.max(v.z0 * F, zAt(q[0] * M, q[1] * M)); if (z < v.top - .05) ph.push(dsh([q[0] * M, q[1] * M, z], [q[0] * M, q[1] * M, v.top])); });
+      addEl(t + bl * .25, 'phantom', { prims:ph }, true); return;
+    }
     spec.poly.forEach((q, i) => { const b = spec.poly[(i + 1) % spec.poly.length]; ph.push(dsh([q[0] * M, q[1] * M, z1], [b[0] * M, b[1] * M, z1])); });
     if (spec.poly.length <= 8) for (const [x, y] of spec.poly) ph.push(dsh([x * M, y * M, z0], [x * M, y * M, z1]));
     addEl(t + bl * .25, 'phantom', { prims:ph }, true);
   }
   function makeCut(s) {
-    const targets = vols.filter(v => v.isRect && !v.capsule && !v.organic && v.cuts < 3 && s.t - v.t > bl && Math.max(v.rect[2] - v.rect[0], v.rect[3] - v.rect[1]) >= 2);
+    const targets = vols.filter(v => v.isRect && !v.capsule && !v.organic && !v.cage && v.cuts < 3 && s.t - v.t > bl && Math.max(v.rect[2] - v.rect[0], v.rect[3] - v.rect[1]) >= 2);
     if (!targets.length) return;
     const v = pickR(r, targets), [x0, y0, x1, y1] = v.rect, w = x1 - x0, d = y1 - y0, e = .03, fl = Math.round(v.fl);
-    const kind = pickW(r, { void:fl >= 1 ? 3 : 0, notch:1.4, terrace:fl >= 2 && Math.max(w, d) >= 3 ? 1.4 : 0, under:v.z0 === 0 && fl >= 2 && !v.core ? 1 : 0 });
+    const kind = pickW(r, { void:fl >= 1 ? 2.4 : 0, notch:1.2, terrace:fl >= 2 && Math.max(w, d) >= 3 ? 1.2 : 0, under:v.z0 === 0 && fl >= 2 && !v.core ? .9 : 0,
+      chamfer:v.core ? 0 : 1.4, split:v.core ? 0 : 1, slice:v.core ? 0 : 1.6 });
     let spec;
     if (kind === 'void') {   // a module-square hole right through the block, one floor high
       const z = v.z0 + ri(r, Math.max(1, fl)), thruY = w >= d ? r() < .75 : r() < .25;
@@ -893,6 +1026,19 @@ function genCycle(cy) {
       const half = Math.max(1, Math.floor((w >= d ? w : d) / 2)), lo = r() < .5;
       const pr2 = w >= d ? rect(lo ? x0 - e : x1 - half, y0 - e, half + e, d + 2 * e) : rect(x0 - e, lo ? y0 - e : y1 - half, w + 2 * e, half + e);
       spec = { poly:pr2, z0:v.z0 + v.fl - 1, z1:v.z0 + v.fl + 1 };
+    } else if (kind === 'chamfer') {   // a corner sheared off on the diagonal, full height
+      const a = Math.min(w - .5, 1 + ri(r, 2)), b = Math.min(d - .5, 1 + ri(r, 2)), sx = r() < .5 ? 1 : -1, sy = r() < .5 ? 1 : -1;
+      const cx = sx > 0 ? x0 - e : x1 + e, cyy = sy > 0 ? y0 - e : y1 + e;
+      spec = { poly:[[cx, cyy], [cx + sx * (a + e), cyy], [cx, cyy + sy * (b + e)]], z0:v.z0 - .01, z1:v.z0 + v.fl + 1 };
+    } else if (kind === 'split') {   // the block halved on its diagonal, over its top floors
+      const k = fl <= 1 ? 1 : 1 + ri(r, fl), q = ri(r, 4), C = [[x0 - e, y0 - e], [x1 + e, y0 - e], [x1 + e, y1 + e], [x0 - e, y1 + e]];
+      spec = { poly:[C[q], C[(q + 1) % 4], C[(q + 2) % 4]], z0:k >= v.fl ? v.z0 - .01 : v.z0 + v.fl - k, z1:v.z0 + v.fl + 1 };
+    } else if (kind === 'slice') {   // a sloped plane through the top: a raking roof
+      const tilt = pickR(r, [20, 30, 40]), dir = pickR(r, ['+x', '-x', '+y', '-y']), f = .2 + .4 * r();
+      const pt = [(dir === '+x' ? x0 + w * f : dir === '-x' ? x1 - w * f : (x0 + x1) / 2) * M, (dir === '+y' ? y0 + d * f : dir === '-y' ? y1 - d * f : (y0 + y1) / 2) * M, v.top];
+      const sn = Math.sin(tilt * D2R), cs = Math.cos(tilt * D2R);
+      const n = dir === '+x' ? [sn, 0, cs] : dir === '-x' ? [-sn, 0, cs] : dir === '+y' ? [0, sn, cs] : [0, -sn, cs];
+      spec = { slice:true, poly:rect(x0 - .05, y0 - .05, w + .1, d + .1), z0:v.z0 - .01, z1:v.z0 + v.fl + 20, pt, n, tilt, dir };
     } else {
       const half = Math.max(1, Math.floor((w >= d ? w : d) / 2)), lo = r() < .5;
       const pr2 = w >= d ? rect(lo ? x0 - e : x1 - half, y0 - e, half + e, d + 2 * e) : rect(x0 - e, lo ? y0 - e : y1 - half, w + 2 * e, half + e);
@@ -917,8 +1063,8 @@ function genCycle(cy) {
   }
   function organicMove(s, k) {
     const bar = bl * 4, cont = melodyContour(s.t - bar, s.t + 3 * bar, 48);
-    const flat = vols.filter(v => v.isRect && !v.capsule && !v.organic && !v.capped && Math.min(v.rect[2] - v.rect[0], v.rect[3] - v.rect[1]) >= 2);
-    const big = vols.filter(v => v.isRect && !v.capsule && !v.organic && Math.min(v.rect[2] - v.rect[0], v.rect[3] - v.rect[1]) >= 3);
+    const flat = vols.filter(v => v.isRect && !v.capsule && !v.organic && !v.cage && !v.capped && Math.min(v.rect[2] - v.rect[0], v.rect[3] - v.rect[1]) >= 2);
+    const big = vols.filter(v => v.isRect && !v.capsule && !v.organic && !v.cage && Math.min(v.rect[2] - v.rect[0], v.rect[3] - v.rect[1]) >= 3);
     if (k === 'hole' && !big.length) return false;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const v of vols) { x0 = Math.min(x0, v.rect[0]); y0 = Math.min(y0, v.rect[1]); x1 = Math.max(x1, v.rect[2]); y1 = Math.max(y1, v.rect[3]); }
@@ -940,7 +1086,7 @@ function genCycle(cy) {
       commitVol(c, s.t); return true;
     }
     // a free-form body: on a roof (Unité), under a raised block (Savoye), or standing free on the ground
-    const raised = vols.filter(v => v.z0 >= 1 && v.isRect && !v.capsule && Math.min(v.rect[2] - v.rect[0], v.rect[3] - v.rect[1]) >= 2);
+    const raised = vols.filter(v => v.z0 >= 1 && v.isRect && !v.capsule && !v.cage && Math.min(v.rect[2] - v.rect[0], v.rect[3] - v.rect[1]) >= 2);
     const where = pickW(orr, { roof:flat.length ? 2 : 0, under:raised.length ? 2 : 0, ground:1.2 });
     for (let tries = 0; tries < 8; tries++) {
       let c;
@@ -979,16 +1125,21 @@ function genCycle(cy) {
     const poly = [[-hl, -hw], [hl, -hw], [hl, hw], [-hl, hw]].map(([a, b]) => [cxm + u[0] * a + nn[0] * b, cym + u[1] * a + nn[1] * b]);
     pushCut({ poly, z0:-.01, z1:80, kind:'gash' }, s.t, null, bl);
   }
-  const chans = { hat:{ kind:voc.hat }, note:{ kind:voc.note }, line:{ kind:voc.line[0], kinds:voc.line, rt:0 } };
+  const chans = { hat:{ kind:voc.hat }, snare:{ kind:voc.snare }, note:{ kind:voc.note }, line:{ kind:voc.line[0], kinds:voc.line, rt:0 }, struct:{ kind:voc.struct[0], kinds:voc.struct, rt:0 } };
+  for (const k in chans) chans[k].r = r;
   function retarget(ch) {
     if (ch.kinds) ch.kind = ch.kinds[ch.rt++ % ch.kinds.length];
     const G = GEN[ch.kind]; if (!G) { ch.v = null; return; }
     const c = vols.filter(v => G.ok(v) && !v.used.has(ch.kind)), pool = c.length ? c : vols.filter(v => G.ok(v));
     if (!pool.length) { ch.v = null; return; }
     ch.v = r() < .7 ? pool[pool.length - 1] : pickR(r, pool);
-    ch.v.used.add(ch.kind); ch.run = runId++; ch.i = 0; ch.done = false; ch.used = null;
+    ch.v.used.add(ch.kind); ch.run = runId++; ch.i = 0; ch.done = false; ch.used = null; ch.fol = null; ch.side = null;
     const fs = ch.v.facades.filter(f => f.L >= 2 * M);
     ch.f = fs.length ? fs.reduce((a, b) => (b.L * (.6 + r()) > a.L * (.6 + r()) ? b : a), fs[0]) : ch.v.facades[0];
+    if (ch.kind === 'trusses') {
+      const xs = vols.map(v => v.rect[2]), xn = vols.map(v => v.rect[0]);
+      ch.dir = ch.v.rect[2] >= Math.max(...xs) ? 1 : ch.v.rect[0] <= Math.min(...xn) ? -1 : (r() < .5 ? 1 : -1);
+    }
   }
   // one hit does `acts` steps of its series, a 16th apart, so a single drum hit ripples across several units
   function series(name, s) {
@@ -1021,9 +1172,18 @@ function genCycle(cy) {
       let v = null;
       if (s.kick > .85 && s.t - lastCant >= 8 * bl && p > .3 && r() < .5) { v = cantilever(s); if (v) lastCant = s.t; }
       if (!v) v = TY.add(s);
-      if (v) { nKick++; if (TY.after) TY.after(v, s); }
+      if (v) {
+        nKick++;
+        if (v.isRect && !v.core && !v.capsule && !v.base && r() < (form === 'bars' ? .3 : .26)) toCage(v, s.t);   // some modules stay open frames
+        else if (TY.after) TY.after(v, s);
+      }
     }
-    if ((s.snare || 0) > sThr && p > .18 && s.t - lastCut >= bl * 4 && r() < .45) makeCut(s);
+    if ((s.snare || 0) > sThr) {
+      if (p > .18 && s.t - lastCut >= bl * 4 && r() < .45) makeCut(s);
+      else if (s.t - lastSn >= bl * (g > .6 ? .25 : .5) && p > .1) { if (series('snare', s)) lastSn = s.t; }
+    }
+    // structure: frames, grillages, galleries and folies grow on the kicks and downbeats the massing doesn't use
+    if (((s.kick || 0) > kThr * .5 || s.down) && s.t - lastStruct >= bl * .5 && p > .08) { if (series('struct', s)) lastStruct = s.t; }
     if ((s.hat || 0) > hThr && s.t - lastHat >= bl * (g > .65 ? .25 : g > .4 ? .5 : 1) && p > .08) { if (series('hat', s)) lastHat = s.t; }
     if (s.note && s.t - lastNote >= bl * .5 && p > .12) { if (series('note', s)) lastNote = s.t; }
     if (((s.snare || 0) > sThr * .6 || s.down) && s.t - lastLine >= bl * .5 && p > .05) { if (series('line', s)) lastLine = s.t; }
