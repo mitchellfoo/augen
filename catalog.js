@@ -26,6 +26,14 @@ window.AUGEN = {
       accent: '#e2b2d2',
       art: 'massing',
     },
+    {
+      id: 'brut',
+      title: 'Brut Machine',
+      blurb: 'The Massing Machine in béton brut: black ink on white paper under a hard sun, shadows cast solid, and one loud colour per building in stripes and checkers.',
+      tags: ['3D', 'axo', 'shadows'],
+      accent: '#f05a1a',
+      art: 'brut',
+    },
   ],
   // Tracks bundled in audio/, offered alongside upload.
   library: [

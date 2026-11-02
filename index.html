@@ -154,6 +154,23 @@ const ART = {
     }
     svg.innerHTML = `<rect width="160" height="100" fill="#43966f"/>${s}`;
   },
+  brut(svg, c) {
+    // the same isometric boxes in black and white under a sun from the left: paper tops, ruled lit walls, ink shade walls and cast shadows, one coloured block
+    const boxes = [[0, 3, 0, 7, 3], [3, 13, 2, 5, 1.2], [6, 9, 5, 8, 4], [13, 18, 1, 5, 2.4], [18, 20, 1, 5, .3]];
+    const P = (x, y, z) => [(x - y) * .866, (x + y) * .5 - z * 1.15];
+    const pts = boxes.flatMap(([x0, x1, y0, y1, h]) => [P(x0, y1, 0), P(x1, y0, 0), P(x0, y0, h), P(x1, y1, 0)]);
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]), x0 = Math.min(...xs), y0 = Math.min(...ys);
+    const k = Math.min(140 / (Math.max(...xs) - x0), 80 / (Math.max(...ys) - y0)), ox = 80 - (Math.max(...xs) + x0) / 2 * k, oy = 50 - (Math.max(...ys) + y0) / 2 * k;
+    const poly = (fill, ...q) => `<polygon points="${q.map(p => P(...p)).map(([x, y]) => `${(ox + x * k).toFixed(1)},${(oy + y * k).toFixed(1)}`).join(' ')}" fill="${fill}" stroke="#151413" stroke-width=".7" stroke-linejoin="round"/>`;
+    let s = `<defs><pattern id="brutRule" width="3" height="3" patternUnits="userSpaceOnUse"><rect width="3" height="3" fill="#f3f1ea"/><rect width="3" height=".7" fill="#151413"/></pattern>
+      <pattern id="brutBand" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="${c}"/><rect y="2" width="4" height="2" fill="#f3f1ea"/></pattern></defs>`;
+    for (const [a, b, d, e, h] of boxes) s += poly('#151413', [a, d, 0], [b, d, 0], [b + h * .9, d + h * .3, 0], [b + h * .9, e + h * .3, 0], [a + h * .9, e + h * .3, 0]).replace(/stroke="[^"]+"/, 'stroke="none"');
+    for (const [a, b, d, e, h] of [...boxes].sort((p, q) => (p[0] + p[2]) - (q[0] + q[2]))) {
+      const hot = h === 4;
+      s += poly('#151413', [b, d, 0], [b, e, 0], [b, e, h], [b, d, h]) + poly(hot ? 'url(#brutBand)' : 'url(#brutRule)', [a, e, 0], [b, e, 0], [b, e, h], [a, e, h]) + poly(hot ? c : '#f3f1ea', [a, d, h], [b, d, h], [b, e, h], [a, e, h]);
+    }
+    svg.innerHTML = `<rect width="160" height="100" fill="#f3f1ea"/>${s}`;
+  },
   default(svg, c) {
     const r = rnd(3); let d = 'M0 50';
     for (let x = 0; x <= 160; x += 4) d += ` L${x} ${50 + (r() - .5) * 60 * Math.sin(x / 26)}`;
