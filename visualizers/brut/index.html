@@ -141,7 +141,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 const S = {
   seed:1, curve:.5, growth:.7, actions:2, unify:.5, form:'mixed', camStyle:'mixed', pitchSens:.5,
   shots:'music', shotSens:.5, view:'iso', punch:0, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:0, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35, silenceFade:.9, silenceThr:.09,
-  palette:'generated', variety:.5, shading:'flat', lineW:.35, hatch:1, hatchSize:.35, shadow:'mixed', overlay:'full', ground:'field', marks:.5, words:true, numbering:'fig', sunAz:.7, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.3, flash:false, look:'print',
+  palette:'generated', variety:.5, shading:'flat', lineW:.35, hatch:1, hatchSize:.35, shadow:'mixed', overlay:'full', ground:'field', marks:.5, words:true, sheet:'paper', colors:'one', numbering:'fig', sunAz:.7, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.3, flash:false, look:'print',
   // old drawing
   paper:.35, tooth:.4, age:.03, bleed:.1, wobble:.15, wash:.15,
   // film print (the Sculpture Machine's stock)
@@ -506,33 +506,48 @@ const hsl = (h, s, l) => {
   const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l), f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
   return '#' + [f(0), f(8), f(4)].map(x => Math.round(x * 255).toString(16).padStart(2, '0')).join('');
 };
-const PAPER = '#f3f1ea', INK = '#151413';
-const brutPal = (name, hue) => ({ name, scheme:name, hue, bg:PAPER, wall:PAPER, roof:PAPER, slab:PAPER, elem:PAPER, window:INK, line:INK, struct:PAPER, accent:PAPER });
+// the sheet, chosen once for the whole song: paper, grey, dark grey or black. Each has its own tones: the background,
+// the light faces (tops, sunlit walls), the shade faces, cast shadows, the ruling on lit walls, lines and drawing marks.
+// On the dark sheets the lines turn light and the colours are lifted, so they still read
+const SHEETS = {
+  paper:{ name:'Paper', bg:'#f3f1ea', face:'#f3f1ea', shade:'#151413', shadow:'#151413', rule:'#151413', line:'#151413', mark:'#5a5856', lift:0 },
+  grey:{ name:'Grey', bg:'#9a9996', face:'#e6e4de', shade:'#1b1b1a', shadow:'#2c2c2b', rule:'#1b1b1a', line:'#1b1b1a', mark:'#4c4c4a', lift:.05 },
+  dark:{ name:'Dark grey', bg:'#3a3a39', face:'#d2cfc8', shade:'#121212', shadow:'#1e1e1d', rule:'#2a2a29', line:'#ecebe5', mark:'#9a9893', lift:.16 },
+  black:{ name:'Black', bg:'#0d0d0d', face:'#d6d3cc', shade:'#262625', shadow:'#232322', rule:'#2a2a29', line:'#f0eee8', mark:'#8a8883', lift:.26 },
+};
 const HUES = [['Cantley orange', '#f05a1a'], ['Signal red', '#e0262b'], ['Cobalt', '#1f45b8'], ['Chrome yellow', '#f4c81b'], ['Fluoro pink', '#ff3d9a'], ['Ministry green', '#16a05a']];
-const FIXED = Object.fromEntries([...HUES.map(([n, h]) => [n.split(' ')[0].toLowerCase(), brutPal(n, h)]), ['mono', brutPal('Black and white', null)]]);
-const REF = FIXED.cantley;
+const FIXED = Object.fromEntries([...HUES.map(([n, h]) => [n.split(' ')[0].toLowerCase(), { name:n, hue:h }]), ['mono', { name:'Black and white', hue:null }]]);
+const lift = (hex, k) => hex && k ? '#' + new THREE.Color(hex).lerp(new THREE.Color('#ffffff'), k).getHexString() : hex;
+// a building's palette on the current sheet: one colour, and with two colours on, a partner unlike it
+function brutPal(name, hue, hue2 = null) {
+  const T = SHEETS[S.sheet] || SHEETS.paper;
+  return { name, scheme:name, hue:lift(hue, T.lift), hue2:lift(hue2, T.lift), bg:T.bg, wall:T.face, roof:T.face, slab:T.face, elem:T.face, struct:T.face, accent:T.face,
+    window:T.shade, shade:T.shade, shadow:T.shadow, rule:T.rule, line:T.line, mark:T.mark };
+}
+const hueOf = hex => new THREE.Color(hex).getHSL({}).h * 360, hueGap = (a, b) => { const d = Math.abs(a - b) % 360; return Math.min(d, 360 - d); };
+const partnerFor = (r, hue) => { const o = HUES.filter(([, h]) => h !== hue && hueGap(hueOf(h), hueOf(hue)) > 60); return pickR(r, o.length ? o : HUES.filter(([, h]) => h !== hue))[1]; };
 // a new colour every building, never the one before; the first building is always Cantley orange
 function genPalette(r, prev) {
-  const opts = HUES.filter(([n]) => !prev || prev.name !== n);
-  const [n, h] = pickR(r, opts); return brutPal(n, h);
+  const [n, h] = pickR(r, HUES.filter(([n]) => !prev || prev.name !== n)); return [n, h];
 }
 let PROG = null;
 const progOf = v => { const o = v && (v.parent || v); if (!o || !PROG || !PROG.n || o.progRoll == null) return 0; return o.progRoll < PROG.frac ? 1 + Math.floor(o.progPick * PROG.n) : 0; };
-// line inks: everything in black; the dashed detach and phantom lines in the building's colour
-const inksFor = P => ({ mark:'#5a5856', dash:P.hue || INK, lin:INK });
+// line inks: the sheet's line colour; the dashed detach and phantom lines in the building's colour
+const inksFor = P => ({ mark:P.mark, dash:P.hue || P.line, lin:P.line });
 function assignPalettes() {
-  const r = rngFor(S.seed * 31 + (S.palShuffle || 0) * 7919, 31); let prev = null;
+  const r = rngFor(S.seed * 31 + (S.palShuffle || 0) * 7919, 31), r2 = rngFor(S.seed * 37 + (S.palShuffle || 0) * 7919, 37); let prev = null;
   for (const cy of CYCLES) {
-    cy.pal = S.palette !== 'generated' ? FIXED[S.palette] || REF : cy.idx === 0 && !S.palShuffle ? REF : genPalette(r, prev);
+    const [n, h] = S.palette !== 'generated' ? (FIXED[S.palette] ? [FIXED[S.palette].name, FIXED[S.palette].hue] : HUES[0]) : cy.idx === 0 && !S.palShuffle ? HUES[0] : genPalette(r, prev);
+    cy.pal = brutPal(n, h, h && S.colors === 'two' ? partnerFor(r2, h) : null);
     prev = cy.pal;
     const c = k => new THREE.Color(cy.pal[k]);
     // role colours, in the order the geometry stores them: wall, roof, slab, underside, element, window, accent, structure, unify
-    cy.cols = [c('wall'), c('roof'), c('slab'), c('line'), c('elem'), c('window'), c('accent'), c('struct'), c('wall')];
+    cy.cols = [c('wall'), c('roof'), c('slab'), c('shade'), c('elem'), c('window'), c('accent'), c('struct'), c('wall')];
     cy.inks = inksFor(cy.pal);
-    cy.bw = { paper:c('bg'), ink:c('line'), hue:cy.pal.hue ? c('hue') : null };
-    // how many volumes carry the colour: none in black and white, up to about half at full variety
+    cy.bw = { paper:c('wall'), ink:c('shade'), hue:cy.pal.hue ? c('hue') : null, hue2:cy.pal.hue2 ? c('hue2') : null };
+    // how many volumes carry colour: none in black and white, up to about half at full variety; with two colours, either one
     const on = !!cy.pal.hue && S.variety > 0;
-    cy.prog = { n:on ? 1 : 0, frac:on ? lerp(.12, .5, S.variety) : 0, cols:on ? [{ [ROLE.wall]:c('hue'), [ROLE.roof]:c('hue'), [ROLE.under]:c('line') }] : [] };
+    cy.prog = { n:on ? (cy.pal.hue2 ? 2 : 1) : 0, frac:on ? lerp(.12, .5, S.variety) : 0, cols:on ? [{ [ROLE.wall]:c('hue') }] : [] };
     cy.pat = {}; cy.ov = null;
   }
 }
@@ -1430,13 +1445,14 @@ function roleOf(kind, nz) {
 // paper for its colour, banded with paper on the walls and checkered on top. Small parts stay plain so they read crisp.
 // Which walls are lit is decided per pixel in the fill shader, so the sun can move with the camera without a rebuild.
 // Patterns are flat 2D fills in screen space, like a printed screen.
-const PATTERN = { none:0, poche:6, checker:8, wallPlain:20, wallRuled:21, wallBands:22, wallHue:23 };
+const PATTERN = { none:0, poche:6, checker:8, checkerB:10, wallPlain:20, wallRuled:21, wallBands:22, wallHue:23, wallBandsB:24 };
 let BW = null;
-function brutFace(role, nz, prog, small = false) {
-  const hue = prog && BW.hue;
+// with two colours, a block in the second colour is banded and checkered with the first, and the organic bodies take the second
+function brutFace(role, nz, prog, small = false, organic = false) {
+  const second = BW.hue2 && (prog === 2 || organic), hue = prog ? (second ? BW.hue2 : BW.hue) : null;
   if (role === ROLE.window || role === ROLE.under || nz < -.3) return [BW.ink, 0];
-  if (nz > .3) return role === ROLE.slab ? [BW.paper, PATTERN.poche] : hue ? [hue, small ? 0 : PATTERN.checker] : [BW.paper, 0];
-  return hue ? [hue, small ? PATTERN.wallHue : PATTERN.wallBands] : [BW.paper, small ? PATTERN.wallPlain : PATTERN.wallRuled];
+  if (nz > .3) return role === ROLE.slab ? [BW.paper, PATTERN.poche] : hue ? [hue, small ? 0 : second ? PATTERN.checkerB : PATTERN.checker] : [BW.paper, 0];
+  return hue ? [hue, small ? PATTERN.wallHue : second ? PATTERN.wallBandsB : PATTERN.wallBands] : [BW.paper, small ? PATTERN.wallPlain : PATTERN.wallRuled];
 }
 // a wall's pattern code carries how far it has faded in, so a wall turning to shade fades from paper too
 const patCode = (pt, tint) => pt >= 20 ? pt + (1 - tint) * .5 : pt;
@@ -1448,7 +1464,7 @@ function meshInto(A, mesh, cols, xf, tint) {
       for (let k = 0; k < 3; k++) { const v = tv[t * 3 + k] * np; let p = [vp[v], vp[v + 1], vp[v + 2]]; if (xf) p = xf(p); pos.set(p, t * 9 + k * 3); }
       const o = t * 9, ux = pos[o + 3] - pos[o], uy = pos[o + 4] - pos[o + 1], uz = pos[o + 5] - pos[o + 2], vx = pos[o + 6] - pos[o], vy = pos[o + 7] - pos[o + 1], vz = pos[o + 8] - pos[o + 2];
       let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
-      const role = roleOf(kind, nz), [c, p0] = brutFace(role, nz, prog, solid), pt = patCode(p0, tint);   // organic bodies: flat colour, no stripes
+      const role = roleOf(kind, nz), [c, p0] = brutFace(role, nz, prog, solid, solid), pt = patCode(p0, tint);   // organic bodies: flat colour, no stripes
       const cr = lerp(cols[ROLE.accent].r, c.r, tint), cg = lerp(cols[ROLE.accent].g, c.g, tint), cb = lerp(cols[ROLE.accent].b, c.b, tint);
       for (let k = 0; k < 9; k++) A.pos.push(pos[o + k]);
       for (let k = 0; k < 3; k++) A.col.push(cr, cg, cb);
@@ -1532,13 +1548,13 @@ ghostMat.depthWrite = false; ghostMat.depthTest = false;
 const markMat = new LineMaterial({ color:0x7a7a80, linewidth:1 }); markMat.depthWrite = false;
 const linMat = new LineMaterial({ color:0x7a7a80, linewidth:1 }); linMat.depthWrite = false;
 const dashLineMat = new LineMaterial({ color:0x7a7a80, linewidth:1, dashed:true, dashSize:1, gapSize:1, transparent:true, opacity:.8 }); dashLineMat.depthWrite = false;
-const patU = { uInk:{ value:new THREE.Color() }, uPaper:{ value:new THREE.Color() }, uSp:{ value:8 }, uW:{ value:1 }, uAmt:{ value:0 },
+const patU = { uInk:{ value:new THREE.Color() }, uPaper:{ value:new THREE.Color() }, uShade:{ value:new THREE.Color() }, uAlt:{ value:new THREE.Color() }, uAltB:{ value:new THREE.Color() }, uSp:{ value:8 }, uW:{ value:1 }, uAmt:{ value:0 },
   uSun:{ value:new THREE.Vector3(0, 0, 1) }, uCamDir:{ value:new THREE.Vector3(0, 0, 1) }, uCamPos:{ value:new THREE.Vector3() }, uPersp:{ value:0 } };
 fillMat.onBeforeCompile = sh => {
   Object.assign(sh.uniforms, patU);
   sh.vertexShader = 'attribute float pat;\nvarying float vPat;\nvarying vec3 vW;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvPat = pat;\nvW = (modelMatrix * vec4(transformed, 1.)).xyz;');
   sh.fragmentShader = `varying float vPat; varying vec3 vW;
-uniform vec3 uInk, uPaper, uSun, uCamDir, uCamPos; uniform float uSp, uW, uAmt, uPersp;
+uniform vec3 uInk, uPaper, uShade, uAlt, uAltB, uSun, uCamDir, uCamPos; uniform float uSp, uW, uAmt, uPersp;
 float hatchM(vec2 p, float ang, float sp, float w) { float u = dot(p, vec2(cos(ang), sin(ang))); float d = abs(mod(u, sp) - sp * .5); return 1. - smoothstep(w * .5 - .5, w * .5 + .5, d); }
 float dotsM(vec2 p, float sp, float r) { vec2 q = vec2(p.x + p.y, p.x - p.y) * .7071; vec2 c = mod(q, sp) - sp * .5; return 1. - smoothstep(r - .6, r + .6, length(c)); }
 vec3 patApply(vec3 c, float id) {
@@ -1547,9 +1563,9 @@ vec3 patApply(vec3 c, float id) {
     float kw = floor(id + .01), fade = (id - kw) * 2.;
     vec3 n = normalize(cross(dFdx(vW), dFdy(vW))), v = uPersp > .5 ? uCamPos - vW : uCamDir; if (dot(n, v) < 0.) n = -n;
     float lit = dot(n, uSun);
-    if (lit < .02) return mix(uInk, uPaper, fade);
+    if (lit < .02) return mix(uShade, uPaper, fade);
     if (kw == 21.) return mix(c, uInk, (lit > .42 ? hatchM(p, 1.5708, uSp * 1.1, uW * 1.3) : hatchM(p, 1.5708, uSp * .55, uW * 1.2)) * uAmt * (1. - fade));
-    if (kw == 22.) return mix(c, uPaper, step(.5, fract(p.y / (uSp * 2.6))) * uAmt);
+    if (kw == 22. || kw == 24.) return mix(c, kw == 22. ? uAlt : uAltB, step(.5, fract(p.y / (uSp * 2.6))) * uAmt);   // bands: with paper, or the other colour
     return c;
   }
   if (id < .5 || uAmt <= 0.) return c;
@@ -1560,7 +1576,7 @@ vec3 patApply(vec3 c, float id) {
   else if (k == 4) m = dotsM(p, uSp * .85, uW * .95);
   else if (k == 5) m = hatchM(p, 1.5708, uSp * 1.1, uW);
   else if (k == 6) m = hatchM(p, .7854, uSp * .42, uW);
-  else if (k == 8) { vec2 q = floor(p / (uSp * 2.2)); return mix(c, uPaper, mod(q.x + q.y, 2.) * uAmt); }   // checker
+  else if (k == 8 || k == 10) { vec2 q = floor(p / (uSp * 2.2)); return mix(c, k == 8 ? uAlt : uAltB, mod(q.x + q.y, 2.) * uAmt); }   // checker
   return mix(c, uInk, m * uAmt);
 }
 ` + sh.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = patApply(diffuseColor.rgb, vPat);');
@@ -2186,7 +2202,7 @@ function ovPlan(cy) {
     const kind = pickW(r, { rect:3, bar:1.6, blob:1.2, half:1 }), big = kind === 'bar' ? [.4 + r() * .45, .035 + r() * .045] : [.16 + r() * .3, .18 + r() * .32];
     const fill = hue ? pickW(r, { hue:3, bands:2, checker:1, ink:i && !inked ? 1 : 0, outline:1.2 }) : pickW(r, { ink:inked ? 0 : 2, bands:2, checker:1, outline:1.5 });
     if (fill === 'ink') { inked = true; big[0] *= .7; big[1] *= .7; }
-    return { t, kind, w:big[0], h:big[1], x:.12 + r() * .76, y:.15 + r() * .7, rot:r() < .6 ? 0 : (r() - .5) * .5, fill, seed:r() * 1e4 };
+    return { t, kind, w:big[0], h:big[1], x:.12 + r() * .76, y:.15 + r() * .7, rot:r() < .6 ? 0 : (r() - .5) * .5, fill, alt:r() < .45, seed:r() * 1e4 };
   });
   const crosses = Array.from({ length:3 + ri(r, 4) }, () => [.06 + r() * .88, .08 + r() * .84, r() < .5]);
   const shadow = pickW(r, { solid:3, bands:hue ? 1.4 : 0, hatched:1 });
@@ -2201,8 +2217,9 @@ function massPath(g, m, W, H) {
   else g.rect(-w / 2, -h / 2, w, h);
   g.closePath();
 }
-function fillMass(g, m, W, H, ink, paper, hue, u) {
-  const c = m.fill === 'ink' ? ink : hue || ink;
+function fillMass(g, m, W, H, ink, paper, hue, u, hue2) {
+  const c = m.fill === 'ink' ? ink : m.alt && hue2 ? hue2 : hue || ink;
+  paper = hue2 ? (c === hue2 ? hue : hue2) : paper;   // with two colours, bands and checkers alternate the pair
   if (m.fill === 'outline') { g.lineWidth = u * 2.2; g.strokeStyle = c; g.setLineDash([u * 9, u * 6]); g.stroke(); g.setLineDash([]); return; }
   g.fillStyle = c; g.fill();
   if (m.fill === 'bands' || m.fill === 'checker') {
@@ -2229,7 +2246,7 @@ function drawOverlay(t, cy) {
     OV.bgKey = moving ? '' : key;
     bgCtx.fillStyle = paper; bgCtx.fillRect(0, 0, W, H);
     // each mass cuts in on its beat with a quick fade
-    for (const m of live) { bgCtx.globalAlpha = ease(clamp((t - m.t) / .12, 0, 1)); massPath(bgCtx, m, W, H); fillMass(bgCtx, m, W, H, ink, paper, hue, u); bgCtx.restore(); }
+    for (const m of live) { bgCtx.globalAlpha = ease(clamp((t - m.t) / .12, 0, 1)); massPath(bgCtx, m, W, H); fillMass(bgCtx, m, W, H, ink, paper, hue, u, P.hue2); bgCtx.restore(); }
     bgCtx.globalAlpha = 1;
     bgTex.needsUpdate = true;
   }
@@ -2369,7 +2386,7 @@ function updatePlan(cy, t) {
   const cutCs = cutsNow.length ? CrossSection.union(cutsNow.map(o => csM(o.spec.poly.map(([x, y]) => [x * M + ox, y * M + oy])))) : null;
   const pos = [], col = [];
   // ink first, then the coloured shapes a hair above it
-  for (const [list, hex, z] of [[parts, cy.pal.line, .015], [hued, cy.pal.hue, .02]]) {
+  for (const [list, hex, z] of [[parts, cy.pal.line, .015], [hued, cy.pal.hue2 || cy.pal.hue, .02]]) {
     if (!list.length) continue;
     let plan = CrossSection.union(list); for (const p of list) p.delete();
     if (cutCs) { const d = plan.subtract(cutCs); plan.delete(); plan = d; }
@@ -2427,9 +2444,9 @@ function renderAt(t, dt) {
   planDash.resolution.set(bw, bh); planDash.linewidth = lw * .8; planDash.color.set(P.line); planDash.dashSize = 5 * dpr * upp; planDash.gapSize = 4 * dpr * upp;
   // hatch ink is the line colour pushed a little further from the paper, so fine strokes still read on a mid-tone fill
   const shStyle = S.shadow === 'mixed' ? ovPlan(cy).shadow : S.shadow;   // mixed: each building's shadows its own way, solid, hatched or in coloured bands
-  castMat.color.set(shStyle === 'bands' && P.hue ? P.hue : P.line); castMat.visible = S.shadow !== 'off' && !CLIPPED;
+  castMat.color.set(shStyle === 'bands' && P.hue ? P.hue : P.shadow); castMat.visible = S.shadow !== 'off' && !CLIPPED;
   castU.uHatch.value = shStyle === 'hatched' ? 1 : shStyle === 'bands' && P.hue ? 2 : 0; castU.uSpS.value = lerp(4, 14, S.hatchSize) * dpr * .7; castU.uWS.value = Math.max(1, lw * .9);
-  patU.uInk.value.set(P.line); patU.uPaper.value.set(P.bg); patU.uAmt.value = S.hatch * .9; patU.uSp.value = lerp(4, 14, S.hatchSize) * dpr; patU.uW.value = Math.max(1.05, lw * .9);
+  patU.uInk.value.set(P.rule); patU.uPaper.value.set(P.wall); patU.uShade.value.set(P.shade); patU.uAlt.value.set(P.hue2 || P.wall); patU.uAltB.value.set(P.hue || P.wall); patU.uAmt.value = S.hatch * .9; patU.uSp.value = lerp(4, 14, S.hatchSize) * dpr; patU.uW.value = Math.max(1.05, lw * .9);
   syncLiveLines();
   applyVis(LAYERS.solid, true); applyVis(LAYERS.set, true); applyVis(LAYERS.live, true); applyVis(LAYERS.ex, detached);
   // the sheet behind (paper and masses) is the scene's background; the marks go over the finished picture, before the film
@@ -2646,6 +2663,8 @@ addSelect(CP, 'view', 'Fixed view (picking one holds it)', VIEWS, () => { S.shot
 // colour
 const KP = '#colourPanel';
 addSelect(KP, 'palette', 'Colour', [['generated', 'A new colour every building'], ...Object.entries(FIXED).map(([k, v]) => [k, v.name])], recolour);
+addSelect(KP, 'colors', 'Colours', [['one', 'One colour a building'], ['two', 'Two colours a building']], recolour);
+addSelect(KP, 'sheet', 'Sheet', Object.entries(SHEETS).map(([k, v]) => [k, v.name]), () => { recolour(); OV.bgKey = ''; });
 addSlider(KP, 'variety', 'How much colour: a few blocks ↔ half of them', recolour);
 addSlider(KP, 'hatch', 'Ruling, stripes & checkers', rebuildLines);
 addSlider(KP, 'hatchSize', 'Hatch spacing');
@@ -2662,7 +2681,7 @@ const swatchBox = document.createElement('label'); swatchBox.innerHTML = '<span>
 addButton(KP, 'Shuffle colours', () => { S.palShuffle = (S.palShuffle || 0) + 1; saveSettings(); recolour(); showSwatches(); });
 function showSwatches() {
   if (!CYCLES.length) return;
-  const cy = cycleAt(curTime()), P = cy.pal, list = [P.bg, P.line, ...(P.hue ? [P.hue] : [])];
+  const cy = cycleAt(curTime()), P = cy.pal, list = [P.bg, P.wall, P.shade, P.line, ...[P.hue, P.hue2].filter(Boolean)];
   swatchBox.querySelector('.swatches').innerHTML = list.map(c => `<i style="background:${c}"></i>`).join('');
 }
 setInterval(() => { if ($(KP).classList.contains('open')) showSwatches(); }, 500);
