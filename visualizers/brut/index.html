@@ -141,7 +141,7 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 const S = {
   seed:1, curve:.5, growth:.7, actions:2, unify:.5, form:'mixed', camStyle:'mixed', pitchSens:.5,
   shots:'music', shotSens:.5, view:'iso', punch:0, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:0, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35, silenceFade:.9, silenceThr:.09,
-  palette:'generated', variety:.5, shading:'flat', lineW:.35, hatch:1, hatchSize:.35, shadow:'solid', sunAz:.7, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.3, flash:false, look:'print',
+  palette:'generated', variety:.5, shading:'flat', lineW:.35, hatch:1, hatchSize:.35, shadow:'mixed', overlay:'full', sunAz:.7, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.3, flash:false, look:'print',
   // old drawing
   paper:.35, tooth:.4, age:.03, bleed:.1, wobble:.15, wash:.15,
   // film print (the Sculpture Machine's stock)
@@ -533,7 +533,7 @@ function assignPalettes() {
     // how many volumes carry the colour: none in black and white, up to about half at full variety
     const on = !!cy.pal.hue && S.variety > 0;
     cy.prog = { n:on ? 1 : 0, frac:on ? lerp(.12, .5, S.variety) : 0, cols:on ? [{ [ROLE.wall]:c('hue'), [ROLE.roof]:c('hue'), [ROLE.under]:c('line') }] : [] };
-    cy.pat = {};
+    cy.pat = {}; cy.ov = null;
   }
 }
 
@@ -1607,7 +1607,7 @@ castMat.onBeforeCompile = sh => {
   sh.vertexShader = 'uniform vec3 uSun;\n' + sh.vertexShader.replace('#include <begin_vertex>',
     '#include <begin_vertex>\ntransformed.xy -= uSun.xy / max(uSun.z, .05) * max(transformed.z, 0.);\ntransformed.z = -.01;');
   sh.fragmentShader = 'uniform float uHatch, uSpS, uWS;\n' + sh.fragmentShader.replace('void main() {',
-    'void main() {\n\tif (uHatch > .5 && abs(mod(dot(gl_FragCoord.xy, vec2(.7071, -.7071)), uSpS) - uSpS * .5) > uWS * .5) discard;');
+    'void main() {\n\tif (uHatch > 1.5) { if (fract(gl_FragCoord.y / (uSpS * 3.4)) > .5) discard; }\n\telse if (uHatch > .5 && abs(mod(dot(gl_FragCoord.xy, vec2(.7071, -.7071)), uSpS) - uSpS * .5) > uWS * .5) discard;');
 };
 castMat.customProgramCacheKey = () => 'brut-cast';
 for (const L of Object.values(LAYERS)) { L.cast = new THREE.Mesh(L.mesh.geometry, castMat); L.cast.renderOrder = -1; L.cast.frustumCulled = false; L.mesh.add(L.cast); }
@@ -2121,10 +2121,150 @@ function drawPost(t, cy) {
   renderer.render(postScene, postCam);
 }
 
+/* ------------------------------------------------------------------ the drawing overlay, after Bryan Cantley
+   Two flat 2D layers on the sheet, drawn from the song time alone so the export matches the preview.
+   Behind the building: big masses in the building's colour and in ink, solid, banded or checkered, sliding in at the
+   start and at its big moments. In front: the drawing apparatus. Registration marks, a big section number and its
+   readout, a margin of arrows ticking down with the elements, circled numbers on new blocks with leader lines,
+   dashed construction lines through every cut, and a heavy coloured arrow on the big hits. */
+const ovBg = document.createElement('canvas'), ovFg = document.createElement('canvas'), bgCtx = ovBg.getContext('2d'), fgCtx = ovFg.getContext('2d');
+const bgTex = new THREE.CanvasTexture(ovBg), fgTex = new THREE.CanvasTexture(ovFg);
+for (const tx of [bgTex, fgTex]) { tx.colorSpace = THREE.SRGBColorSpace; tx.minFilter = THREE.LinearFilter; tx.generateMipmaps = false; }
+const fgScene = new THREE.Scene(), fgCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+fgScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ map:fgTex, transparent:true, depthTest:false, depthWrite:false })));
+function sizeOverlay(w, h) { for (const c of [ovBg, ovFg]) { c.width = w; c.height = h; } bgTex.dispose(); fgTex.dispose(); OV.bgKey = ''; }
+const OV = { bgKey:'' };
+const ovFont = (px, w = 700) => `${w} ${px}px Futura, "Avenir Next", "Helvetica Neue", Arial, sans-serif`;
+
+// what the overlay knows about a building, worked out once
+function ovPlan(cy) {
+  if (cy.ov) return cy.ov;
+  const r = rngFor(S.seed * 23 + cy.idx, 97), bar = AN.beatLen * 4, hue = cy.pal.hue;
+  // masses: one or two as the building starts, then one at each organic move and big hit, at most four, only one in ink
+  const times = [cy.t0 + bar * .5, ...(r() < .6 ? [cy.t0 + bar * 1.5] : []), ...(cy.orgAt || []), ...BIG.ts.filter(t => t > cy.t0 + 2 * bar && t < cy.end - 2 * bar)].sort((a, b) => a - b).slice(0, 4);
+  let inked = false;
+  const masses = times.map((t, i) => {
+    const kind = pickW(r, { rect:3, bar:1.6, blob:1.2, half:1 }), big = kind === 'bar' ? [.4 + r() * .45, .035 + r() * .045] : [.16 + r() * .3, .18 + r() * .32];
+    const fill = hue ? pickW(r, { hue:3, bands:2, checker:1, ink:i && !inked ? 1 : 0, outline:1.2 }) : pickW(r, { ink:inked ? 0 : 2, bands:2, checker:1, outline:1.5 });
+    if (fill === 'ink') { inked = true; big[0] *= .7; big[1] *= .7; }
+    return { t, kind, w:big[0], h:big[1], x:.12 + r() * .76, y:.15 + r() * .7, rot:r() < .6 ? 0 : (r() - .5) * .5, fill, from:pickR(r, ['l', 'r', 't', 'b']), seed:r() * 1e4 };
+  });
+  const corner = pickR(r, [[.05, .1], [.05, .82]]), crosses = Array.from({ length:3 + ri(r, 4) }, () => [.06 + r() * .88, .08 + r() * .84, r() < .5]);
+  const shadow = pickW(r, { solid:3, bands:hue ? 1.4 : 0, hatched:1 });
+  return cy.ov = { masses, corner, crosses, shadow, rot:r() < .5 ? -.12 : .12 };
+}
+// a mass's outline as a path, in pixels
+function massPath(g, m, W, H, k) {
+  const off = 1 - easeOutCubic(k), dx = m.from === 'l' ? -off * W : m.from === 'r' ? off * W : 0, dy = m.from === 't' ? -off * H : m.from === 'b' ? off * H : 0;
+  const cx = m.x * W + dx, cyy = m.y * H + dy, w = m.w * W, h = m.h * H;
+  g.save(); g.translate(cx, cyy); g.rotate(m.rot); g.beginPath();
+  if (m.kind === 'blob') { const rr = rngFor(Math.floor(m.seed), 5), c = Array.from({ length:7 }, () => rr() - .5); for (let i = 0; i <= 48; i++) { const a = i / 48 * TAU, q = 1 + .32 * crPeriodic(c, i / 48 * c.length); g.lineTo(Math.cos(a) * w / 2 * q, Math.sin(a) * h / 2 * q); } }
+  else if (m.kind === 'half') { g.moveTo(-w / 2, h / 4); g.arc(0, h / 4, w / 2, Math.PI, 0); }
+  else g.rect(-w / 2, -h / 2, w, h);
+  g.closePath();
+}
+function fillMass(g, m, W, H, ink, paper, hue, u) {
+  const c = m.fill === 'ink' ? ink : hue || ink;
+  if (m.fill === 'outline') { g.lineWidth = u * 2.2; g.strokeStyle = c; g.setLineDash([u * 9, u * 6]); g.stroke(); g.setLineDash([]); return; }
+  g.fillStyle = c; g.fill();
+  if (m.fill === 'bands' || m.fill === 'checker') {
+    g.save(); g.clip(); g.rotate(-m.rot); g.fillStyle = paper; const s = u * (m.fill === 'bands' ? 14 : 22);
+    if (m.fill === 'bands') for (let y = -H; y < H; y += 2 * s) g.fillRect(-W, y, 2 * W, s);
+    else for (let y = -H; y < H; y += s) for (let x = -W + ((Math.round(y / s) & 1) ? s : 0); x < W; x += 2 * s) g.fillRect(x, y, s, s);
+    g.restore();
+  }
+}
+const toPx = (p, W, H) => { const v = new THREE.Vector3(...p).project(VIEW); return v.z > 1 ? null : [(v.x * .5 + .5) * W, (1 - (v.y * .5 + .5)) * H]; };
+function arrow(g, x0, y0, x1, y1, u, head = 8) {
+  const a = Math.atan2(y1 - y0, x1 - x0);
+  g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+  g.beginPath(); g.moveTo(x1, y1); g.lineTo(x1 - Math.cos(a - .45) * head * u, y1 - Math.sin(a - .45) * head * u); g.lineTo(x1 - Math.cos(a + .45) * head * u, y1 - Math.sin(a + .45) * head * u); g.closePath(); g.fill();
+}
+
+function drawOverlay(t, cy) {
+  const P = cy.pal, ov = ovPlan(cy), W = ovBg.width, H = ovBg.height, u = H / 900, bar = AN.beatLen * 4, full = S.overlay === 'full';
+  const ink = P.line, paper = P.bg, hue = P.hue;
+  // behind: the masses, redrawn only while one is moving
+  const live = full ? ov.masses.filter(m => m.t <= t) : [], moving = live.some(m => t - m.t < .6);
+  const key = `${cy.idx}|${live.length}|${W}|${H}|${S.overlay}|${S.seed}`;
+  if (moving || key !== OV.bgKey) {
+    OV.bgKey = moving ? '' : key;
+    bgCtx.fillStyle = paper; bgCtx.fillRect(0, 0, W, H);
+    for (const m of live) { massPath(bgCtx, m, W, H, clamp((t - m.t) / .6, 0, 1)); fillMass(bgCtx, m, W, H, ink, paper, hue, u); bgCtx.restore(); }
+    bgTex.needsUpdate = true;
+  }
+  // in front: the drawing apparatus
+  const g = fgCtx; g.clearRect(0, 0, W, H);
+  if (S.overlay === 'off') { fgTex.needsUpdate = true; return; }
+  const fade = (t0, dur) => { const a = t - t0; return a < 0 ? 0 : a < .15 ? a / .15 : a > dur ? Math.max(0, 1 - (a - dur) / (bar * .5)) : 1; };
+  g.lineCap = 'butt'; g.strokeStyle = ink; g.fillStyle = ink;
+  const inA = clamp((t - cy.t0) / .5, 0, 1);
+  g.globalAlpha = inA;
+  // registration marks in the corners
+  for (const [x, y] of [[.035, .05], [.965, .05], [.035, .95], [.965, .95]]) {
+    const X = x * W, Y = y * H, R = 9 * u; g.lineWidth = 1.2 * u;
+    g.beginPath(); g.arc(X, Y, R, 0, TAU); g.stroke(); g.beginPath(); g.moveTo(X - R * 1.8, Y); g.lineTo(X + R * 1.8, Y); g.moveTo(X, Y - R * 1.8); g.lineTo(X, Y + R * 1.8); g.stroke();
+  }
+  // the section number, big, with its readout
+  { const [x, y] = ov.corner, X = x * W, Y = y * H, n = String(cy.idx + 1).padStart(2, '0'), bi = Math.max(0, upperBound(AN.downbeats, t) - 1);
+    g.font = ovFont(78 * u, 800); g.textBaseline = 'top'; const tw = g.measureText(n).width;
+    if (hue) { g.fillStyle = hue; g.fillRect(X - 8 * u, Y + 10 * u, tw + 16 * u, 66 * u); g.fillStyle = ink; }
+    g.fillText(n, X, Y); g.lineWidth = 2 * u; g.strokeRect(X - 8 * u, Y - 4 * u, tw + 16 * u, 86 * u);
+    g.font = ovFont(11 * u, 500); const lines = [`BRUT / ${({ capsule:'CAPSULE TOWER', bars:'CROSSING BARS', slab:'SLAB ON PILOTIS', stepped:'STEPPED STACKS' })[cy.form] || ''}`, `BAR ${String(bi + 1).padStart(3, '0')}   T ${t.toFixed(2)}`, `${cy.vols.filter(v => v.t <= t).length} BLOCKS / ${cy.geo.filter(o => o.type === 'cut' && o.t <= t).length} CUTS`];
+    lines.forEach((s, i) => g.fillText(s, X + tw + 26 * u, Y + 8 * u + i * 16 * u)); }
+  // a margin of arrows ticking down with the elements as they arrive
+  { const ticks = cy.els.filter(e => !e.keep && e.t0 <= t), n = Math.min(16, ticks.length), X = W * .93;
+    g.lineWidth = 1.6 * u;
+    for (let i = 0; i < n; i++) { const Y = H * (.14 + i * .045), last = i === n - 1; g.strokeStyle = g.fillStyle = last && hue ? hue : ink; arrow(g, X + 26 * u, Y, X, Y, u, 7); g.beginPath(); g.arc(X + 34 * u, Y, 3 * u, 0, TAU); g.stroke(); }
+    g.strokeStyle = g.fillStyle = ink; }
+  // crosses dotted about the sheet
+  g.lineWidth = 2.4 * u;
+  for (const [x, y, h] of ov.crosses) { const X = x * W, Y = y * H, R = 10 * u; g.strokeStyle = h && hue ? hue : '#8a8784'; g.beginPath(); g.moveTo(X - R, Y); g.lineTo(X + R, Y); g.moveTo(X, Y - R); g.lineTo(X, Y + R); g.stroke(); }
+  g.strokeStyle = ink;
+  g.globalAlpha = 1;
+  // circled numbers on new blocks, with leader lines, for two bars
+  let k = 0;
+  for (const op of cy.geo) {
+    if (op.type !== 'vol') continue; k++;
+    const a = fade(op.t, bar * 2); if (a <= 0) continue;
+    const p = toPx([op.bb.max[0], op.bb.max[1], op.bb.max[2]], W, H); if (!p) continue;
+    const R = 13 * u, cx = p[0] + 46 * u, cyy = p[1] - 46 * u;
+    g.globalAlpha = a; g.lineWidth = 1.4 * u;
+    g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(cx - R * .7, cyy + R * .7); g.stroke();
+    g.beginPath(); g.arc(p[0], p[1], 2.5 * u, 0, TAU); g.fill();
+    g.beginPath(); g.arc(cx, cyy, R, 0, TAU); g.fillStyle = paper; g.fill(); g.stroke(); g.fillStyle = ink;
+    g.font = ovFont(13 * u, 700); g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(String(k), cx, cyy + u); g.textAlign = 'left';
+  }
+  // dashed construction lines through each cut, for a bar and a half
+  g.setLineDash([10 * u, 6 * u]);
+  for (const op of cy.geo) {
+    if (op.type !== 'cut') continue;
+    const a = fade(op.t, bar * 1.5); if (a <= 0) continue;
+    const p = toPx(bbCenter(op.bb), W, H); if (!p) continue;
+    const ang = (op.t * 7.3 % 3 | 0) - 1, dy = Math.tan(ang * .52) * W;
+    g.globalAlpha = a * .9; g.lineWidth = 1.2 * u; g.strokeStyle = hue || ink;
+    g.beginPath(); g.moveTo(0, p[1] - dy * p[0] / W); g.lineTo(W, p[1] + dy * (1 - p[0] / W)); g.stroke();
+    g.setLineDash([]); g.lineWidth = 2 * u; g.beginPath(); g.arc(p[0], p[1], 7 * u, 0, TAU); g.stroke(); g.setLineDash([10 * u, 6 * u]);
+  }
+  g.setLineDash([]); g.strokeStyle = ink;
+  // big hits: a heavy coloured arrow driven across the sheet
+  for (const bt of BIG.ts) {
+    if (bt < cy.t0 || bt >= cy.end) continue;
+    const a = fade(bt, bar); if (a <= 0) continue;
+    const k2 = easeOutCubic(clamp((t - bt) / .35, 0, 1)), Y = H * (.2 + (hash01(Math.round(bt * 10), 3) * .6)), dir = hash01(Math.round(bt * 10), 5) < .5 ? 1 : -1;
+    g.globalAlpha = a; g.lineWidth = 14 * u; g.strokeStyle = g.fillStyle = hue || ink;
+    const x0 = dir > 0 ? -20 * u : W + 20 * u, x1 = dir > 0 ? lerp(-20 * u, W * .62, k2) : lerp(W + 20 * u, W * .38, k2);
+    arrow(g, x0, Y, x1, Y, u, 3.4);
+    g.strokeStyle = g.fillStyle = ink;
+  }
+  g.globalAlpha = 1;
+  fgTex.needsUpdate = true;
+}
+
 /* ------------------------------------------------------------------ frame loop */
 function setSizes(w, h, ratio) {
   renderer.setPixelRatio(ratio); renderer.setSize(w, h, false);
-  rt.setSize(canvas.width, canvas.height); dmgC.width = canvas.width; dmgC.height = canvas.height;
+  rt.setSize(canvas.width, canvas.height); sizeOverlay(canvas.width, canvas.height); dmgC.width = canvas.width; dmgC.height = canvas.height;
   dmgTex.dispose();   // the damage texture is allocated at a fixed size; a new canvas size needs a fresh one, or uploads overflow
   CAM.snap = true;
 }
@@ -2140,7 +2280,7 @@ function renderAt(t, dt) {
   updateSolid(cy, t); updateSettled(cy, t); updateLive(cy, t);
   const detached = updateExploded(cy, t); EXP = detached ? 1 : 0;
   const P = cy.pal;
-  scene.background = new THREE.Color(P.bg); document.body.style.background = P.bg;
+  document.body.style.background = P.bg;
   visMat.color.set(P.line); hidMat.color.set(P.line); ghostMat.color.set(P.hue || P.line);
   placeCamera(cy, t, dt); placeSun();
   // pixels per CSS pixel of the preview: lines and dots keep their weight relative to the frame at any export size
@@ -2154,12 +2294,16 @@ function renderAt(t, dt) {
   dashLineMat.resolution.set(bw, bh); dashLineMat.linewidth = lw * .9; dashLineMat.color.set(inks.dash);
   dashLineMat.dashSize = 6 * dpr * upp; dashLineMat.gapSize = 4 * dpr * upp;
   // hatch ink is the line colour pushed a little further from the paper, so fine strokes still read on a mid-tone fill
-  castMat.color.set(P.line); castMat.visible = S.shadow !== 'off' && !CLIPPED;
-  castU.uHatch.value = S.shadow === 'hatched' ? 1 : 0; castU.uSpS.value = lerp(4, 14, S.hatchSize) * dpr * .7; castU.uWS.value = Math.max(1, lw * .9);
+  const shStyle = S.shadow === 'mixed' ? ovPlan(cy).shadow : S.shadow;   // mixed: each building's shadows its own way, solid, hatched or in coloured bands
+  castMat.color.set(shStyle === 'bands' && P.hue ? P.hue : P.line); castMat.visible = S.shadow !== 'off' && !CLIPPED;
+  castU.uHatch.value = shStyle === 'hatched' ? 1 : shStyle === 'bands' && P.hue ? 2 : 0; castU.uSpS.value = lerp(4, 14, S.hatchSize) * dpr * .7; castU.uWS.value = Math.max(1, lw * .9);
   patU.uInk.value.set(P.line); patU.uPaper.value.set(P.bg); patU.uAmt.value = S.hatch * .9; patU.uSp.value = lerp(4, 14, S.hatchSize) * dpr; patU.uW.value = Math.max(1.05, lw * .9);
   syncLiveLines();
   applyVis(LAYERS.solid, true); applyVis(LAYERS.set, true); applyVis(LAYERS.live, true); applyVis(LAYERS.ex, detached);
+  // the sheet behind (paper and masses) is the scene's background; the marks go over the finished picture, before the film
+  drawOverlay(t, cy); scene.background = S.overlay === 'full' ? bgTex : new THREE.Color(P.bg);
   renderer.setRenderTarget(rt); renderer.render(scene, VIEW);
+  if (S.overlay !== 'off') { renderer.autoClear = false; renderer.render(fgScene, fgCam); renderer.autoClear = true; }
   drawPost(t, cy);
   return cy;
 }
@@ -2375,7 +2519,8 @@ addSlider(KP, 'hatch', 'Ruling, stripes & checkers', rebuildLines);
 addSlider(KP, 'hatchSize', 'Hatch spacing');
 addSelect(KP, 'hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashed'], ['off', 'Off']]);
 addSlider(KP, 'lineW', 'Line weight');
-addSelect(KP, 'shadow', 'Hard shadows', [['off', 'Off'], ['solid', 'Solid'], ['hatched', 'Hatched']], rebuildLines);
+addSelect(KP, 'shadow', 'Hard shadows', [['mixed', 'Each building its own way'], ['solid', 'Solid'], ['hatched', 'Hatched'], ['bands', 'Coloured bands'], ['off', 'Off']], rebuildLines);
+addSelect(KP, 'overlay', 'Drawing overlay', [['full', 'Colour masses and marks'], ['marks', 'Marks only'], ['off', 'Off']]);
 addSlider(KP, 'sunAz', 'Sun: from behind ↔ from in front');
 const swatchBox = document.createElement('label'); swatchBox.innerHTML = '<span>Colours at the playhead</span><div class="swatches"></div>'; $(KP).appendChild(swatchBox);
 addButton(KP, 'Shuffle colours', () => { S.palShuffle = (S.palShuffle || 0) + 1; saveSettings(); recolour(); showSwatches(); });
