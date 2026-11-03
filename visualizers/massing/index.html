@@ -1212,23 +1212,34 @@ function musicCuts(cy) {
 }
 // plan only: the frame never moves within a building. It sits on the bird's-eye plan and, on the cuts (the song's
 // changes, or every N bars), drops to a plan cut; the cut height follows the music (brighter passages cut higher up)
-// and the next change usually goes back to the roof, as does the end of each building
+// and the next change usually goes back to the roof, as does the end of each building. Cuts stay in the top half of
+// the floors so there is always plenty below; fromZ/roofZ let Glide slide the cut between heights (planCutZ)
 function planShots(cy, r) {
   const bar = AN.beatLen * 4, every = +S.shots || 0; let k = 0;
   const times = S.shots === 'music' ? musicCuts(cy) : AN.downbeats.filter(d => d > cy.t0 + .1 && d < cy.end - .1 && every && ++k % every === 0);
   const cs = AN._centSorted || (AN._centSorted = Float32Array.from(AN.cent).sort());
   const brightness = (a, b) => { const i0 = fr(AN, a), i1 = Math.max(i0 + 1, fr(AN, b)); let s = 0; for (let i = i0; i < i1; i++) s += AN.cent[i]; return upperBound(cs, s / (i1 - i0)) / cs.length; };
-  SHOTS.push({ t:cy.t0, cy, kind:'pbird', az:0, drift:0 });
+  const roofZ = cy.ptsFinal.reduce((m, p) => Math.max(m, p[2]), 0) + .5 * F;
+  const push = (t, kind, cutZ) => { const pv = SHOTS[SHOTS.length - 1]; SHOTS.push({ t, cy, kind, az:0, drift:0, cutZ, roofZ, fromZ:pv.kind === 'pcut' ? pv.cutZ : roofZ }); };
+  SHOTS.push({ t:cy.t0, cy, kind:'pbird', az:0, drift:0, roofZ });
   let floor = -1;
   for (const d of times) {
-    if (floor >= 0 && r() < .65) { SHOTS.push({ t:d, cy, kind:'pbird', az:0, drift:0 }); floor = -1; continue; }
+    if (floor >= 0 && r() < .65) { push(d, 'pbird'); floor = -1; continue; }
     const top = visiblePts(cy, Math.min(cy.end, d + bar)).reduce((m, p) => Math.max(m, p[2]), 0), n = Math.max(1, Math.floor(top / F + .2));
-    let f = clamp(Math.round(brightness(d, d + 2 * bar) * (n - 1) + r() - .5), 0, n - 1);
-    if (f === floor && n > 1) f = (f + 1 + ri(r, n - 1)) % n;
-    SHOTS.push({ t:d, cy, kind:'pcut', az:0, drift:0, cutZ:(f + .35) * F });
+    const lo = Math.floor(n / 2), m = n - lo;
+    let f = clamp(lo + Math.round(brightness(d, d + 2 * bar) * (m - 1) + r() - .5), lo, n - 1);
+    if (f === floor && m > 1) f = lo + (f - lo + 1 + ri(r, m - 1)) % m;
+    push(d, 'pcut', (f + .35) * F);
     floor = f;
   }
-  if (floor >= 0 && cy.end - cy.t0 > 6 * bar) SHOTS.push({ t:cy.end - 2 * bar, cy, kind:'pbird', az:0, drift:0 });   // each building ends on its roof
+  if (floor >= 0 && cy.end - cy.t0 > 6 * bar) push(cy.end - 2 * bar, 'pbird');   // each building ends on its roof
+}
+// the plan cut height at time t (null: no cut, the roof). Hard cut jumps; Glide slides from the last shot's height
+// over two beats, rising out through the roof or dropping in from it
+function planCutZ(sh, t) {
+  const to = sh.kind === 'pcut' ? sh.cutZ : null, f = ease(clamp((t - sh.t) / (AN.beatLen * 2), 0, 1));
+  if (S.cuts !== 'glide' || sh.fromZ == null || f >= 1) return to;
+  return lerp(sh.fromZ, to ?? sh.roofZ, f);
 }
 function buildShots() {
   const r = rngFor(S.seed, 41), bar = AN.beatLen * 4, every = +S.shots || 0, follow = S.shots === 'music';
@@ -1827,6 +1838,7 @@ function placeCamera(cy, t, dt) {
     if (K.clip === 'plan') setClip(new THREE.Plane(new THREE.Vector3(0, 0, -1), sh.cutZ ?? F * 1.2));
     else { const n = new THREE.Vector3(-dir.x, -dir.y, 0).normalize(), c = new THREE.Vector3(...bbCenter(b)); setClip(new THREE.Plane(n, -n.dot(c))); }
   }
+  if (sh.kind === 'pbird' || sh.kind === 'pcut') { const z = planCutZ(sh, t); setClip(z == null ? null : new THREE.Plane(new THREE.Vector3(0, 0, -1), z)); }
 }
 // clipping for the 2D cuts: every fill and line material clips against the same plane
 const CLIP_MATS = [...Object.values(FILLS), ...Object.values(LIVE_LINES), visMat, hidMat, ghostMat, dashLineMat, markMat, linMat];
