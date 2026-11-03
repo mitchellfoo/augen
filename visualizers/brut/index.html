@@ -1277,6 +1277,8 @@ const SHOT = {
   planobl:{ el:89.5, shear:[-.55, .55], flat:true }, cavalier:{ el:0, shear:[.5, .5], m:1.05, flat:true },
   // true 2D: a plan cut through the ground floor, and a section through the middle of the building
   plancut:{ el:89.9, clip:'plan', flat:true }, section:{ el:0, clip:'section', m:1.05, flat:true },
+  // plan only: one fixed bird's-eye frame per building, dropping to plan cuts at different floors on the song's changes
+  pbird:{ el:89.9, fit:'final', m:1.05, flat:true }, pcut:{ el:89.9, fit:'final', m:1.05, clip:'plan', flat:true },
   // standing in it: at eye height beside the blocks, walking along them, and inside the biggest one
   eye:{ persp:74, mode:'eye' }, walk:{ persp:70, mode:'walk' }, inside:{ persp:86, mode:'inside' },
 };
@@ -1316,10 +1318,31 @@ function musicCuts(cy) {
   for (let i = 1; i < sorted.length; i++) fill(sorted[i - 1], sorted[i]);
   return picks.sort((a, b) => a - b);
 }
+// plan only: the frame never moves within a building. It sits on the bird's-eye plan and, on the cuts (the song's
+// changes, or every N bars), drops to a plan cut; the cut height follows the music (brighter passages cut higher up)
+// and the next change usually goes back to the roof, as does the end of each building
+function planShots(cy, r) {
+  const bar = AN.beatLen * 4, every = +S.shots || 0; let k = 0;
+  const times = S.shots === 'music' ? musicCuts(cy) : AN.downbeats.filter(d => d > cy.t0 + .1 && d < cy.end - .1 && every && ++k % every === 0);
+  const cs = AN._centSorted || (AN._centSorted = Float32Array.from(AN.cent).sort());
+  const brightness = (a, b) => { const i0 = fr(AN, a), i1 = Math.max(i0 + 1, fr(AN, b)); let s = 0; for (let i = i0; i < i1; i++) s += AN.cent[i]; return upperBound(cs, s / (i1 - i0)) / cs.length; };
+  SHOTS.push({ t:cy.t0, cy, kind:'pbird', az:0, drift:0 });
+  let floor = -1;
+  for (const d of times) {
+    if (floor >= 0 && r() < .65) { SHOTS.push({ t:d, cy, kind:'pbird', az:0, drift:0 }); floor = -1; continue; }
+    const top = visiblePts(cy, Math.min(cy.end, d + bar)).reduce((m, p) => Math.max(m, p[2]), 0), n = Math.max(1, Math.floor(top / F + .2));
+    let f = clamp(Math.round(brightness(d, d + 2 * bar) * (n - 1) + r() - .5), 0, n - 1);
+    if (f === floor && n > 1) f = (f + 1 + ri(r, n - 1)) % n;
+    SHOTS.push({ t:d, cy, kind:'pcut', az:0, drift:0, cutZ:(f + .35) * F });
+    floor = f;
+  }
+  if (floor >= 0 && cy.end - cy.t0 > 6 * bar) SHOTS.push({ t:cy.end - 2 * bar, cy, kind:'pbird', az:0, drift:0 });   // each building ends on its roof
+}
 function buildShots() {
   const r = rngFor(S.seed, 41), bar = AN.beatLen * 4, every = +S.shots || 0, follow = S.shots === 'music';
   SHOTS = [];
   for (const cy of CYCLES) {
+    if (S.camStyle === 'plan') { planShots(cy, r); continue; }
     const az0 = 45 + 90 * ri(r, 4);
     // every building opens and closes in the camera style too, so the style shows even when shots are rare
     const sw = STYLE_W[S.camStyle] || STYLE_W.mixed, grp = () => pickW(r, { ...sw, axo:sw.axo * 1.5 });
@@ -1929,7 +1952,7 @@ function placeCamera(cy, t, dt) {
   }
   if (K.clip) {   // true 2D cuts: a plan through the ground floor, or a section through the middle, facing the camera
     const b = bbNew(); for (const p of use) bbAdd(b, p);
-    if (K.clip === 'plan') setClip(new THREE.Plane(new THREE.Vector3(0, 0, -1), F * 1.2));
+    if (K.clip === 'plan') setClip(new THREE.Plane(new THREE.Vector3(0, 0, -1), sh.cutZ ?? F * 1.2));
     else { const n = new THREE.Vector3(-dir.x, -dir.y, 0).normalize(), c = new THREE.Vector3(...bbCenter(b)); setClip(new THREE.Plane(n, -n.dot(c))); }
   }
 }
@@ -2652,7 +2675,7 @@ const statsEl = document.createElement('div'); statsEl.className = 'stats'; $(BP
 const CP = '#cameraPanel';
 const shotsSel = addSelect(CP, 'shots', 'Shots', [['music', 'Follow the song (cut on its changes)'], ['1', 'New shot every bar'], ['2', 'Every 2 bars'], ['4', 'Every 4 bars'], ['8', 'Every 8 bars'], ['16', 'Every 16 bars'], ['off', 'Fixed view']], reshoot);
 addSlider(CP, 'shotSens', 'Shot sensitivity: big changes only ↔ more cuts', reshoot);
-addSelect(CP, 'camStyle', 'Camera style', [['mixed', 'Mixed'], ['axo', 'Axo only'], ['persp', 'Mostly perspective'], ['eye', 'Eye level & inside'], ['flat', 'Flat 2D & oblique']], reshoot);
+addSelect(CP, 'camStyle', 'Camera style', [['mixed', 'Mixed'], ['axo', 'Axo only'], ['persp', 'Mostly perspective'], ['eye', 'Eye level & inside'], ['flat', 'Flat 2D & oblique'], ['plan', 'Plan & plan cuts (cut height follows the song)']], reshoot);
 addSelect(CP, 'turn', 'Turntable', [['drift', 'Drift per shot'], ['ratchet', 'Ratchet on the bar'], ['loud', 'Speed follows loudness'], ['pingpong', 'Rock back and forth'], ['still', 'Still']]);
 addSlider(CP, 'turnSpeed', 'Turn speed');
 addSlider(CP, 'dist', 'Distance: close ↔ far');
