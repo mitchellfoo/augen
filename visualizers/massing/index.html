@@ -2176,7 +2176,25 @@ function encodeAudio(buf, enc) {
 }
 const fmtT = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
 const exportName = lengthKey => `${A.name || 'massing'} massing${lengthKey === 'clip' ? ' (clip)' : ''}.mp4`;
-// file: a FileSystemFileHandle to stream into (memory stays flat at any size); without one the video is built in memory
+// without a file to stream into, the video still never sits whole in memory: the muxer hands it over in 16 MB pieces,
+// each kept as a Blob (the browser pages big blobs out to disk), and the few bytes it goes back to fix up when it
+// finishes (the mdat size) are spliced in at the end by slicing, which copies nothing
+function blobParts() {
+  const parts = [], patches = []; let end = 0;
+  return {
+    write(data, pos) {
+      if (pos < end) { const k = Math.min(data.byteLength, end - pos); patches.push([pos, data.slice(0, k)]); data = data.subarray(k); pos += k; if (!data.byteLength) return; }
+      if (pos > end) { parts.push(new Blob([new Uint8Array(pos - end)])); end = pos; }
+      parts.push(new Blob([data])); end += data.byteLength;
+    },
+    blob(type) {
+      let b = new Blob(parts, { type });
+      for (const [pos, d] of patches) b = new Blob([b.slice(0, pos), d, b.slice(pos + d.byteLength)], { type });
+      return b;
+    },
+  };
+}
+// file: a FileSystemFileHandle to stream into; without one the video collects as disk-backed blob pieces (blobParts)
 async function exportMP4(sizeKey, lengthKey, file) {
   if (!A.buffer || EXPORT) return;
   if (!window.VideoEncoder || !window.Mp4Muxer) return setExportMsg('MP4 export needs a recent Chrome, Edge or Safari.');
@@ -2191,8 +2209,11 @@ async function exportMP4(sizeKey, lengthKey, file) {
   // some browsers and embedded views hand back a file but refuse to write it: render in memory and download instead
   let stream = null;
   if (file) try { stream = await file.createWritable(); } catch (e) { console.warn('cannot write the chosen file, downloading instead', e); file = null; try { localStorage.setItem('augen-export-download', '1'); } catch (_) {} }
-  const target = stream ? new Mp4Muxer.FileSystemWritableFileStreamTarget(stream) : new Mp4Muxer.ArrayBufferTarget();
-  const muxer = new Mp4Muxer.Muxer({ target, fastStart:stream ? false : 'in-memory', firstTimestampBehavior:'offset',
+  // under serve.py the video streams into augen/exports/; elsewhere it collects in blob pieces and downloads
+  const server = stream || !window.AugenExport ? null : await AugenExport.open(exportName(lengthKey));
+  const parts = stream ? null : server || blobParts();
+  const target = stream ? new Mp4Muxer.FileSystemWritableFileStreamTarget(stream) : new Mp4Muxer.StreamTarget({ onData:parts.write, chunked:true, chunkSize:16 * 1048576 });
+  const muxer = new Mp4Muxer.Muxer({ target, fastStart:false, firstTimestampBehavior:'offset',
     video:{ codec:'avc', width:w, height:h, frameRate:fps },
     audio:codecs.audio ? { codec:codecs.audioMux, numberOfChannels:ch, sampleRate:sr } : undefined });
   let failed = null;
@@ -2209,6 +2230,8 @@ async function exportMP4(sizeKey, lengthKey, file) {
       const vf = new VideoFrame(canvas, { timestamp:Math.round(i * 1e6 / fps), duration:Math.round(1e6 / fps) });
       ve.encode(vf, { keyFrame:i % (fps * 2) === 0 }); vf.close();
       while (ve.encodeQueueSize > 4) await yieldNow();
+      while (server && server.pending > 64 * 1048576 && !server.error) await yieldNow();   // let the upload keep up
+      if (server && server.error) throw server.error;
       if (i % 4 === 0) { showProgress(i / total); await yieldNow(); }
       if (failed) throw failed;
       if (EXPORT.cancel) throw new Error('cancelled');
@@ -2226,9 +2249,9 @@ async function exportMP4(sizeKey, lengthKey, file) {
     if (failed) throw failed;
     muxer.finalize();
     if (stream) { await stream.close(); saved = true; setExportMsg(`saved ${file.name}`); }
+    else if (server) { const f = await server.close(); saved = true; setExportMsg(`saved ${f}`); }
     else {
-      const a = document.createElement('a'), blob = new Blob([target.buffer], { type:'video/mp4' });
-      target.buffer = null;
+      const a = document.createElement('a'), blob = parts.blob('video/mp4');
       a.href = URL.createObjectURL(blob); a.download = exportName(lengthKey); a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 60000);
       setExportMsg(`saved ${a.download} · ${(blob.size / 1048576).toFixed(0)} MB`);
@@ -2239,6 +2262,7 @@ async function exportMP4(sizeKey, lengthKey, file) {
   } finally {
     try { ve.close(); } catch (e) {}
     if (stream && !saved) try { await stream.abort(); } catch (e) {}
+    if (server && !saved) await server.abort();
     EXPORT = null; document.body.classList.remove('exporting');
     resize(); A.offset = songStart;
   }
@@ -2453,6 +2477,7 @@ async function traceCam(t0, t1, fps = 24) {
 window.MASSING = { traceCam, get CAM() { return CAM; }, snapshot, get BIG() { return BIG; }, get SHOTS() { return SHOTS; }, S, get AN() { return AN; }, get CYCLES() { return CYCLES; }, seek, rebuildAll, scene, camera, DEMO, renderAt, renderer, get VIEW() { return VIEW; } };   // for poking at from the console
 </script>
 
+<script src="../../shared/export.js"></script>
 <script src="../../shared/source.js"></script>
 <script src="../../shared/hub.js"></script>
 </body>
