@@ -141,14 +141,21 @@ const pickW = (r, w) => { let s = 0; for (const k in w) s += Math.max(0, w[k]); 
 const S = {
   seed:1, curve:.5, growth:.7, actions:2, unify:.5, form:'mixed', camStyle:'mixed', pitchSens:.5,
   shots:'music', shotSens:.5, view:'iso', punch:0, margin:.12, turn:'drift', turnSpeed:.5, dist:.5, elev:.5, fov:.5, follow:0, cuts:'cut', dollyZoom:false, palShuffle:0, lineInks:'diverse', buildSpeed:.35, silenceFade:.9, silenceThr:.09,
-  palette:'generated', variety:.5, shading:'flat', lineW:.35, hatch:1, hatchSize:.35, shadow:'mixed', overlay:'full', ground:'field', marks:.5, words:true, sheet:'paper', colors:'bw1', numbering:'fig', sunAz:.7, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.3, flash:false, look:'print',
+  palette:'generated', variety:.5, shading:'flat', lineW:.35, hatch:1, hatchSize:.35, shadow:'mixed', overlay:'full', ground:'field', markCorners:true, markCrosses:false, markArrows:false, markHits:false, markCuts:true, cutNames:true, planCaption:true, sheet:'paper', colors:'bw1', numbering:'fig', sunAz:.7, explodeMode:'beats', explode:.55, hidden:'dotted', overshoot:.3, flash:false, look:'print',
   // old drawing
   paper:.35, tooth:.4, age:.03, bleed:.1, wobble:.15, wash:.15,
   // film print (the Sculpture Machine's stock)
   pad:2, expQ:'high',
   fps:24, grain:.2, flicker:.1, dust:.2, scratch:.1, weave:.15, vignette:.12, chroma:.04, halation:.03, saturation:.5, warmth:.5, splices:false,
 };
-try { Object.assign(S, JSON.parse(localStorage.getItem('brut-settings') || '{}')); } catch (e) {}
+try {
+  const o = JSON.parse(localStorage.getItem('brut-settings') || '{}'); Object.assign(S, o);
+  // page marks used to be one slider plus a words switch: an old saving carries over to the separate switches
+  if ('marks' in o && !('markCorners' in o)) { const m = o.marks, w = o.words !== false;
+    Object.assign(S, { markCorners:m > 0, markCrosses:m >= .6, markArrows:m >= .75, markHits:m >= .9, markCuts:m >= .3, cutNames:m >= .3 && w, planCaption:m >= .15 && w });
+    if (!w || m < .15) S.numbering = 'off'; }
+  delete S.marks; delete S.words;
+} catch (e) {}
 const saveSettings = () => { try { localStorage.setItem('brut-settings', JSON.stringify(S)); } catch (e) {} };
 
 /* ------------------------------------------------------------------ audio */
@@ -2290,33 +2297,32 @@ function drawOverlay(t, cy) {
     bgCtx.globalAlpha = 1;
     bgTex.needsUpdate = true;
   }
-  // in front: the drawing apparatus, as much of it as the page-marks setting asks for, lettered in an italic serif
+  // in front: the drawing apparatus, each kind of mark switched on its own, lettered in an italic serif
   const g = fgCtx; g.clearRect(0, 0, W, H);
-  const amt = S.overlay === 'off' ? 0 : S.marks;
-  if (amt <= 0) { fgTex.needsUpdate = true; return; }
+  if (S.overlay === 'off') { fgTex.needsUpdate = true; return; }
   const fade = (t0, dur) => { const a = t - t0; return a < 0 ? 0 : a < .15 ? a / .15 : a > dur ? Math.max(0, 1 - (a - dur) / (bar * .5)) : 1; };
   const it = px => `italic 400 ${px * u}px "Times New Roman", Times, Georgia, serif`;
   g.lineCap = 'butt'; g.strokeStyle = ink; g.fillStyle = ink; g.textBaseline = 'middle';
   g.globalAlpha = clamp((t - cy.t0) / .5, 0, 1);
   // registration marks in the corners
-  for (const [x, y] of [[.035, .05], [.965, .05], [.035, .95], [.965, .95]]) {
+  if (S.markCorners) for (const [x, y] of [[.035, .05], [.965, .05], [.035, .95], [.965, .95]]) {
     const X = x * W, Y = y * H, R = 9 * u; g.lineWidth = 1.1 * u;
     g.beginPath(); g.arc(X, Y, R, 0, TAU); g.stroke(); g.beginPath(); g.moveTo(X - R * 1.8, Y); g.lineTo(X + R * 1.8, Y); g.moveTo(X, Y - R * 1.8); g.lineTo(X, Y + R * 1.8); g.stroke();
   }
   // crosses dotted about the sheet
-  if (amt >= .6) { g.lineWidth = 2 * u;
+  if (S.markCrosses) { g.lineWidth = 2 * u;
     for (const [x, y, h] of ov.crosses) { const X = x * W, Y = y * H, R = 9 * u; g.strokeStyle = h && hue ? hue : '#8a8784'; g.beginPath(); g.moveTo(X - R, Y); g.lineTo(X + R, Y); g.moveTo(X, Y - R); g.lineTo(X, Y + R); g.stroke(); }
     g.strokeStyle = ink; }
   // a margin of arrows ticking down with the elements as they arrive
-  if (amt >= .75) { const ticks = cy.els.filter(e => !e.keep && e.t0 <= t), n = Math.min(16, ticks.length), X = W * .93;
+  if (S.markArrows) { const ticks = cy.els.filter(e => !e.keep && e.t0 <= t), n = Math.min(16, ticks.length), X = W * .93;
     g.lineWidth = 1.4 * u;
     for (let i = 0; i < n; i++) { const Y = H * (.14 + i * .045), last = i === n - 1; g.strokeStyle = g.fillStyle = last && hue ? hue : ink; arrow(g, X + 26 * u, Y, X, Y, u, 7); }
     g.strokeStyle = g.fillStyle = ink; }
   g.globalAlpha = 1;
   // the plan's caption, under its corner
-  if (amt >= .15 && S.words && PLAN.at && planMesh.visible) { const p = toPx(PLAN.at, W, H); if (p) { g.font = it(24); g.fillText(`plan at +${PLAN.z.toFixed(1)}`, p[0], p[1] + 16 * u); } }
+  if (S.planCaption && PLAN.at && planMesh.visible) { const p = toPx(PLAN.at, W, H); if (p) { g.font = it(24); g.fillText(`plan at +${PLAN.z.toFixed(1)}`, p[0], p[1] + 16 * u); } }
   // new blocks get their numbers for two bars: "fig. 4" on a leader, or a circled figure
-  if (amt >= .15 && S.words && S.numbering !== 'off') {
+  if (S.numbering !== 'off') {
     let k = 0;
     for (const op of cy.geo) {
       if (op.type !== 'vol') continue; k++;
@@ -2329,27 +2335,29 @@ function drawOverlay(t, cy) {
       if (S.numbering === 'circled') {
         const R = 12 * u; g.beginPath(); g.arc(cx + R * .6, cyy - R * .6, R, 0, TAU); g.fillStyle = paper; g.fill(); g.stroke(); g.fillStyle = ink;
         g.font = it(20); g.textAlign = 'center'; g.fillText(String(k), cx + R * .6, cyy - R * .6); g.textAlign = 'left';
-      } else { g.font = it(26); g.fillText(`fig. ${k}`, cx, cyy - 4 * u); }
+      } else { g.font = it(26); g.fillText(S.numbering === 'num' ? String(k) : `fig. ${k}`, cx, cyy - 4 * u); }
     }
   }
   // dashed construction lines through each cut, with its name, for a bar and a half
-  if (amt >= .3) {
+  if (S.markCuts || S.cutNames) {
     g.setLineDash([10 * u, 6 * u]);
     for (const op of cy.geo) {
       if (op.type !== 'cut') continue;
       const a = fade(op.t, bar * 1.5); if (a <= 0) continue;
       const p = toPx(bbCenter(op.bb), W, H); if (!p) continue;
       const ang = (op.t * 7.3 % 3 | 0) - 1, dy = Math.tan(ang * .52) * W;
-      g.globalAlpha = a * .85; g.lineWidth = 1 * u; g.strokeStyle = hue || ink;
-      g.beginPath(); g.moveTo(0, p[1] - dy * p[0] / W); g.lineTo(W, p[1] + dy * (1 - p[0] / W)); g.stroke();
-      g.setLineDash([]); g.lineWidth = 1.6 * u; g.beginPath(); g.arc(p[0], p[1], 6 * u, 0, TAU); g.stroke();
-      g.globalAlpha = a; g.font = it(22); g.fillStyle = ink; if (S.words) g.fillText(({ blob:'free cut', gash:'gash', void:'void', notch:'notch', terrace:'terrace', under:'undercut', chamfer:'chamfer', split:'split', slice:'raked' })[op.spec.kind] || 'cut', p[0] + 12 * u, p[1] - 12 * u);
+      if (S.markCuts) {
+        g.globalAlpha = a * .85; g.lineWidth = 1 * u; g.strokeStyle = hue || ink;
+        g.beginPath(); g.moveTo(0, p[1] - dy * p[0] / W); g.lineTo(W, p[1] + dy * (1 - p[0] / W)); g.stroke();
+        g.setLineDash([]); g.lineWidth = 1.6 * u; g.beginPath(); g.arc(p[0], p[1], 6 * u, 0, TAU); g.stroke();
+      }
+      g.globalAlpha = a; g.font = it(22); g.fillStyle = ink; if (S.cutNames) g.fillText(({ blob:'free cut', gash:'gash', void:'void', notch:'notch', terrace:'terrace', under:'undercut', chamfer:'chamfer', split:'split', slice:'raked' })[op.spec.kind] || 'cut', p[0] + 12 * u, p[1] - 12 * u);
       g.setLineDash([10 * u, 6 * u]);
     }
     g.setLineDash([]); g.strokeStyle = ink;
   }
   // big hits: a heavy coloured arrow driven across the sheet
-  if (amt >= .9) for (const bt of BIG.ts) {
+  if (S.markHits) for (const bt of BIG.ts) {
     if (bt < cy.t0 || bt >= cy.end) continue;
     const a = fade(bt, bar); if (a <= 0) continue;
     const k2 = easeOutCubic(clamp((t - bt) / .35, 0, 1)), Y = H * (.2 + (hash01(Math.round(bt * 10), 3) * .6)), dir = hash01(Math.round(bt * 10), 5) < .5 ? 1 : -1;
@@ -2712,10 +2720,16 @@ addSelect(KP, 'hidden', 'Hidden lines', [['dotted', 'Dotted'], ['dashed', 'Dashe
 addSlider(KP, 'lineW', 'Line weight');
 addSelect(KP, 'shadow', 'Hard shadows', [['mixed', 'Each building its own way'], ['solid', 'Solid'], ['hatched', 'Hatched'], ['bands', 'Coloured bands'], ['off', 'Off']], rebuildLines);
 addSelect(KP, 'overlay', 'Drawing overlay', [['full', 'Colour masses and marks'], ['marks', 'Marks only'], ['off', 'Off']]);
-addSlider(KP, 'marks', 'Page markings: corner marks only ↔ everything');
 addSelect(KP, 'ground', 'Ground', [['field', 'Field of crosses'], ['diagonal', 'Diagonal lattice'], ['datum', 'Datum line'], ['hatch', 'Engraved hatch'], ['none', 'Paper']], regen);
-addCheck(KP, 'words', 'Words and numbers on the page');
-addSelect(KP, 'numbering', 'Numbering', [['fig', 'fig. 1, fig. 2 (italic)'], ['circled', 'Circled figures'], ['off', 'None']]);
+addHint(KP, 'On the page (with the drawing overlay on)');
+addCheck(KP, 'markCorners', 'Corner marks');
+addCheck(KP, 'markCrosses', 'Crosses about the sheet');
+addCheck(KP, 'markArrows', 'Margin arrows');
+addCheck(KP, 'markHits', 'Big-hit arrows');
+addCheck(KP, 'markCuts', 'Cut construction lines');
+addCheck(KP, 'cutNames', 'Cut names (words)');
+addCheck(KP, 'planCaption', 'Plan caption (plan at +7.0)');
+addSelect(KP, 'numbering', 'Block numbers', [['fig', 'fig. 1, fig. 2 (italic)'], ['num', '1, 2, 3 (numbers only)'], ['circled', 'Circled figures'], ['off', 'None']]);
 addSlider(KP, 'sunAz', 'Sun: from behind ↔ from in front');
 const swatchBox = document.createElement('label'); swatchBox.innerHTML = '<span>This building\'s colours</span><div class="swatches"></div>'; $(KP).appendChild(swatchBox);
 addButton(KP, 'Shuffle colours', () => { S.palShuffle = (S.palShuffle || 0) + 1; saveSettings(); recolour(); showSwatches(); });
